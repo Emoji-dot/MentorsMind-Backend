@@ -44,6 +44,7 @@ import apiDocsPortalRoutes from "../api-docs-portal.routes";
 import tenantRoutes from "../tenant.routes";
 import dynamicPricingRoutes from "../dynamic-pricing.routes";
 import mentorOnboardingRoutes from "../mentor-onboarding.routes";
+import credentialsRoutes from "../credentials.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -115,5 +116,8 @@ router.use("/pricing", dynamicPricingRoutes);
 
 // Mentor Onboarding Automation (issue #562)
 router.use("/onboarding", mentorOnboardingRoutes);
+
+// Verifiable Credentials (DID / W3C VC)
+router.use("/credentials", credentialsRoutes);
 
 export default router;

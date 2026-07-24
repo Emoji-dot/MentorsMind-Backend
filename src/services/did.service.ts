@@ -1,171 +1,354 @@
-import axios from "axios";
-import { logger } from "../utils/logger.utils";
+import crypto from "crypto";
+import { pool } from "../config/database";
+import { JwksService } from "./jwks.service";
+import { server, networkPassphrase, getPlatformKeypair } from "../config/stellar";
+import { logger } from "../utils/logger";
+import { TransactionBuilder, Memo } from "@stellar/stellar-sdk";
 
-export interface PublicKey {
-  id: string;
-  type: string;
-  controller: string;
-  publicKeyBase58?: string;
-  publicKeyJwk?: Record<string, unknown>;
-}
+const PLATFORM_DID = process.env.PLATFORM_DID || "did:web:api.mentorminds.com";
+const PLATFORM_HOST = process.env.PLATFORM_HOST || "api.mentorminds.com";
 
-export interface Proof {
+export type CredentialType =
+  | "MentorCertification"
+  | "SessionCompletion"
+  | "KYCVerification";
+
+export interface CredentialProof {
   type: string;
-  created: Date;
+  created: string;
   verificationMethod: string;
   proofPurpose: string;
   jws: string;
 }
 
-export interface DIDDocument {
-  "@context": string[];
-  id: string;
-  verificationMethod: PublicKey[];
-  authentication: string[];
-  assertionMethod: string[];
-  service?: Array<{ id: string; type: string; serviceEndpoint: string }>;
-}
-
 export interface VerifiableCredential {
+  "@context": string[];
   id: string;
   type: string[];
   issuer: string;
-  issuanceDate: Date;
-  expirationDate?: Date;
+  issuanceDate: string;
+  expirationDate?: string;
   credentialSubject: Record<string, unknown>;
-  proof: Proof;
+  proof: CredentialProof;
 }
 
-export interface DecentralizedIdentity {
-  did: string;
-  document: DIDDocument;
-  credentials: VerifiableCredential[];
-  publicKeys: PublicKey[];
+export interface DIDDocument {
+  "@context": string[];
+  id: string;
+  verificationMethod: Array<{
+    id: string;
+    type: string;
+    controller: string;
+    publicKeyPem: string;
+  }>;
+  authentication: string[];
+  assertionMethod: string[];
 }
 
-export class DIDService {
-  private readonly stellarNetwork = process.env.STELLAR_NETWORK || "testnet";
-  private readonly didRegistry = new Map<string, DecentralizedIdentity>();
+export interface CredentialRecord {
+  id: string;
+  credentialId: string;
+  issuerDid: string;
+  subjectDid: string;
+  credentialType: string;
+  credentialData: VerifiableCredential;
+  proofJws: string;
+  kid: string;
+  stellarTxHash: string | null;
+  stellarLedger: number | null;
+  revoked: boolean;
+  revokedAt: Date | null;
+  revokedReason: string | null;
+  issuedAt: Date;
+  expiresAt: Date | null;
+}
 
-  createDID(userId: string, publicKeyBase58: string): DecentralizedIdentity {
-    const did = `did:stellar:${this.stellarNetwork}:${userId}`;
-    const keyId = `${did}#key-1`;
+function transformRow(row: any): CredentialRecord {
+  return {
+    id: row.id,
+    credentialId: row.credential_id,
+    issuerDid: row.issuer_did,
+    subjectDid: row.subject_did,
+    credentialType: row.credential_type,
+    credentialData: row.credential_data,
+    proofJws: row.proof_jws,
+    kid: row.kid,
+    stellarTxHash: row.stellar_tx_hash,
+    stellarLedger: row.stellar_ledger,
+    revoked: row.revoked,
+    revokedAt: row.revoked_at,
+    revokedReason: row.revoked_reason,
+    issuedAt: row.issued_at,
+    expiresAt: row.expires_at,
+  };
+}
 
-    const publicKey: PublicKey = {
-      id: keyId,
-      type: "Ed25519VerificationKey2020",
-      controller: did,
-      publicKeyBase58,
-    };
+class DIDService {
+  getPlatformDid(): string {
+    return PLATFORM_DID;
+  }
 
-    const document: DIDDocument = {
+  async getDidDocument(): Promise<DIDDocument> {
+    const currentKey = await JwksService.getCurrentKey();
+    if (!currentKey) {
+      throw new Error("No signing key available for DID document");
+    }
+
+    const publicKeyPem = crypto
+      .createPublicKey(currentKey.publicKeyPem)
+      .export({ type: "spki", format: "pem" }) as string;
+
+    return {
       "@context": [
         "https://www.w3.org/ns/did/v1",
-        "https://w3id.org/security/suites/ed25519-2020/v1",
+        "https://w3id.org/security/suites/rsa-2018/v1",
       ],
-      id: did,
-      verificationMethod: [publicKey],
-      authentication: [keyId],
-      assertionMethod: [keyId],
+      id: PLATFORM_DID,
+      verificationMethod: [
+        {
+          id: `${PLATFORM_DID}#key-1`,
+          type: "RsaVerificationKey2018",
+          controller: PLATFORM_DID,
+          publicKeyPem,
+        },
+      ],
+      authentication: [`${PLATFORM_DID}#key-1`],
+      assertionMethod: [`${PLATFORM_DID}#key-1`],
     };
-
-    const identity: DecentralizedIdentity = {
-      did,
-      document,
-      credentials: [],
-      publicKeys: [publicKey],
-    };
-
-    this.didRegistry.set(did, identity);
-    logger.info(`DID created: ${did}`);
-    return identity;
   }
 
-  resolveDID(did: string): DecentralizedIdentity | null {
-    const identity = this.didRegistry.get(did);
-    if (!identity) {
-      logger.warn(`DID not found: ${did}`);
-      return null;
-    }
-    return identity;
-  }
-
-  issueCredential(
-    issuerDid: string,
+  async issueCredential(
     subjectDid: string,
-    type: string,
-    credentialSubject: Record<string, unknown>,
+    type: CredentialType,
+    claims: Record<string, unknown>,
     expirationDate?: Date,
-  ): VerifiableCredential {
+  ): Promise<VerifiableCredential> {
+    const currentKey = await JwksService.getCurrentKey();
+    if (!currentKey) {
+      throw new Error("No signing key available");
+    }
+
+    const credentialId = `urn:uuid:${crypto.randomUUID()}`;
+    const issuanceDate = new Date().toISOString();
+    const expiration = expirationDate?.toISOString();
+
     const credential: VerifiableCredential = {
-      id: `urn:uuid:${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      "@context": [
+        "https://www.w3.org/2018/credentials/v1",
+        "https://www.w3.org/2018/credentials/examples/v1",
+      ],
+      id: credentialId,
       type: ["VerifiableCredential", type],
-      issuer: issuerDid,
-      issuanceDate: new Date(),
-      expirationDate,
-      credentialSubject: { id: subjectDid, ...credentialSubject },
+      issuer: PLATFORM_DID,
+      issuanceDate,
+      ...(expiration && { expirationDate: expiration }),
+      credentialSubject: {
+        id: subjectDid,
+        ...claims,
+      },
       proof: {
-        type: "Ed25519Signature2020",
-        created: new Date(),
-        verificationMethod: `${issuerDid}#key-1`,
+        type: "RsaSignature2018",
+        created: issuanceDate,
+        verificationMethod: `${PLATFORM_DID}#key-1`,
         proofPurpose: "assertionMethod",
-        jws: this.signCredential(issuerDid, credentialSubject),
+        jws: "",
       },
     };
 
-    const identity = this.didRegistry.get(subjectDid);
-    if (identity) {
-      identity.credentials.push(credential);
+    const signingInput = this.getSigningInput(credential);
+    const signature = crypto
+      .createSign("RSA-SHA256")
+      .update(signingInput)
+      .sign(currentKey.privateKeyPem, "base64");
+
+    const jws = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(signingInput).toString("base64url")}.${signature}`;
+    credential.proof.jws = jws;
+
+    const credentialHash = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(credential))
+      .digest("hex");
+
+    let stellarTxHash: string | null = null;
+    let stellarLedger: number | null = null;
+
+    try {
+      const anchor = await this.anchorToStellar(credentialHash);
+      stellarTxHash = anchor.txHash;
+      stellarLedger = anchor.ledger;
+    } catch (err) {
+      logger.error("Stellar anchoring failed — credential issued without on-chain anchor", {
+        credentialId,
+        error: err instanceof Error ? err.message : err,
+      });
     }
 
-    logger.info(`Credential issued: ${credential.id} by ${issuerDid}`);
+    await pool.query(
+      `INSERT INTO verifiable_credentials
+         (credential_id, issuer_did, subject_did, credential_type, credential_data, proof_jws, kid, stellar_tx_hash, stellar_ledger, issued_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [
+        credentialId,
+        PLATFORM_DID,
+        subjectDid,
+        type,
+        JSON.stringify(credential),
+        jws,
+        currentKey.kid,
+        stellarTxHash,
+        stellarLedger,
+        new Date(),
+        expirationDate ?? null,
+      ],
+    );
+
+    logger.info("Credential issued", { credentialId, subjectDid, type, stellarTxHash });
     return credential;
   }
 
-  verifyCredential(credential: VerifiableCredential): boolean {
-    if (credential.expirationDate && new Date() > credential.expirationDate) {
-      logger.warn(`Credential ${credential.id} has expired`);
-      return false;
+  async verifyCredential(
+    credentialId: string,
+  ): Promise<{
+    valid: boolean;
+    issuer: string;
+    subject: string;
+    issuedAt: Date;
+    revokedAt: Date | null;
+  }> {
+    const result = await pool.query(
+      `SELECT * FROM verifiable_credentials WHERE credential_id = $1`,
+      [credentialId],
+    );
+
+    if (result.rows.length === 0) {
+      return { valid: false, issuer: "", subject: "", issuedAt: new Date(), revokedAt: null };
     }
 
-    const issuerIdentity = this.didRegistry.get(credential.issuer);
-    if (!issuerIdentity) {
-      logger.warn(`Issuer DID not found: ${credential.issuer}`);
-      return false;
+    const record = transformRow(result.rows[0]);
+
+    if (record.revoked) {
+      return {
+        valid: false,
+        issuer: record.issuerDid,
+        subject: record.subjectDid,
+        issuedAt: record.issuedAt,
+        revokedAt: record.revokedAt,
+      };
     }
 
-    // Verify proof exists and issuer is valid
-    const isValid =
-      !!credential.proof.jws &&
-      credential.proof.verificationMethod.startsWith(credential.issuer);
+    if (record.expiresAt && new Date() > record.expiresAt) {
+      return {
+        valid: false,
+        issuer: record.issuerDid,
+        subject: record.subjectDid,
+        issuedAt: record.issuedAt,
+        revokedAt: null,
+      };
+    }
 
-    logger.info(`Credential ${credential.id} verification: ${isValid}`);
-    return isValid;
+    const sigValid = await this.verifySignature(record.credentialData);
+    if (!sigValid) {
+      return {
+        valid: false,
+        issuer: record.issuerDid,
+        subject: record.subjectDid,
+        issuedAt: record.issuedAt,
+        revokedAt: null,
+      };
+    }
+
+    return {
+      valid: true,
+      issuer: record.issuerDid,
+      subject: record.subjectDid,
+      issuedAt: record.issuedAt,
+      revokedAt: null,
+    };
   }
 
-  getCredentials(did: string): VerifiableCredential[] {
-    return this.didRegistry.get(did)?.credentials ?? [];
+  async revokeCredential(
+    credentialId: string,
+    reason?: string,
+  ): Promise<boolean> {
+    const result = await pool.query(
+      `UPDATE verifiable_credentials
+       SET revoked = TRUE, revoked_at = NOW(), revoked_reason = $2, updated_at = NOW()
+       WHERE credential_id = $1 AND revoked = FALSE
+       RETURNING id`,
+      [credentialId, reason ?? null],
+    );
+
+    if (result.rowCount === 0) return false;
+
+    logger.info("Credential revoked", { credentialId, reason });
+    return true;
   }
 
-  async resolveExternalDID(did: string): Promise<DIDDocument | null> {
+  async getCredentialBySubject(
+    subjectDid: string,
+    type?: CredentialType,
+  ): Promise<CredentialRecord[]> {
+    let query = `SELECT * FROM verifiable_credentials WHERE subject_did = $1`;
+    const params: any[] = [subjectDid];
+
+    if (type) {
+      query += ` AND credential_type = $2`;
+      params.push(type);
+    }
+
+    query += ` ORDER BY issued_at DESC`;
+
+    const result = await pool.query(query, params);
+    return result.rows.map(transformRow);
+  }
+
+  private getSigningInput(credential: VerifiableCredential): string {
+    const { proof, ...unsigned } = credential;
+    return JSON.stringify(unsigned);
+  }
+
+  private async verifySignature(credential: VerifiableCredential): Promise<boolean> {
     try {
-      const response = await axios.get(
-        `https://resolver.identity.foundation/1.0/identifiers/${encodeURIComponent(did)}`,
-      );
-      return response.data.didDocument ?? null;
-    } catch (err) {
-      logger.error(`Failed to resolve external DID ${did}`, err);
-      return null;
+      const currentKey = await JwksService.getCurrentKey();
+      if (!currentKey) return false;
+
+      const signingInput = this.getSigningInput(credential);
+      const parts = credential.proof.jws.split(".");
+      if (parts.length !== 3) return false;
+
+      const signature = Buffer.from(parts[2], "base64");
+      return crypto
+        .createVerify("RSA-SHA256")
+        .update(signingInput)
+        .verify(currentKey.publicKeyPem, signature);
+    } catch {
+      return false;
     }
   }
 
-  private signCredential(
-    issuerDid: string,
-    payload: Record<string, unknown>,
-  ): string {
-    // Stub: in production, sign with issuer's private key
-    const data = JSON.stringify({ issuer: issuerDid, payload });
-    return Buffer.from(data).toString("base64");
+  private async anchorToStellar(
+    hash: string,
+  ): Promise<{ txHash: string; ledger: number }> {
+    const keypair = getPlatformKeypair();
+    if (!keypair) {
+      throw new Error("Platform Stellar keypair not configured");
+    }
+
+    const account = await server.accounts().accountId(keypair.publicKey()).call();
+    const txBuilder = new TransactionBuilder(account, {
+      fee: "100",
+      networkPassphrase,
+    });
+
+    const memoHash = hash.substring(0, 28);
+    txBuilder.addMemo(Memo.text(memoHash));
+    txBuilder.setTimeout(60);
+
+    const tx = txBuilder.build();
+    tx.sign(keypair);
+
+    const result = await server.submitTransaction(tx);
+    return { txHash: result.hash, ledger: result.ledger };
   }
 }
 

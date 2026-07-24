@@ -154,6 +154,10 @@ app.get(
 );
 app.get("/health", (_req, res) => res.redirect("/health/ready"));
 
+// ─── DID Document ────────────────────────────────────────────────────────────
+import { CredentialsController } from "./controllers/credentials.controller";
+app.get("/.well-known/did.json", CredentialsController.getDidDocument);
+
 // ─── Metrics Route ───────────────────────────────────────────────────────────
 registerMetricsRoute(app);
 
