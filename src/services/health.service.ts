@@ -3,6 +3,7 @@ import { server } from "../config/stellar";
 import config from "../config";
 import { redisConfig } from "../config/redis.config";
 import { CacheService } from "./cache.service";
+import { JwksService } from "./jwks.service";
 import { logger } from "../utils/logger.utils";
 import { CURRENT_VERSION } from "../config/api-versions.config";
 import { validateRequiredTables } from "../utils/table-validator.utils";
@@ -29,6 +30,7 @@ export interface DetailedHealthStatus {
     tables?: HealthComponent;
     analyticsViews?: HealthComponent;
     system?: HealthComponent;
+    jwks?: HealthComponent;
   };
   uptime: number;
   version: string;
@@ -144,6 +146,7 @@ export class HealthService {
       queueCheck,
       tablesCheck,
       analyticsViewsCheck,
+      jwksCheck,
     ] = await Promise.all([
       this.checkDatabase(),
       this.checkRedis(),
@@ -151,6 +154,7 @@ export class HealthService {
       this.checkBullMQ(),
       this.checkDatabaseTables(),
       this.checkAnalyticsViews(),
+      this.checkJwks(),
     ]);
 
     // Critical components for readiness: all must not be 'unhealthy'
@@ -186,6 +190,7 @@ export class HealthService {
         tables: tablesCheck,
         analyticsViews: analyticsViewsCheck,
         system: this.getSystemInfo(),
+        jwks: jwksCheck,
       },
       uptime: process.uptime(),
       version: config.server.apiVersion || CURRENT_VERSION,
@@ -359,6 +364,29 @@ export class HealthService {
     try {
       await server.ledgers().limit(1).call();
       return { status: "healthy", responseTimeMs: Date.now() - start };
+    } catch (err: any) {
+      return {
+        status: "degraded",
+        responseTimeMs: Date.now() - start,
+        error: err.message,
+      };
+    }
+  }
+
+  private static async checkJwks(): Promise<HealthComponent> {
+    const start = Date.now();
+    try {
+      const rotationStatus = await JwksService.getRotationStatus();
+      const currentKey = await JwksService.getCurrentKey();
+      
+      return {
+        status: "healthy",
+        responseTimeMs: Date.now() - start,
+        details: {
+          ...rotationStatus,
+          hasCurrentKey: !!currentKey,
+        },
+      };
     } catch (err: any) {
       return {
         status: "degraded",
