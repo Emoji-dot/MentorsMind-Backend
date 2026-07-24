@@ -21,6 +21,8 @@ import { NotificationType } from "../models/notifications.model";
 import { SessionSummaryModel } from "../models/session-summary.model";
 import { MentorsService } from "./mentors.service";
 import { LoyaltyService } from "./loyalty.service";
+import { scheduleNoShowCheck } from "../queues/session-no-show.queue";
+import config from "../config";
 
 export interface CreateBookingData {
   menteeId: string;
@@ -392,6 +394,36 @@ export const BookingsService = {
     CalendarService.createGoogleCalendarEvent(bookingId).catch((err) =>
       logger.error("Calendar create failed", { bookingId, error: err }),
     );
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Schedule no-show detection check
+    // ═══════════════════════════════════════════════════════════════════════════
+    const gracePeriodMinutes = parseInt(
+      process.env.NO_SHOW_GRACE_PERIOD_MINUTES || '10',
+      10
+    );
+
+    try {
+      await scheduleNoShowCheck({
+        bookingId,
+        mentorId: booking.mentor_id,
+        menteeId: booking.mentee_id,
+        scheduledStart: booking.scheduled_at,
+        gracePeriodMinutes,
+      });
+
+      logger.info('No-show check scheduled', {
+        bookingId,
+        scheduledStart: booking.scheduled_at,
+        gracePeriodMinutes,
+      });
+    } catch (error) {
+      logger.error('Failed to schedule no-show check', {
+        bookingId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      // Don't fail booking confirmation if scheduling fails
+    }
 
     return updated;
   },

@@ -11,6 +11,7 @@ const REQUIRED_QUEUE_NAMES = [
     'ESCROW_RELEASE',
     'REPORT',
     'SESSION_REMINDER',
+    'SESSION_NO_SHOW',
     'STELLAR_TX',
     'ESCROW_CHECK',
     'NOTIFICATIONS',
@@ -37,6 +38,7 @@ export { paymentWorker } from './payment.worker';
 export { escrowReleaseWorker } from './escrow-release.worker';
 export { reportWorker } from './report.worker';
 export { sessionReminderWorker } from './sessionReminder.worker';
+export { sessionNoShowWorker } from './session-no-show.worker';
 export { notificationCleanupWorker } from './notificationCleanup.worker';
 export { maintenanceWorker } from './maintenance.worker';
 export { startScheduler, stopScheduler } from './scheduler';
