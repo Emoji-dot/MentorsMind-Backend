@@ -173,6 +173,85 @@ export const BookingModel = {
     return rows[0] || null;
   },
 
+  /**
+   * Transactional variant of `update`. Use this inside
+   * `DatabaseService.withTransaction` so the booking update is committed
+   * atomically with the outbox write that publishes the side-effects.
+   */
+  async updateWithClient(
+    client: import("pg").PoolClient,
+    id: string,
+    data: Partial<{
+      scheduledAt: Date;
+      durationMinutes: number;
+      topic: string;
+      notes: string;
+      status: string;
+      paymentStatus: string;
+      stellarTxHash: string;
+      transactionId: string;
+      cancellationReason: string;
+    }>,
+  ): Promise<BookingRecord | null> {
+    const fields: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+
+    if (data.scheduledAt !== undefined) {
+      fields.push(`scheduled_at = $${idx++}`);
+      values.push(data.scheduledAt);
+    }
+    if (data.durationMinutes !== undefined) {
+      fields.push(`duration_minutes = $${idx++}`);
+      values.push(data.durationMinutes);
+    }
+    if (data.topic !== undefined) {
+      fields.push(`topic = $${idx++}`);
+      values.push(data.topic);
+    }
+    if (data.notes !== undefined) {
+      fields.push(`notes = $${idx++}`);
+      values.push(data.notes);
+    }
+    if (data.status !== undefined) {
+      fields.push(`status = $${idx++}`);
+      values.push(data.status);
+    }
+    if (data.paymentStatus !== undefined) {
+      fields.push(`payment_status = $${idx++}`);
+      values.push(data.paymentStatus);
+    }
+    if (data.stellarTxHash !== undefined) {
+      fields.push(`stellar_tx_hash = $${idx++}`);
+      values.push(data.stellarTxHash);
+    }
+    if (data.transactionId !== undefined) {
+      fields.push(`transaction_id = $${idx++}`);
+      values.push(data.transactionId);
+    }
+    if (data.cancellationReason !== undefined) {
+      fields.push(`cancellation_reason = $${idx++}`);
+      values.push(data.cancellationReason);
+    }
+
+    if (fields.length === 0) {
+      const { rows } = await client.query(
+        `SELECT * FROM bookings WHERE id = $1`,
+        [id],
+      );
+      return rows[0] || null;
+    }
+
+    fields.push(`updated_at = NOW()`);
+    values.push(id);
+
+    const { rows } = await client.query(
+      `UPDATE bookings SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`,
+      values,
+    );
+    return rows[0] || null;
+  },
+
   async checkConflict(
     mentorId: string,
     scheduledAt: Date,

@@ -46,3 +46,4 @@ export { notificationsWorker } from '../jobs/notifications.worker';
 export { webhookDeliveryWorker } from '../jobs/webhookDelivery.job';
 export { transcriptionWorker } from './transcription.worker';
 export { domainEventsWorker } from './domain-events.worker';
+export { startOutboxWorker, stopOutboxWorker } from './outbox.worker';

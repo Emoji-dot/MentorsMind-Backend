@@ -118,7 +118,7 @@ export async function startScheduler(): Promise<void> {
   );
 
   logger.info(
-    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, and daily maintenance registered",
+    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, and daily maintenance registered (outbox retention runs as part of the daily maintenance task — see runMaintenanceTasks)",
   );
 }
 
@@ -174,5 +174,19 @@ export async function runMaintenanceTasks(): Promise<void> {
     }
   } catch (error) {
     logger.error("Maintenance: error cleaning up expired exports", { error });
+  }
+
+  // Outbox retention: delete processed outbox rows older than 7 days.
+  // Dead-letter rows are kept indefinitely until operator-triage replay.
+  try {
+    const { OutboxModel } = await import("../models/outbox.model");
+    const removed = await OutboxModel.cleanupProcessed(7);
+    if (removed > 0) {
+      logger.info("Maintenance: outbox events pruned (7-day retention)", {
+        count: removed,
+      });
+    }
+  } catch (error) {
+    logger.error("Maintenance: error cleaning up outbox events", { error });
   }
 }

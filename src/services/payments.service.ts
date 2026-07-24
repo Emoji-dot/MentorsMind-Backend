@@ -30,6 +30,8 @@ import {
 import { EncryptionUtil } from "../utils/encryption.utils";
 import { PaginationUtil } from "../utils/pagination.utils";
 import { LoyaltyService } from "./loyalty.service";
+import { DatabaseService } from "./database.service";
+import { emitPaymentConfirmed } from "./outbox.service";
 
 export type PaymentStatus =
   | "pending"
@@ -270,36 +272,60 @@ export const PaymentsService = {
       hash: tx.hash,
     });
 
-    const { rows } = await pool.query<PaymentRecord>(
-      `UPDATE transactions
-       SET status = 'completed', stellar_tx_hash = $2, completed_at = NOW(), updated_at = NOW()
-       WHERE id = $1
-       RETURNING *`,
-      [paymentId, stellarTxHash],
-    );
-
-    if (!rows[0]) throw createError("Failed to confirm payment", 500);
-
-    // Update booking payment status
-    if (payment.booking_id) {
-      await pool.query(
-        `UPDATE bookings SET payment_status = 'paid', stellar_tx_hash = $2, updated_at = NOW() WHERE id = $1`,
-        [payment.booking_id, stellarTxHash],
+    // Atomic write: update the transactions row, the booking payment
+    // status, AND emit a payment.confirmed outbox event. If the process
+    // crashes after COMMIT, the outbox worker re-dispatches the
+    // notification fan-out reliably.
+    //
+    // The socket emit happens AFTER this transaction commits — keeping
+    // side-effects to external systems outside the DB tx avoids
+    // notifying users of a payment that did not actually persist.
+    const completedAtIso = new Date().toISOString();
+    await DatabaseService.withTransaction(async (client) => {
+      const { rows } = await client.query<PaymentRecord>(
+        `UPDATE transactions
+         SET status = 'completed', stellar_tx_hash = $2, completed_at = NOW(), updated_at = NOW()
+         WHERE id = $1
+         RETURNING *`,
+        [paymentId, stellarTxHash],
       );
-    }
 
-    // Emit payment:confirmed event to the user
+      if (!rows[0]) throw createError("Failed to confirm payment", 500);
+
+      if (payment.booking_id) {
+        await client.query(
+          `UPDATE bookings SET payment_status = 'paid', stellar_tx_hash = $2, updated_at = NOW() WHERE id = $1`,
+          [payment.booking_id, stellarTxHash],
+        );
+      }
+
+      await emitPaymentConfirmed(
+        {
+          paymentId,
+          bookingId: payment.booking_id,
+          userId: payment.user_id,
+          amount: payment.amount,
+          currency: payment.currency,
+          stellarTxHash,
+          completedAt: completedAtIso,
+        },
+        { client, userId: payment.user_id },
+      );
+    });
+
+    // Best-effort real-time socket notification once the DB tx is durably
+    // committed. The outbox worker is the durable fallback.
     SocketService.emitToUser(payment.user_id, "payment:confirmed", {
       paymentId,
       bookingId: payment.booking_id,
       amount: payment.amount,
       currency: payment.currency,
       stellarTxHash,
-      completedAt: rows[0].completed_at,
+      completedAt: completedAtIso,
     });
 
     logger.info("Payment confirmed", { paymentId, stellarTxHash });
-    return rows[0];
+    return await this.getPaymentById(paymentId, userId);
   },
 
   async listUserPayments(
