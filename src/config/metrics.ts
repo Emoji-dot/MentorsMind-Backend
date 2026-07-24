@@ -160,3 +160,21 @@ export const stellarApiCallsTotal = new Counter<string>({
   labelNames: ["operation", "network", "status"],
   registers: [metricsRegistry],
 });
+
+// ─── Mentor Quality Scoring ───────────────────────────────────────────────────
+
+export const mentorQualityScoreGauge = new Gauge<string>({
+  name: "mentor_quality_score",
+  help: "Latest computed quality score (0-100) per mentor",
+  labelNames: ["mentorId"],
+  registers: [metricsRegistry],
+});
+
+// ─── Feature Flags ────────────────────────────────────────────────────────────
+
+export const featureFlagEvaluationsTotal = new Counter<string>({
+  name: "feature_flag_evaluations_total",
+  help: "Total feature flag evaluations, partitioned by flag key and result",
+  labelNames: ["flag", "result"],
+  registers: [metricsRegistry],
+});

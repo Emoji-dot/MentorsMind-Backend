@@ -31,6 +31,7 @@ async function startWorkers() {
     maintenanceWorker,
     webhookDeliveryWorker,
     transcriptionWorker,
+    qualityScoreWorker,
     startScheduler,
     stopScheduler,
   } = await import("./workers");
@@ -51,6 +52,7 @@ async function startWorkers() {
       "maintenance",
       "webhookDelivery",
       "transcription",
+      "qualityScore",
     ],
   });
 
@@ -71,6 +73,7 @@ async function startWorkers() {
       maintenanceWorker.close(),
       webhookDeliveryWorker.close(),
       transcriptionWorker.close(),
+      qualityScoreWorker.close(),
       stopScheduler(),
     ]);
 
