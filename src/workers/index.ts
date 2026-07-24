@@ -19,6 +19,7 @@ const REQUIRED_QUEUE_NAMES = [
     'MAINTENANCE',
     'TRANSCRIPTION',
     'DOMAIN_EVENTS',
+    'VESTING_SYNC',
 ] as const;
 
 for (const queueKey of REQUIRED_QUEUE_NAMES) {
@@ -48,3 +49,4 @@ export { notificationsWorker } from '../jobs/notifications.worker';
 export { webhookDeliveryWorker } from '../jobs/webhookDelivery.job';
 export { transcriptionWorker } from './transcription.worker';
 export { domainEventsWorker } from './domain-events.worker';
+export { vestingSyncWorker } from './vesting-sync.worker';

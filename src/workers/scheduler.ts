@@ -3,6 +3,7 @@ import { sessionReminderQueue } from "../queues/sessionReminder.queue";
 import { escrowCheckQueue } from "../queues/escrow-check.queue";
 import { notificationCleanupQueue } from "../queues/notificationCleanup.queue";
 import { maintenanceQueue } from "../queues/maintenance.queue";
+import { vestingSyncQueue } from "../queues/vesting-sync.queue";
 import { VerificationService } from "../services/verification.service";
 import { accountDeletionJob } from "../jobs/accountDeletion.job";
 import { logger } from "../utils/logger.utils";
@@ -117,8 +118,19 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
+  // Vesting sync — every 6 hours at minute 0
+  await addRepeatableJobIfNotExists(
+    vestingSyncQueue,
+    "vesting-sync-scheduled",
+    { jobType: "vesting-sync" },
+    {
+      repeat: { pattern: "0 */6 * * *" }, // cron: every 6 hours
+      jobId: "vesting-sync-recurring",
+    },
+  );
+
   logger.info(
-    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, and daily maintenance registered",
+    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, and vesting sync registered",
   );
 }
 
