@@ -2,6 +2,13 @@ import { Router } from "express";
 import { SessionQualityController } from "../controllers/session-quality.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
+import { validate } from "../middleware/validation.middleware";
+import {
+  sessionIdParamSchema,
+  mentorTrendSchema,
+  mentorIdParamSchema,
+  topSessionsSchema,
+} from "../validators/schemas/session-quality.schemas";
 
 const router = Router();
 
@@ -102,6 +109,7 @@ const router = Router();
 router.get(
   "/sessions/:sessionId",
   authenticate,
+  validate(sessionIdParamSchema),
   SessionQualityController.getSessionScore,
 );
 
@@ -183,6 +191,7 @@ router.get(
 router.get(
   "/mentors/:mentorId/trend",
   authenticate,
+  validate(mentorTrendSchema),
   SessionQualityController.getMentorTrend,
 );
 
@@ -236,6 +245,7 @@ router.get(
 router.get(
   "/mentors/:mentorId/insights",
   authenticate,
+  validate(mentorIdParamSchema),
   SessionQualityController.getMentorInsights,
 );
 
@@ -267,6 +277,7 @@ router.get(
 router.get(
   "/mentors/:mentorId/top-sessions",
   authenticate,
+  validate(topSessionsSchema),
   SessionQualityController.getTopSessions,
 );
 

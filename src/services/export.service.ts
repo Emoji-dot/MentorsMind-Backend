@@ -278,6 +278,34 @@ export const ExportService = {
     return { data: csv, fileName };
   },
 
+  /**
+   * Delete S3 objects and export_jobs rows older than `days` (GDPR retention limit).
+   */
+  async cleanupExpiredExports(days: number = 30): Promise<number> {
+    const expired = await ExportJobModel.findExpiredOlderThan(days);
+    const keys = expired
+      .map((job) => job.storage_key)
+      .filter((key): key is string => Boolean(key));
+
+    if (keys.length > 0) {
+      await StorageService.deleteFiles(keys);
+    }
+
+    const deletedCount = await ExportJobModel.deleteOlderThan(days);
+
+    if (deletedCount > 0) {
+      await AuditLoggerService.logEvent({
+        level: LogLevel.INFO,
+        action: "DATA_EXPORT_CLEANUP",
+        message: `Cleaned up ${deletedCount} expired export job(s)`,
+        entityType: "export_job",
+        metadata: { deletedCount, s3ObjectsDeleted: keys.length, days },
+      });
+    }
+
+    return deletedCount;
+  },
+
   async getJobStatus(jobId: string, userId: string) {
     const job = await ExportJobModel.findById(jobId);
     if (!job || job.user_id !== userId) {

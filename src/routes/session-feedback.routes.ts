@@ -2,6 +2,13 @@ import { Router } from "express";
 import { SessionFeedbackController } from "../controllers/session-feedback.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
+import { validate } from "../middleware/validation.middleware";
+import {
+  submitFeedbackSchema,
+  sessionIdParamSchema,
+  mentorFeedbackParamSchema,
+  mentorIdParamSchema,
+} from "../validators/schemas/session-feedback.schemas";
 
 const router = Router();
 
@@ -37,7 +44,12 @@ const router = Router();
  *       403:
  *         description: Not authorized
  */
-router.post("/", authenticate, asyncHandler(SessionFeedbackController.submit));
+router.post(
+  "/",
+  authenticate,
+  validate(submitFeedbackSchema),
+  asyncHandler(SessionFeedbackController.submit),
+);
 
 /**
  * @swagger
@@ -59,6 +71,7 @@ router.post("/", authenticate, asyncHandler(SessionFeedbackController.submit));
 router.get(
   "/session/:sessionId",
   authenticate,
+  validate(sessionIdParamSchema),
   asyncHandler(SessionFeedbackController.getForSession),
 );
 
@@ -85,6 +98,7 @@ router.get(
  */
 router.get(
   "/mentor/:mentorId",
+  validate(mentorFeedbackParamSchema),
   asyncHandler(SessionFeedbackController.getMentorFeedback),
 );
 
@@ -105,6 +119,7 @@ router.get(
  */
 router.get(
   "/mentor/:mentorId/stats",
+  validate(mentorIdParamSchema),
   asyncHandler(SessionFeedbackController.getMentorStats),
 );
 

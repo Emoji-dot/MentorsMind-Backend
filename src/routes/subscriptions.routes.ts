@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { SubscriptionController } from "../controllers/subscription.controller";
 import { authenticate } from "../middleware/auth.middleware";
+import { validate } from "../middleware/validation.middleware";
+import { idParamSchema } from "../validators/schemas/common.schemas";
 
 const router = Router();
 
@@ -24,6 +26,6 @@ router.get("/", authenticate, SubscriptionController.list);
 router.post("/", authenticate, SubscriptionController.subscribe);
 
 /** DELETE /api/v1/subscriptions/:id */
-router.delete("/:id", authenticate, SubscriptionController.cancel);
+router.delete("/:id", authenticate, validate(idParamSchema), SubscriptionController.cancel);
 
 export default router;

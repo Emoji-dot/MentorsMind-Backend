@@ -19,6 +19,36 @@ import {
 } from "../validators/schemas/verification.schemas";
 import { ConsentController } from "../controllers/consent.controller";
 import { MentorQualityController } from "../controllers/mentor-quality.controller";
+import { TraceController } from "../controllers/trace.controller";
+import { getTraceSchema } from "../validators/schemas/trace.schemas";
+import {
+  listAdminUsersSchema,
+  updateUserStatusSchema,
+  updateUserTierSchema,
+  suspendUserSchema,
+  banUserSchema,
+  adminIdParamSchema,
+  listAdminTransactionsSchema,
+  listAdminSessionsSchema,
+  listAdminPaymentsSchema,
+  listAdminDisputesSchema,
+  resolveDisputeSchema,
+  getAdminLogsSchema,
+  updateConfigSchema,
+  getAuditLogSchema,
+  exportAuditLogSchema,
+  auditLogStatsSchema,
+  previewEmailTemplateSchema,
+  revenueSummarySchema,
+  dailyRevenueSchema,
+  transactionReportSchema,
+  exportReportSchema,
+  addBlocklistRuleSchema,
+  removeBlocklistRuleSchema,
+  addAllowlistRuleSchema,
+  approveVerificationSchema,
+  retryWebhookDeliverySchema,
+} from "../validators/schemas/admin.schemas";
 
 const router = Router();
 
@@ -57,6 +87,21 @@ router.get("/stats", asyncHandler(AdminController.getStats));
 
 /** GET /admin/mentors/quality — paginated/sortable/filterable mentor quality scores */
 router.get("/mentors/quality", MentorQualityController.list);
+
+/**
+ * @swagger
+ * /admin/trace/{traceId}:
+ *   get:
+ *     summary: Query Jaeger for the full trace by traceId
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  "/trace/:traceId",
+  validate(getTraceSchema),
+  asyncHandler(TraceController.getTrace),
+);
 
 /**
  * @swagger
@@ -102,7 +147,7 @@ router.get("/mentors/quality", MentorQualityController.list);
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.get("/users", asyncHandler(AdminController.listUsers));
+router.get("/users", validate(listAdminUsersSchema), asyncHandler(AdminController.listUsers));
 
 /**
  * @swagger
@@ -143,6 +188,7 @@ router.get("/users", asyncHandler(AdminController.listUsers));
  */
 router.put(
   "/users/:id/status",
+  validate(updateUserStatusSchema),
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
     getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
@@ -176,6 +222,7 @@ router.put(
  */
 router.put(
   "/users/:id/tier",
+  validate(updateUserTierSchema),
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
     getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
@@ -220,6 +267,7 @@ router.put(
  */
 router.put(
   "/users/:id/suspend",
+  validate(suspendUserSchema),
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
     getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
@@ -259,6 +307,7 @@ router.put(
  */
 router.put(
   "/users/:id/ban",
+  validate(banUserSchema),
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
     getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
@@ -284,6 +333,7 @@ router.put(
  */
 router.put(
   "/users/:id/unsuspend",
+  validate(adminIdParamSchema),
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
     getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
@@ -309,6 +359,7 @@ router.put(
  */
 router.post(
   "/users/:id/unlock",
+  validate(adminIdParamSchema),
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
     getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
@@ -392,7 +443,7 @@ router.post(
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.get("/transactions", asyncHandler(AdminController.listTransactions));
+router.get("/transactions", validate(listAdminTransactionsSchema), asyncHandler(AdminController.listTransactions));
 
 /**
  * @swagger
@@ -416,7 +467,7 @@ router.get("/transactions", asyncHandler(AdminController.listTransactions));
  *       200:
  *         description: Paginated list of sessions
  */
-router.get("/sessions", asyncHandler(AdminController.listSessions));
+router.get("/sessions", validate(listAdminSessionsSchema), asyncHandler(AdminController.listSessions));
 
 /**
  * @swagger
@@ -443,7 +494,7 @@ router.get("/sessions", asyncHandler(AdminController.listSessions));
  *       200:
  *         description: Paginated list of payments
  */
-router.get("/payments", asyncHandler(AdminController.listPayments));
+router.get("/payments", validate(listAdminPaymentsSchema), asyncHandler(AdminController.listPayments));
 
 /**
  * @swagger
@@ -474,7 +525,7 @@ router.get("/payments", asyncHandler(AdminController.listPayments));
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.get("/disputes", asyncHandler(AdminController.listDisputes));
+router.get("/disputes", validate(listAdminDisputesSchema), asyncHandler(AdminController.listDisputes));
 
 /**
  * @swagger
@@ -511,6 +562,7 @@ router.get("/disputes", asyncHandler(AdminController.listDisputes));
  */
 router.post(
   "/disputes/:id/resolve",
+  validate(resolveDisputeSchema),
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
     getEntityDetails: (req) => ({ type: "DISPUTE", id: req.params.id as string }),
@@ -582,7 +634,7 @@ router.get("/system-health", asyncHandler(AdminController.getSystemHealth));
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.get("/logs", asyncHandler(AdminController.getLogs));
+router.get("/logs", validate(getAdminLogsSchema), asyncHandler(AdminController.getLogs));
 
 /**
  * @swagger
@@ -615,7 +667,7 @@ router.get("/logs", asyncHandler(AdminController.getLogs));
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.post("/config", asyncHandler(AdminController.updateConfig));
+router.post("/config", validate(updateConfigSchema), asyncHandler(AdminController.updateConfig));
 
 // ── Audit Log Routes ─────────────────────────────────────────────────────────
 
@@ -660,7 +712,7 @@ router.post("/config", asyncHandler(AdminController.updateConfig));
  *             schema:
  *               $ref: '#/components/schemas/ApiResponse'
  */
-router.get("/audit-log", asyncHandler(AdminController.getAuditLogs));
+router.get("/audit-log", validate(getAuditLogSchema), asyncHandler(AdminController.getAuditLogs));
 
 /**
  * @swagger
@@ -694,7 +746,7 @@ router.get("/audit-log", asyncHandler(AdminController.getAuditLogs));
  *             schema:
  *               type: string
  */
-router.get("/audit-log/export", asyncHandler(AdminController.exportAuditLogs));
+router.get("/audit-log/export", validate(exportAuditLogSchema), asyncHandler(AdminController.exportAuditLogs));
 
 /**
  * @swagger
@@ -732,7 +784,7 @@ router.get(
  *       200:
  *         description: Audit log statistics
  */
-router.get("/audit-log/stats", asyncHandler(AdminController.getAuditLogStats));
+router.get("/audit-log/stats", validate(auditLogStatsSchema), asyncHandler(AdminController.getAuditLogStats));
 
 // ── Email Template Routes ──────────────────────────────────────────────────────
 
@@ -787,6 +839,7 @@ router.get("/audit-log/stats", asyncHandler(AdminController.getAuditLogStats));
  */
 router.post(
   "/email/preview/:template",
+  validate(previewEmailTemplateSchema),
   asyncHandler(AdminController.previewEmailTemplate),
 );
 
@@ -932,6 +985,7 @@ router.post("/analytics/refresh", AdvancedAnalyticsController.refreshAnalytics);
  */
 router.get(
   "/reports/revenue",
+  validate(revenueSummarySchema),
   asyncHandler(RevenueReportController.getRevenueSummary),
 );
 
@@ -958,6 +1012,7 @@ router.get(
  */
 router.get(
   "/reports/revenue/daily",
+  validate(dailyRevenueSchema),
   asyncHandler(RevenueReportController.getDailyRevenue),
 );
 
@@ -987,6 +1042,7 @@ router.get(
  */
 router.get(
   "/reports/transactions",
+  validate(transactionReportSchema),
   asyncHandler(RevenueReportController.getTransactions),
 );
 
@@ -1018,7 +1074,7 @@ router.get(
  *       200:
  *         description: CSV export generated
  */
-router.get("/reports/export", asyncHandler(AdminController.exportAuditLogs));
+router.get("/reports/export", validate(exportReportSchema), asyncHandler(AdminController.exportAuditLogs));
 
 // ── Security Management Routes ───────────────────────────────────────────────
 
@@ -1057,6 +1113,7 @@ router.get(
 );
 router.post(
   "/security/blocklist",
+  validate(addBlocklistRuleSchema),
   asyncHandler(AdminController.addBlocklistRule),
 );
 
@@ -1079,6 +1136,7 @@ router.post(
  */
 router.delete(
   "/security/blocklist/:id",
+  validate(removeBlocklistRuleSchema),
   asyncHandler(AdminController.removeBlocklistRule),
 );
 
@@ -1105,6 +1163,7 @@ router.delete(
  */
 router.post(
   "/security/allowlist",
+  validate(addAllowlistRuleSchema),
   asyncHandler(AdminController.addAdminAllowlistRule),
 );
 
@@ -1157,6 +1216,7 @@ router.get(
  */
 router.put(
   "/verifications/:id/approve",
+  validate(approveVerificationSchema),
   asyncHandler(VerificationController.approve),
 );
 
@@ -1247,6 +1307,7 @@ router.put(
  */
 router.post(
   "/webhooks/:deliveryId/retry",
+  validate(retryWebhookDeliverySchema),
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
     getEntityDetails: (req) => ({

@@ -1,6 +1,7 @@
 import { StorageService } from "../services/storage.service";
 import { Response } from "express";
 import { ExportService } from "../services/export.service";
+import { ExportJobModel } from "../models/export-job.model";
 import { ResponseUtil } from "../utils/response.utils";
 import { AuthenticatedRequest } from "../types/api.types";
 
@@ -50,6 +51,8 @@ export const ExportController = {
       job.storage_key,
       3600,
     );
+
+    await ExportJobModel.markDownloaded(jobId);
 
     return ResponseUtil.success(res, { downloadUrl }, "Download URL generated");
   },

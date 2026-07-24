@@ -174,4 +174,17 @@ export async function runMaintenanceTasks(): Promise<void> {
   } catch (error) {
     logger.error("Maintenance: error cleaning up offline queue", { error });
   }
+
+  // GDPR retention: delete data exports (S3 + DB) older than 30 days
+  try {
+    const { ExportService } = await import("../services/export.service");
+    const cleaned = await ExportService.cleanupExpiredExports(30);
+    if (cleaned > 0) {
+      logger.info("Maintenance: expired data exports cleaned up", {
+        count: cleaned,
+      });
+    }
+  } catch (error) {
+    logger.error("Maintenance: error cleaning up expired exports", { error });
+  }
 }

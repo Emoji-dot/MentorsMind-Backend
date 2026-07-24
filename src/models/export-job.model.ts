@@ -8,6 +8,7 @@ export interface ExportJob {
   file_path?: string | null; // Alias for storage_key used by download endpoint
   error_message: string | null;
   expires_at: Date | null;
+  downloaded_at: Date | null;
   metadata?: Record<string, any>;
   created_at: Date;
   updated_at: Date;
@@ -83,6 +84,21 @@ export const ExportJobModel = {
     `;
     const { rows } = await db.query(query, [userId]);
     return rows[0] || null;
+  },
+
+  async markDownloaded(id: string): Promise<void> {
+    await db.query(
+      `UPDATE export_jobs SET downloaded_at = COALESCE(downloaded_at, CURRENT_TIMESTAMP) WHERE id = $1;`,
+      [id],
+    );
+  },
+
+  async findExpiredOlderThan(days: number): Promise<ExportJob[]> {
+    const { rows } = await db.query(
+      `SELECT * FROM export_jobs WHERE created_at < NOW() - ($1::int * INTERVAL '1 day');`,
+      [days],
+    );
+    return rows;
   },
 
   async deleteOlderThan(days: number): Promise<number> {

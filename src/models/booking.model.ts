@@ -11,6 +11,7 @@ export interface BookingRecord {
   status: "pending" | "confirmed" | "completed" | "cancelled" | "rescheduled";
   amount: string;
   currency: string;
+  usd_equivalent: string | null;
   payment_status: "pending" | "paid" | "refunded" | "failed";
   stellar_tx_hash: string | null;
   transaction_id: string | null;
@@ -32,10 +33,11 @@ export const BookingModel = {
     notes?: string;
     amount: string;
     currency: string;
+    usdEquivalent?: string | null;
   }): Promise<BookingRecord> {
     const { rows } = await db.query(
-      `INSERT INTO bookings (mentee_id, mentor_id, scheduled_at, duration_minutes, topic, notes, amount, currency)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO bookings (mentee_id, mentor_id, scheduled_at, duration_minutes, topic, notes, amount, currency, usd_equivalent)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         data.menteeId,
@@ -46,6 +48,7 @@ export const BookingModel = {
         data.notes || null,
         data.amount,
         data.currency,
+        data.usdEquivalent ?? null,
       ],
     );
     return rows[0];

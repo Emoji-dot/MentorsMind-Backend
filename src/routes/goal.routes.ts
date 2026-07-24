@@ -1,6 +1,14 @@
 import { Router } from 'express';
 import { GoalController } from '../controllers/goal.controller';
 import { authenticate } from '../middleware/auth.middleware';
+import { validate } from '../middleware/validation.middleware';
+import {
+  createGoalSchema,
+  goalIdParamSchema,
+  updateGoalSchema,
+  updateGoalProgressSchema,
+  linkSessionSchema,
+} from '../validators/schemas/goal.schemas';
 
 const router = Router();
 
@@ -15,7 +23,7 @@ router.use(authenticate as any);
  *     tags: [Goals]
  *     security: [{ bearerAuth: [] }]
  */
-router.post('/', GoalController.create);
+router.post('/', validate(createGoalSchema), GoalController.create);
 
 /**
  * @swagger
@@ -34,7 +42,7 @@ router.get('/', GoalController.list);
  *     summary: Get specific goal
  *     tags: [Goals]
  */
-router.get('/:id', GoalController.get);
+router.get('/:id', validate(goalIdParamSchema), GoalController.get);
 
 /**
  * @swagger
@@ -43,7 +51,7 @@ router.get('/:id', GoalController.get);
  *     summary: Update goal title, description, or target_date
  *     tags: [Goals]
  */
-router.put('/:id', GoalController.update);
+router.put('/:id', validate(updateGoalSchema), GoalController.update);
 
 /**
  * @swagger
@@ -52,7 +60,7 @@ router.put('/:id', GoalController.update);
  *     summary: Delete goal
  *     tags: [Goals]
  */
-router.delete('/:id', GoalController.delete);
+router.delete('/:id', validate(goalIdParamSchema), GoalController.delete);
 
 /**
  * @swagger
@@ -62,7 +70,7 @@ router.delete('/:id', GoalController.delete);
  *     tags: [Goals]
  *     security: [{ bearerAuth: [] }]
  */
-router.post('/:id/progress', GoalController.updateProgress);
+router.post('/:id/progress', validate(updateGoalProgressSchema), GoalController.updateProgress);
 
 /**
  * @swagger
@@ -72,7 +80,7 @@ router.post('/:id/progress', GoalController.updateProgress);
  *     tags: [Goals]
  *     security: [{ bearerAuth: [] }]
  */
-router.get('/:id/progress', GoalController.getProgress);
+router.get('/:id/progress', validate(goalIdParamSchema), GoalController.getProgress);
 
 /**
  * @swagger
@@ -81,6 +89,6 @@ router.get('/:id/progress', GoalController.getProgress);
  *     summary: Link session (booking) to goal
  *     tags: [Goals]
  */
-router.post('/:id/link-session', GoalController.linkSession);
+router.post('/:id/link-session', validate(linkSessionSchema), GoalController.linkSession);
 
 export default router;

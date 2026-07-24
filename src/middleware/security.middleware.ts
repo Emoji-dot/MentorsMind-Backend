@@ -25,12 +25,23 @@ export const securityMiddleware = helmet({
 import { sanitizeObject, detectAndLogSqlInjection } from '../utils/sanitization.utils';
 
 export const sanitizeInput = (req: Request, _res: Response, next: NextFunction): void => {
+  const requestId = req.headers['x-request-id'] as string;
+
   if (req.body) {
     req.body = sanitizeObject(req.body);
-    // Optional: detect and log SQL injection on the entire body stringified
-    detectAndLogSqlInjection(JSON.stringify(req.body), 'body', req.headers['x-request-id'] as string);
+    detectAndLogSqlInjection(JSON.stringify(req.body), 'body', requestId);
   }
-  // req.query and req.params are read-only getters in Express 5
-  // sanitize body only; query/params are validated via Zod schemas
+
+  // req.query and req.params are read-only getters in Express 5 — they
+  // cannot be mutated in place, so we only run detection logging here.
+  // Rejection of malicious/malformed input happens via Zod schemas in
+  // the `validate()` middleware applied per-route.
+  if (req.query && Object.keys(req.query).length > 0) {
+    detectAndLogSqlInjection(JSON.stringify(req.query), 'query', requestId);
+  }
+  if (req.params && Object.keys(req.params).length > 0) {
+    detectAndLogSqlInjection(JSON.stringify(req.params), 'params', requestId);
+  }
+
   next();
 };

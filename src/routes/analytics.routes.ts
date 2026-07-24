@@ -2,6 +2,17 @@ import { Router } from "express";
 import { AnalyticsController } from "../controllers/analytics.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { requireRole as authorize } from "../middleware/rbac.middleware";
+import { validate } from "../middleware/validation.middleware";
+import {
+  pathAnalyticsSchema,
+  pathMilestonesSchema,
+  pathTrendsSchema,
+  pathBottlenecksSchema,
+  studentProfileSchema,
+  studentPathInsightsSchema,
+  studentPathComparisonSchema,
+  mentorDashboardSchema,
+} from "../validators/schemas/analytics.schemas";
 
 const router = Router();
 
@@ -17,6 +28,7 @@ router.use(authenticate);
 router.get(
   "/paths/:pathId",
   authorize("mentor", "admin"),
+  validate(pathAnalyticsSchema),
   AnalyticsController.getPathAnalytics,
 );
 
@@ -25,6 +37,7 @@ router.get(
 router.get(
   "/paths/:pathId/milestones",
   authorize("mentor", "admin"),
+  validate(pathMilestonesSchema),
   AnalyticsController.getMilestoneAnalytics,
 );
 
@@ -33,6 +46,7 @@ router.get(
 router.get(
   "/paths/:pathId/trends",
   authorize("mentor", "admin"),
+  validate(pathTrendsSchema),
   AnalyticsController.getTrendData,
 );
 
@@ -41,6 +55,7 @@ router.get(
 router.get(
   "/paths/:pathId/bottlenecks",
   authorize("mentor", "admin"),
+  validate(pathBottlenecksSchema),
   AnalyticsController.getBottlenecks,
 );
 
@@ -53,6 +68,7 @@ router.get(
 router.get(
   "/students/:studentId/profile",
   authorize("student", "mentor", "admin"),
+  validate(studentProfileSchema),
   AnalyticsController.getStudentProfile,
 );
 
@@ -61,6 +77,7 @@ router.get(
 router.get(
   "/students/:studentId/paths/:pathId/insights",
   authorize("student", "mentor", "admin"),
+  validate(studentPathInsightsSchema),
   AnalyticsController.getPredictiveInsights,
 );
 
@@ -69,6 +86,7 @@ router.get(
 router.get(
   "/students/:studentId/paths/:pathId/comparison",
   authorize("student", "mentor", "admin"),
+  validate(studentPathComparisonSchema),
   AnalyticsController.getComparisonAnalytics,
 );
 
@@ -81,6 +99,7 @@ router.get(
 router.get(
   "/mentors/:mentorId/dashboard",
   authorize("mentor", "admin"),
+  validate(mentorDashboardSchema),
   AnalyticsController.getMentorDashboard,
 );
 

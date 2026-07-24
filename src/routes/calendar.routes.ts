@@ -3,6 +3,11 @@ import rateLimit from "express-rate-limit";
 import { CalendarController } from "../controllers/calendar.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
+import { validate } from "../middleware/validation.middleware";
+import {
+  icalTokenParamSchema,
+  googleOAuthCallbackSchema,
+} from "../validators/schemas/calendar.schemas";
 
 const router = Router();
 
@@ -24,6 +29,7 @@ const icalFeedLimiter = rateLimit({
 router.get(
   "/ical/:token",
   icalFeedLimiter,
+  validate(icalTokenParamSchema),
   asyncHandler(CalendarController.getICalFeed),
 );
 
@@ -45,7 +51,11 @@ router.get(
   authenticate,
   asyncHandler(CalendarController.googleConnect),
 );
-router.get("/google/callback", asyncHandler(CalendarController.googleCallback));
+router.get(
+  "/google/callback",
+  validate(googleOAuthCallbackSchema),
+  asyncHandler(CalendarController.googleCallback),
+);
 router.delete(
   "/google/disconnect",
   authenticate,

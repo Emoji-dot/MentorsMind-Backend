@@ -5,6 +5,11 @@ import {
 } from "../middleware/auth.middleware";
 import { LoyaltyService } from "../services/loyalty.service";
 import { asyncHandler } from "../utils/asyncHandler.utils";
+import { validate } from "../middleware/validation.middleware";
+import {
+  earnTokensSchema,
+  redeemTokensSchema,
+} from "../validators/schemas/loyalty.schemas";
 
 const router = Router();
 
@@ -110,6 +115,7 @@ router.get(
 router.post(
   "/earn",
   authenticate,
+  validate(earnTokensSchema),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { action } = req.body;
     const account = await LoyaltyService.earnTokens(req.user!.userId, action);
@@ -141,6 +147,7 @@ router.post(
 router.post(
   "/redeem",
   authenticate,
+  validate(redeemTokensSchema),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { tokens } = req.body;
     const account = await LoyaltyService.redeemTokens(

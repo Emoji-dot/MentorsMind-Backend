@@ -2,6 +2,18 @@ import { Router } from "express";
 import { SessionMilestoneController } from "../controllers/session-milestone.controller";
 import { authenticate as authenticateToken } from "../middleware/auth.middleware";
 import { apiLimiter as rateLimitMiddleware } from "../middleware/rate-limit.middleware";
+import { validate } from "../middleware/validation.middleware";
+import {
+  bookingIdParamSchema,
+  milestoneIdParamSchema,
+  mentorIdParamSchema,
+  mentorStudentParamSchema,
+  linkSessionToMilestoneSchema,
+  updateSessionMappingSchema,
+  createSessionOutcomeSchema,
+  createContextualBookingSchema,
+  updateHybridModeConfigSchema,
+} from "../validators/schemas/session-milestone.schemas";
 
 const router = Router();
 
@@ -180,6 +192,7 @@ router.use(rateLimitMiddleware);
  */
 router.post(
   "/sessions/:bookingId/milestone",
+  validate(linkSessionToMilestoneSchema),
   SessionMilestoneController.linkSessionToMilestone,
 );
 
@@ -206,6 +219,7 @@ router.post(
  */
 router.delete(
   "/sessions/:bookingId/milestone",
+  validate(bookingIdParamSchema),
   SessionMilestoneController.unlinkSessionFromMilestone,
 );
 
@@ -249,6 +263,7 @@ router.delete(
  */
 router.patch(
   "/sessions/:bookingId/milestone",
+  validate(updateSessionMappingSchema),
   SessionMilestoneController.updateSessionMapping,
 );
 
@@ -280,6 +295,7 @@ router.patch(
  */
 router.get(
   "/sessions/:bookingId/context",
+  validate(bookingIdParamSchema),
   SessionMilestoneController.getSessionContext,
 );
 
@@ -313,6 +329,7 @@ router.get(
  */
 router.get(
   "/milestones/:milestoneId/sessions/available",
+  validate(milestoneIdParamSchema),
   SessionMilestoneController.getAvailableSessionsForMilestone,
 );
 
@@ -351,6 +368,7 @@ router.get(
  */
 router.get(
   "/milestones/:milestoneId/sessions",
+  validate(milestoneIdParamSchema),
   SessionMilestoneController.getSessionsForMilestone,
 );
 
@@ -422,6 +440,7 @@ router.get(
  */
 router.post(
   "/bookings/contextual",
+  validate(createContextualBookingSchema),
   SessionMilestoneController.createContextualBooking,
 );
 
@@ -461,6 +480,7 @@ router.post(
  */
 router.get(
   "/bookings/context/:mentorId/:studentId",
+  validate(mentorStudentParamSchema),
   SessionMilestoneController.getLearningPathContext,
 );
 
@@ -500,6 +520,7 @@ router.get(
  */
 router.get(
   "/bookings/recommendations/:mentorId/:studentId",
+  validate(mentorStudentParamSchema),
   SessionMilestoneController.getBookingRecommendations,
 );
 
@@ -546,6 +567,7 @@ router.get(
  */
 router.get(
   "/bookings/options/:mentorId/:studentId",
+  validate(mentorStudentParamSchema),
   SessionMilestoneController.getBookingOptions,
 );
 
@@ -614,6 +636,7 @@ router.get(
  */
 router.post(
   "/sessions/:bookingId/outcome",
+  validate(createSessionOutcomeSchema),
   SessionMilestoneController.createSessionOutcome,
 );
 
@@ -645,6 +668,7 @@ router.post(
  */
 router.get(
   "/sessions/:bookingId/outcome",
+  validate(bookingIdParamSchema),
   SessionMilestoneController.getSessionOutcome,
 );
 
@@ -676,6 +700,7 @@ router.get(
  */
 router.get(
   "/sessions/:bookingId/impact",
+  validate(bookingIdParamSchema),
   SessionMilestoneController.analyzeSessionImpact,
 );
 
@@ -720,6 +745,7 @@ router.get(
  */
 router.get(
   "/mentors/:mentorId/hybrid-config",
+  validate(mentorIdParamSchema),
   SessionMilestoneController.getHybridModeConfig,
 );
 
@@ -767,6 +793,7 @@ router.get(
  */
 router.patch(
   "/mentors/:mentorId/hybrid-config",
+  validate(updateHybridModeConfigSchema),
   SessionMilestoneController.updateHybridModeConfig,
 );
 

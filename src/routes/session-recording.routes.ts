@@ -6,6 +6,20 @@ import {
   requireRecordingParticipant,
 } from '../middleware/session-participant.middleware';
 import { asyncHandler } from '../utils/asyncHandler.utils';
+import { validate } from '../middleware/validation.middleware';
+import {
+  startRecordingSchema,
+  recordingIdParamSchema,
+  uploadRecordingSchema,
+  completeRecordingSchema,
+  updateConsentSchema,
+  generatePlaybackUrlSchema,
+  startTranscriptionSchema,
+  searchTranscriptionsSchema,
+  createBookmarkSchema,
+  bookmarkIdParamSchema,
+  updateBookmarkSchema,
+} from '../validators/schemas/session-recording.schemas';
 
 const router = Router();
 
@@ -164,11 +178,13 @@ router.get(
 
 router.put(
   '/bookmarks/:bookmarkId',
+  validate(updateBookmarkSchema),
   asyncHandler(SessionRecordingController.updateBookmark),
 );
 
 router.delete(
   '/bookmarks/:bookmarkId',
+  validate(bookmarkIdParamSchema),
   asyncHandler(SessionRecordingController.deleteBookmark),
 );
 

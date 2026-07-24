@@ -33,6 +33,7 @@ const IS_TEST = env.NODE_ENV === "test";
 const LOG_LEVEL = env.LOG_LEVEL;
 
 import { traceStore } from "../middleware/tracing.middleware";
+import { trace } from "@opentelemetry/api";
 
 /**
  * Stable identifier for this process/pod.
@@ -132,13 +133,21 @@ export const logger = wrapStructuredLogger(
   pino({
     level: IS_TEST ? "silent" : LOG_LEVEL,
     redact: { paths: REDACT_PATHS, censor: "[REDACTED]" },
-    base: { instanceId: INSTANCE_ID },
+    base: { instanceId: INSTANCE_ID, service: "mentorminds-backend" },
     timestamp: pino.stdTimeFunctions.isoTime,
     mixin() {
       const context = traceStore.getStore();
-      return context
+      const fields: StructuredLogPayload = context
         ? { requestId: context.requestId, correlationId: context.correlationId }
         : {};
+
+      const spanContext = trace.getActiveSpan()?.spanContext();
+      if (spanContext) {
+        fields.traceId = spanContext.traceId;
+        fields.spanId = spanContext.spanId;
+      }
+
+      return fields;
     },
     ...(IS_PRODUCTION
       ? {}

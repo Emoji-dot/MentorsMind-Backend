@@ -27,6 +27,7 @@ import emailWebhookRoutes from "./emailWebhook.routes";
 import sessionRecordingRoutes from "./session-recording.routes";
 import subscriptionRoutes from "./subscriptions.routes";
 import taxRoutes from "./tax.routes";
+import oracleRoutes from "./oracle.routes";
 import { BookingsService } from "../services/bookings.service";
 import { notificationCleanupService } from "../services/notification-cleanup.service";
 import {
@@ -92,6 +93,7 @@ router.use("/calendar/sync", calendarSyncRoutes);
 router.use("/developer", developerRoutes);
 router.use("/subscriptions", subscriptionRoutes);
 router.use("/tax", taxRoutes);
+router.use("/oracle", oracleRoutes);
 router.use("/", exportRoutes);
 
 // JWKS public endpoint — no auth required

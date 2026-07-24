@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../config/env";
@@ -38,6 +39,7 @@ export const StorageService = {
       Body: body,
       ContentType: contentType,
       Metadata: metadata,
+      ServerSideEncryption: "AES256",
     });
 
     await s3Client.send(command);
@@ -71,6 +73,18 @@ export const StorageService = {
       Key: key,
     });
 
+    await s3Client.send(command);
+  },
+
+  /**
+   * Delete multiple objects from S3 in a single batch request (max 1000 keys)
+   */
+  async deleteFiles(keys: string[]): Promise<void> {
+    if (keys.length === 0) return;
+    const command = new DeleteObjectsCommand({
+      Bucket: BUCKET,
+      Delete: { Objects: keys.map((Key) => ({ Key })) },
+    });
     await s3Client.send(command);
   },
 

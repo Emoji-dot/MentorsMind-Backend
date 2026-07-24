@@ -5,7 +5,7 @@ import { authenticate } from "../middleware/auth.middleware";
 import { requireAdmin } from "../middleware/admin-auth.middleware";
 import { validate } from "../middleware/validation.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
-import { bulkPaymentsSchema } from "../validators/schemas/bulk.schemas";
+import { bulkPaymentsSchema, bulkJobIdParamSchema } from "../validators/schemas/bulk.schemas";
 
 const router = Router();
 const upload = multer({
@@ -27,6 +27,10 @@ router.post(
   asyncHandler(BulkController.processPayments),
 );
 
-router.get("/jobs/:jobId", asyncHandler(BulkController.getJobStatus));
+router.get(
+  "/jobs/:jobId",
+  validate(bulkJobIdParamSchema),
+  asyncHandler(BulkController.getJobStatus),
+);
 
 export default router;

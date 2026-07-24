@@ -12,6 +12,15 @@ import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.middleware';
 import { OfflineController } from '../controllers/offline.controller';
 import { syncCursorMiddleware } from '../middleware/sync-cursor.middleware';
+import { validate } from '../middleware/validation.middleware';
+import {
+  getSnapshotSchema,
+  getDeltaSchema,
+  getQueueSchema,
+  enqueueActionSchema,
+  syncSchema,
+  resolveConflictSchema,
+} from '../validators/schemas/offline.schemas';
 
 const router = Router();
 
@@ -79,7 +88,12 @@ router.use(syncCursorMiddleware);
  *       429:
  *         description: Too many requests
  */
-router.get('/snapshot', snapshotLimiter, OfflineController.getSnapshot);
+router.get(
+  '/snapshot',
+  snapshotLimiter,
+  validate(getSnapshotSchema),
+  OfflineController.getSnapshot,
+);
 
 /**
  * @swagger
@@ -125,7 +139,7 @@ router.get('/sync-state', OfflineController.getSyncState);
  *       400:
  *         description: Invalid parameters
  */
-router.get('/delta', OfflineController.getDelta);
+router.get('/delta', validate(getDeltaSchema), OfflineController.getDelta);
 
 /**
  * @swagger
@@ -171,7 +185,7 @@ router.get('/queue/status', OfflineController.getQueueStatus);
  *       200:
  *         description: List of queued actions
  */
-router.get('/queue', OfflineController.getQueue);
+router.get('/queue', validate(getQueueSchema), OfflineController.getQueue);
 
 /**
  * @swagger
@@ -214,7 +228,7 @@ router.get('/queue', OfflineController.getQueue);
  *       400:
  *         description: Invalid request
  */
-router.post('/queue', OfflineController.enqueueAction);
+router.post('/queue', validate(enqueueActionSchema), OfflineController.enqueueAction);
 
 /**
  * @swagger
@@ -273,7 +287,7 @@ router.post('/queue', OfflineController.enqueueAction);
  *       429:
  *         description: Too many sync requests
  */
-router.post('/sync', syncLimiter, OfflineController.sync);
+router.post('/sync', syncLimiter, validate(syncSchema), OfflineController.sync);
 
 /**
  * @swagger
@@ -318,6 +332,10 @@ router.post('/sync', syncLimiter, OfflineController.sync);
  *       404:
  *         description: Action not found
  */
-router.post('/conflicts/:id/resolve', OfflineController.resolveConflict);
+router.post(
+  '/conflicts/:id/resolve',
+  validate(resolveConflictSchema),
+  OfflineController.resolveConflict,
+);
 
 export default router;

@@ -1,3 +1,10 @@
+import { initTracing } from "./config/tracing";
+
+// OpenTelemetry must be initialised before any other imports so that
+// auto-instrumentations (http, express, pg, ioredis) can patch modules
+// at load time, and so traceparent propagation works on outbound calls.
+initTracing();
+
 import * as Sentry from "@sentry/node";
 import { nodeProfilingIntegration } from "@sentry/profiling-node";
 

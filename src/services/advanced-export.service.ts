@@ -1,5 +1,6 @@
 import { logger } from "../utils/logger";
 import archiver from "archiver";
+import { StorageService } from "./storage.service";
 
 export interface ExportConfig {
   title: string;
@@ -83,18 +84,21 @@ export const AdvancedExportService = {
   },
 
   /**
-   * Generate download link for large files
+   * Upload an export file to S3 and generate a presigned download link.
    */
   async generateDownloadLink(
     fileBuffer: Buffer,
     filename: string,
-    expiresIn: number = 3600
+    expiresIn: number = 3600,
+    userId: string = 'anonymous',
   ): Promise<string> {
     try {
-      // In a real implementation, this would upload to S3 and return a presigned URL
-      // For now, return a placeholder
-      const downloadId = Math.random().toString(36).substring(7);
-      return `/api/v1/analytics/download/${downloadId}`;
+      const key = `exports/${userId}/${Date.now()}/${filename}`;
+      await StorageService.uploadFile(key, fileBuffer, 'application/octet-stream', {
+        userId,
+        filename,
+      });
+      return await StorageService.generatePresignedUrl(key, expiresIn);
     } catch (error) {
       logger.error('Failed to generate download link', { error });
       throw error;
