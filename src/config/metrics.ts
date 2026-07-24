@@ -117,6 +117,12 @@ export const dbPoolExhaustionAlertsTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
+export const dbCircuitBreakerOpenTotal = new Counter<string>({
+  name: "db_circuit_breaker_open_total",
+  help: "Number of times the database circuit breaker was opened",
+  registers: [metricsRegistry],
+});
+
 // ─── Redis ────────────────────────────────────────────────────────────────────
 
 export const redisCallDurationSeconds = new Histogram<string>({
@@ -158,5 +164,14 @@ export const stellarApiCallsTotal = new Counter<string>({
   name: "stellar_api_calls_total",
   help: "Total Stellar Horizon API calls, partitioned by operation, network, and status",
   labelNames: ["operation", "network", "status"],
+  registers: [metricsRegistry],
+});
+
+// ─── Rate Limiting ────────────────────────────────────────────────────────────
+
+export const rateLimitExceededTotal = new Counter<string>({
+  name: "rate_limit_exceeded_total",
+  help: "Total number of rate limit exceeded events",
+  labelNames: ["tier", "endpoint_category"],
   registers: [metricsRegistry],
 });

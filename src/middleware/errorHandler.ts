@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import * as Sentry from "@sentry/node";
 import { logger } from "../utils/logger.utils";
 import { traceStore } from "./tracing.middleware";
+import { CircuitBreakerError } from "../services/database.service";
 
 export interface AppError extends Error {
   statusCode?: number;
@@ -9,12 +10,25 @@ export interface AppError extends Error {
 }
 
 export const errorHandler = (
-  err: AppError,
+  err: AppError | CircuitBreakerError,
   req: Request,
   res: Response,
   _next: NextFunction,
 ) => {
-  const statusCode = err.statusCode || 500;
+  if (err instanceof CircuitBreakerError) {
+    const retryAfter = (err as CircuitBreakerError).retryAfterSeconds;
+    res.setHeader("Retry-After", String(retryAfter));
+    res.status(503).json({
+      status: "error",
+      error: "Service temporarily unavailable",
+      message: err.message,
+      retryAfter,
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const statusCode = (err as AppError).statusCode || 500;
   const message = err.message || "Internal Server Error";
 
   const context = traceStore.getStore();

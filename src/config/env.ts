@@ -42,6 +42,7 @@ const envSchema = z.object({
   DB_CONNECTION_TIMEOUT_MS: z.string().regex(/^\d+$/).default("2000"),
   DB_STATEMENT_TIMEOUT_MS: z.string().regex(/^\d+$/).default("10000"),
   DB_POOL_EXHAUSTION_THRESHOLD: z.string().regex(/^\d+$/).default("90"),
+  DB_CIRCUIT_BREAKER_ENABLED: z.enum(["true", "false"]).default("true"),
 
   // JWT — supports dual secrets for zero-downtime rotation
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
