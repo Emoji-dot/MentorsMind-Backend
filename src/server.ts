@@ -89,6 +89,7 @@ import("./services/jwks.service").then(({ JwksService }) =>
 
 // Log effective retry configuration for each active queue
 import { defaultJobOptions, QUEUE_NAMES } from "./config/queue";
+import { subscribeToFeatureFlagUpdates } from "./services/feature-flag.service";
 const queueRetryOverrides: Record<
   string,
   { attempts: number; backoff: unknown }
@@ -109,6 +110,12 @@ Object.values(QUEUE_NAMES).forEach((name) => {
 // Start background job workers and scheduler
 startScheduler().catch((err) => {
   logger.error("Failed to start job scheduler", { error: err });
+});
+
+// Subscribe to feature-flag update events so this instance's in-memory
+// flag cache invalidates within ~2s of any instance changing a flag
+subscribeToFeatureFlagUpdates().catch((err) => {
+  logger.error("Failed to subscribe to feature flag updates", { error: err });
 });
 
 // Initialize collaboration sockets
