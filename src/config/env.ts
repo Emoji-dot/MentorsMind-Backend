@@ -239,6 +239,12 @@ const envSchema = z.object({
   RETENTION_AUDIT_LOGS_YEARS: z.string().regex(/^\d+$/).default("7"),
   RETENTION_PAYMENTS_YEARS: z.string().regex(/^\d+$/).default("7"),
   RETENTION_SESSIONS_YEARS: z.string().regex(/^\d+$/).default("2"),
+
+  // API Documentation Portal (issue #784)
+  // Enables the /api/v1/sandbox/* routes and adds a "Sandbox" server option
+  // to the Swagger UI so third-party developers can try endpoints against
+  // fixture data with no real side effects.
+  SANDBOX_MODE: z.enum(["true", "false"]).default("false"),
 });
 
 // ---------------------------------------------------------------------------

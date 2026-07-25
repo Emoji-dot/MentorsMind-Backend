@@ -31,6 +31,12 @@
  *     stellar_api_call_duration_seconds histogram  operation, network
  *     stellar_api_calls_total          counter    operation, network, status
  *
+ *   Notifications
+ *     notification_delivery_attempts_total counter channel, status
+ *
+ *   Webhooks
+ *     webhook_circuit_breaker_state    gauge      url_hash
+ *
  * Default Node.js metrics (GC, heap, event loop lag) are collected
  * automatically via `collectDefaultMetrics()`.
  */
@@ -173,5 +179,23 @@ export const rateLimitExceededTotal = new Counter<string>({
   name: "rate_limit_exceeded_total",
   help: "Total number of rate limit exceeded events",
   labelNames: ["tier", "endpoint_category"],
+  registers: [metricsRegistry],
+});
+
+// ─── Notifications ───────────────────────────────────────────────────────────
+
+export const notificationDeliveryAttemptsTotal = new Counter<string>({
+  name: "notification_delivery_attempts_total",
+  help: "Total notification delivery attempts, partitioned by channel and outcome (sent, failed, dead_letter)",
+  labelNames: ["channel", "status"],
+  registers: [metricsRegistry],
+});
+
+// ─── Webhooks ─────────────────────────────────────────────────────────────────
+
+export const webhookCircuitBreakerState = new Gauge<string>({
+  name: "webhook_circuit_breaker_state",
+  help: "Webhook per-endpoint circuit breaker state (0=closed, 1=open, 2=half-open)",
+  labelNames: ["url_hash"],
   registers: [metricsRegistry],
 });
