@@ -1,5 +1,6 @@
 import { Router } from "express";
 import backupRoutes from "./admin/backup.routes";
+import databasePerformanceRoutes from "./admin/database-performance.routes";
 import { AdminController } from "../controllers/admin.controller";
 import { AdvancedAnalyticsController } from "../controllers/advanced-analytics.controller";
 import { VerificationController } from "../controllers/verification.controller";
@@ -1338,5 +1339,6 @@ router.get(
 );
 
 router.use("/backup", backupRoutes);
+router.use("/database", databasePerformanceRoutes);
 
 export default router;

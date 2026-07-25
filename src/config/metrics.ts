@@ -167,6 +167,26 @@ export const stellarApiCallsTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
+// ─── Database Query Performance ──────────────────────────────────────────────
+
+/**
+ * Per-query-type duration histogram in milliseconds (issue #742).
+ *
+ * Label:
+ *   query_type  — coarse category of the SQL statement:
+ *                 select | insert | update | delete | other
+ *
+ * Buckets cover the range from sub-millisecond fast-path reads up to
+ * multi-second analytical queries.
+ */
+export const dbQueryDurationMs = new Histogram<string>({
+  name: "db_query_duration_ms",
+  help: "PostgreSQL query duration in milliseconds, labelled by query type",
+  labelNames: ["query_type"],
+  buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000],
+  registers: [metricsRegistry],
+});
+
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
 
 export const rateLimitExceededTotal = new Counter<string>({
