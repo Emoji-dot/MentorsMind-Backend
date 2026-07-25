@@ -73,6 +73,14 @@ const envSchema = z.object({
   CORS_ORIGIN: z
     .string()
     .default("http://localhost:3000,http://localhost:5173"),
+  /**
+   * Preflight cache duration in seconds (sent as Access-Control-Max-Age).
+   * Default: 86400 (24 h). Set to 0 to disable caching during development.
+   */
+  CORS_MAX_AGE: z
+    .string()
+    .regex(/^\d+$/, "CORS_MAX_AGE must be a non-negative integer")
+    .default("86400"),
 
   // Rate Limiting
   RATE_LIMIT_WINDOW_MS: z.string().regex(/^\d+$/).default("900000"),
