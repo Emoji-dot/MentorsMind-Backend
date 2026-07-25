@@ -19,6 +19,7 @@ import {
 } from "../validators/schemas/verification.schemas";
 import { ConsentController } from "../controllers/consent.controller";
 import { TraceController } from "../controllers/trace.controller";
+import { EscrowController } from "../controllers/escrow.controller";
 import { getTraceSchema } from "../validators/schemas/trace.schemas";
 import {
   listAdminUsersSchema,
@@ -522,6 +523,20 @@ router.get("/payments", validate(listAdminPaymentsSchema), asyncHandler(AdminCon
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.get("/disputes", validate(listAdminDisputesSchema), asyncHandler(AdminController.listDisputes));
+
+/**
+ * @swagger
+ * /admin/escrow/pending-releases:
+ *   get:
+ *     summary: List pending escrow auto-releases
+ *     tags: [Admin, Escrow]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of pending auto-releases
+ */
+router.get("/escrow/pending-releases", asyncHandler(EscrowController.getPendingReleases));
 
 /**
  * @swagger

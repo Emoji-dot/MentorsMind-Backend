@@ -35,6 +35,7 @@ import { initializeGraphQL } from "./graphql/server";
 import { stellarMonitorJob } from "./jobs/stellarMonitor.job";
 import backupJob from "./jobs/backup.job";
 import keyRotationJob from "./jobs/keyRotation.job";
+import { runReEncryptionJob } from "./jobs/re-encrypt-pii.job";
 import {
   emailWorker,
   paymentWorker,
@@ -50,6 +51,8 @@ import {
   transcriptionWorker,
   startScheduler,
   stopScheduler,
+  startRetentionEnforcementWorker,
+  stopRetentionEnforcementWorker,
 } from "./workers";
 import { initializeEmailTemplates } from "./services/template-initializer.service";
 import { logger } from "./utils/logger.utils";
@@ -103,6 +106,9 @@ import("./services/jwks.service").then(({ JwksService }) =>
 
 // Initialize key rotation jobs
 keyRotationJob.initialize();
+runReEncryptionJob().catch(err => {
+  logger.error("Failed to run Google Calendar re-encryption job", { error: err });
+});
 
 // Log effective retry configuration for each active queue
 import { defaultJobOptions, QUEUE_NAMES } from "./config/queue";
@@ -127,6 +133,7 @@ Object.values(QUEUE_NAMES).forEach((name) => {
 startScheduler().catch((err) => {
   logger.error("Failed to start job scheduler", { error: err });
 });
+startRetentionEnforcementWorker();
 
 // Initialize collaboration sockets
 initializeCollaborationSocket(server);
@@ -192,6 +199,7 @@ async function shutdown(signal: string) {
     webhookDeliveryWorker.close(),
     transcriptionWorker.close(),
     stopScheduler(),
+    stopRetentionEnforcementWorker(),
     Promise.resolve(stopPoolMonitor()),
   ]);
   server.close(() => {
