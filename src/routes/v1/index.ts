@@ -26,6 +26,7 @@ import walletRoutes from "../wallets.routes";
 import consentRoutes from "../consent.routes";
 import complianceRoutes from "../compliance.routes";
 import bulkRoutes from "../bulk.routes";
+import adminBulkRoutes from "../admin-bulk.routes";
 import integrationsRoutes from "../integrations.routes";
 import notesRoutes from "../notes.routes";
 import deepLinkRoutes from "../deepLink.routes";
@@ -74,6 +75,7 @@ router.use("/bulk", bulkRoutes);
 // Apply IP whitelisting to all admin routes
 router.use("/admin", adminAllowlistMiddleware);
 router.use("/admin", adminRoutes);
+router.use("/admin/bulk", adminBulkRoutes);
 router.use("/admin/moderation", moderationRoutes);
 
 router.use("/bookings", bookingsRoutes);

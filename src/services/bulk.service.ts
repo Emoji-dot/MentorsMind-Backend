@@ -7,6 +7,9 @@ import { PaymentsService } from "./payments.service";
 import { createError } from "../middleware/errorHandler";
 import { emailSchema } from "../validators/schemas/common.schemas";
 import { z } from "zod";
+import { QUEUE_PRIORITIES } from "../config/queue";
+import { redis } from "../config/redis";
+import { SocketService } from "./socket.service";
 
 export interface BulkRowResult {
   index: number;
@@ -160,7 +163,7 @@ export const BulkService = {
       jobType: "users_import",
       requestedBy,
       payload: { users: mapped },
-    });
+    }, { priority: QUEUE_PRIORITIES.BULK });
 
     return job.id;
   },
@@ -186,7 +189,7 @@ export const BulkService = {
       jobType: "payments_process",
       requestedBy,
       payload: { payments: validation.records },
-    });
+    }, { priority: QUEUE_PRIORITIES.BULK });
 
     return job.id;
   },
@@ -204,11 +207,38 @@ export const BulkService = {
     jobId: string,
     jobType: "users_import" | "payments_process",
     payload: { users?: BulkImportUserRow[]; payments?: BulkPaymentRow[] },
+    requestedBy?: string
   ): Promise<void> {
     await BulkJobModel.updateStatus(jobId, "processing");
+    if (!requestedBy) {
+      const job = await BulkJobModel.findById(jobId);
+      requestedBy = job?.requested_by;
+    }
     const results: BulkRowResult[] = [];
     let successCount = 0;
     let failureCount = 0;
+
+    const totalItems = (jobType === "users_import" ? payload.users?.length : payload.payments?.length) || 0;
+
+    const trackProgress = async (currentIdx: number) => {
+      if (totalItems === 0) return;
+      const processed = currentIdx + 1;
+      const progress = Math.floor((processed / totalItems) * 100);
+      const prevProgress = Math.floor((currentIdx / totalItems) * 100);
+      
+      if (progress > prevProgress || processed === 1) {
+        const state = { total: totalItems, processed, failed: failureCount, status: "processing" };
+        await redis.set(`bulk:${jobId}:progress`, JSON.stringify(state), "EX", 3600);
+      }
+      if (progress % 5 === 0 && (progress > prevProgress || processed === 1)) {
+        const eventData = { jobId, progress, processed, total: totalItems, failed: failureCount, status: "processing" };
+        if (requestedBy) {
+          SocketService.emitToUser(requestedBy, "bulk:progress", eventData);
+        } else {
+          SocketService.emitToAll("bulk:progress", eventData);
+        }
+      }
+    };
 
     try {
       if (jobType === "users_import" && payload.users) {
@@ -246,6 +276,7 @@ export const BulkService = {
               error: error instanceof Error ? error.message : String(error),
             });
           }
+          await trackProgress(index);
         }
       }
 
@@ -274,17 +305,36 @@ export const BulkService = {
               error: error instanceof Error ? error.message : String(error),
             });
           }
+          await trackProgress(index);
         }
       }
 
+      const state = { total: totalItems, processed: successCount + failureCount, failed: failureCount, status: "completed" };
+      await redis.set(`bulk:${jobId}:progress`, JSON.stringify(state), "EX", 3600);
+      const eventData = { jobId, progress: 100, status: "completed" };
+      if (requestedBy) {
+        SocketService.emitToUser(requestedBy, "bulk:progress", eventData);
+      } else {
+        SocketService.emitToAll("bulk:progress", eventData);
+      }
       await BulkJobModel.updateStatus(jobId, "completed", {
         successCount,
         failureCount,
         resultReport: { results },
       });
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const state = { total: totalItems, processed: successCount + failureCount, failed: failureCount, status: "failed", error: errorMessage };
+      await redis.set(`bulk:${jobId}:progress`, JSON.stringify(state), "EX", 3600);
+      const eventData = { jobId, status: "failed", error: errorMessage };
+      if (requestedBy) {
+        SocketService.emitToUser(requestedBy, "bulk:progress", eventData);
+      } else {
+        SocketService.emitToAll("bulk:progress", eventData);
+      }
+
       await BulkJobModel.updateStatus(jobId, "failed", {
-        errorMessage: error instanceof Error ? error.message : String(error),
+        errorMessage,
         resultReport: { results },
         successCount,
         failureCount,

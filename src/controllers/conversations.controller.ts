@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../types/api.types';
 import { MessagingService } from '../services/messaging.service';
 import { AttachmentService } from '../services/attachment.service';
 import { ResponseUtil } from '../utils/response.utils';
+import { PaginationUtil } from '../utils/pagination.utils';
 
 export const ConversationsController = {
   /**
@@ -55,6 +56,14 @@ export const ConversationsController = {
     const { id } = req.params as Record<string, string>;
     const limit = Math.min(100, parseInt(req.query.limit as string) || 50);
     const cursor = req.query.cursor as string | undefined;
+
+    if (cursor) {
+      const decoded = PaginationUtil.decodeCursor(cursor);
+      if (!decoded) {
+        ResponseUtil.error(res, 'Invalid cursor format', 400);
+        return;
+      }
+    }
 
     const result = await MessagingService.getMessages(id, userId, limit, cursor);
 
@@ -128,6 +137,30 @@ export const ConversationsController = {
     }
 
     const count = await MessagingService.markAsRead(id, userId);
+    ResponseUtil.success(res, { markedRead: count }, 'Messages marked as read');
+  }
+
+  /**
+   * POST /api/v1/conversations/:id/messages/read
+   * Batch mark specific messages as read.
+   */
+  async batchMarkAsRead(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const userId = req.user!.id;
+    const { id } = req.params as Record<string, string>;
+    const { messageIds } = req.body;
+
+    if (!Array.isArray(messageIds) || messageIds.length === 0) {
+      ResponseUtil.error(res, 'messageIds must be a non-empty array', 400);
+      return;
+    }
+
+    const conv = await MessagingService.getConversation(id, userId);
+    if (!conv) {
+      ResponseUtil.notFound(res, 'Conversation not found');
+      return;
+    }
+
+    const count = await MessagingService.batchMarkAsRead(id, userId, messageIds);
     ResponseUtil.success(res, { markedRead: count }, 'Messages marked as read');
   },
 

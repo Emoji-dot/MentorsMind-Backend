@@ -12,10 +12,10 @@ import {
 const router = Router();
 
 // Rate limiter for the public (unauthenticated) iCal feed endpoint.
-// 10 requests per minute per IP prevents brute-forcing the token space
+// 10 requests per hour per IP prevents brute-forcing the token space
 // while still accommodating legitimate calendar clients that poll frequently.
 const icalFeedLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
+  windowMs: 60 * 60 * 1000, // 1 hour
   max: 10,
   message: {
     success: false,

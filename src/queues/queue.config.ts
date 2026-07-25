@@ -8,6 +8,7 @@ export {
   QUEUE_NAMES,
   CONCURRENCY,
   JOB_RATE_LIMITS,
+  QUEUE_PRIORITIES,
   JobConfig,
   JobType,
   JobBackoffConfig,
