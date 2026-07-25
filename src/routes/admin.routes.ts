@@ -20,6 +20,7 @@ import {
 import { ConsentController } from "../controllers/consent.controller";
 import { TraceController } from "../controllers/trace.controller";
 import { EscrowController } from "../controllers/escrow.controller";
+import { BackgroundCheckController } from "../controllers/background-check.controller";
 import { getTraceSchema } from "../validators/schemas/trace.schemas";
 import {
   listAdminUsersSchema,
@@ -55,6 +56,11 @@ const router = Router();
 router.use(authenticate);
 router.use(requireAdmin);
 // adminAllowlistMiddleware is now applied globally in v1/index.ts for /admin/*
+
+router.post(
+  "/background-checks/webhook",
+  asyncHandler(BackgroundCheckController.handleWebhook),
+);
 
 /**
  * @swagger

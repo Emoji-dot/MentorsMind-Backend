@@ -133,6 +133,15 @@ export const redisCallDurationSeconds = new Histogram<string>({
   registers: [metricsRegistry],
 });
 
+// ─── Chatbot ─────────────────────────────────────────────────────────────────
+
+export const chatbotMessagesTotal = new Counter<string>({
+  name: "chatbot_messages_total",
+  help: "Total chatbot messages, partitioned by intent and escalation status",
+  labelNames: ["intent", "escalated"],
+  registers: [metricsRegistry],
+});
+
 // ─── Queue / BullMQ ──────────────────────────────────────────────────────────
 
 export const queueJobDurationSeconds = new Histogram<string>({
