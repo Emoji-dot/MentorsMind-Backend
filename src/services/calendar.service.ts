@@ -304,10 +304,17 @@ export const CalendarService = {
     );
     if (!rows[0]?.encrypted_access_token) return null;
 
-    const [accessToken, refreshToken] = await Promise.all([
-      EncryptionUtil.decrypt(rows[0].encrypted_access_token),
-      EncryptionUtil.decrypt(rows[0].encrypted_refresh_token),
-    ]);
+    let accessToken: string | null = null;
+    let refreshToken: string | null = null;
+    try {
+      [accessToken, refreshToken] = await Promise.all([
+        EncryptionUtil.decrypt(rows[0].encrypted_access_token),
+        EncryptionUtil.decrypt(rows[0].encrypted_refresh_token),
+      ]);
+    } catch (err) {
+      logger.error("Failed to decrypt Google Calendar tokens (possible key rotation issue)", { userId, error: err });
+      return null;
+    }
 
     if (!accessToken) return null;
 

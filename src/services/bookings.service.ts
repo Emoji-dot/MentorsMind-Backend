@@ -420,17 +420,28 @@ export const BookingsService = {
       throw createError("Cannot complete booking before session ends", 400);
     }
 
-    if (userId === booking.mentee_id && SorobanEscrowService.isConfigured()) {
+    if (SorobanEscrowService.isConfigured()) {
       const metadata = await getBookingEscrowMetadata(bookingId);
       if (metadata.escrow_id) {
-        await SorobanEscrowService.releaseFunds({
-          escrowId: metadata.escrow_id,
-          releasedBy: userId,
-          contractAddress: metadata.escrow_contract_address || undefined,
-        });
+        if (userId === booking.mentee_id) {
+          await SorobanEscrowService.releaseFunds({
+            escrowId: metadata.escrow_id,
+            releasedBy: userId,
+            contractAddress: metadata.escrow_contract_address || undefined,
+          });
+        } else {
+          // Mentor is completing the booking -> Schedule auto-release
+          const { scheduleEscrowRelease } = await import("../queues/escrow-release.queue");
+          await scheduleEscrowRelease({
+            escrowId: metadata.escrow_id,
+            mentorId: booking.mentor_id,
+            learnerId: booking.mentee_id,
+            sessionCompletedAt: new Date(),
+          });
+        }
       } else {
         logger.warn(
-          "Skipping Soroban release_funds: no escrow metadata on booking",
+          "Skipping Soroban release/schedule: no escrow metadata on booking",
           {
             bookingId,
           },
@@ -540,6 +551,10 @@ export const BookingsService = {
           bookingId,
           txHash: refundResult.txHash,
         });
+        
+        // Cancel any pending auto-release
+        const { cancelEscrowRelease } = await import("../queues/escrow-release.queue");
+        await cancelEscrowRelease(metadata.escrow_id);
       } else {
         logger.warn("Skipping Soroban refund: no escrow metadata on booking", {
           bookingId,

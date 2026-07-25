@@ -111,6 +111,25 @@ const RETENTION_WHITELIST: Record<
   audit_logs: {
     tableName: "audit_logs",
     dateColumn: "created_at",
+    anonymizeSql: "UPDATE audit_logs SET user_id = NULL, ip_address = NULL, user_agent = NULL WHERE created_at < $1",
+  },
+  messages: {
+    tableName: "messages",
+    dateColumn: "created_at",
+    anonymizeSql: "UPDATE messages SET content = '[Deleted]', anonymized_at = NOW() WHERE created_at < $1",
+  },
+  booking_notes: {
+    tableName: "booking_notes",
+    dateColumn: "created_at",
+    anonymizeSql: "UPDATE booking_notes SET content = '[Deleted]', anonymized_at = NOW() WHERE created_at < $1",
+  },
+  push_tokens: {
+    tableName: "push_tokens",
+    dateColumn: "created_at",
+  },
+  recording_transcriptions: {
+    tableName: "recording_transcriptions",
+    dateColumn: "created_at",
   },
 };
 
@@ -469,7 +488,7 @@ export const ComplianceService = {
     };
   },
 
-  async enforceRetentionPolicies(): Promise<{
+  async enforceRetentionPolicies(dryRun: boolean = false): Promise<{
     applied: number;
     skipped: number;
     details: Array<{
@@ -506,25 +525,58 @@ export const ComplianceService = {
       const action = policy.deletionMethod;
 
       try {
-        if (policy.deletionMethod === "hard") {
-          const { rowCount } = await pool.query(
-            `DELETE FROM ${mapping.tableName} WHERE ${mapping.dateColumn} < $1`,
-            [cutoffIso],
+        if (policy.dataType === "recording_transcriptions" && policy.deletionMethod === "hard") {
+          const { rows } = await pool.query(
+            `SELECT id, s3_key FROM recording_transcriptions WHERE created_at < $1`, 
+            [cutoffIso]
           );
-          resultCount = rowCount ?? 0;
+          resultCount = rows.length;
+          if (!dryRun && resultCount > 0) {
+            const keys = rows.map(r => r.s3_key).filter(Boolean);
+            if (keys.length > 0) {
+              const { StorageService } = await import("./storage.service");
+              await StorageService.deleteFiles(keys);
+            }
+            await pool.query(
+              `DELETE FROM recording_transcriptions WHERE created_at < $1`,
+              [cutoffIso]
+            );
+          }
+        } else if (policy.deletionMethod === "hard") {
+          if (dryRun) {
+            const { rows } = await pool.query(`SELECT COUNT(*) FROM ${mapping.tableName} WHERE ${mapping.dateColumn} < $1`, [cutoffIso]);
+            resultCount = parseInt(rows[0].count, 10);
+          } else {
+            const { rowCount } = await pool.query(
+              `DELETE FROM ${mapping.tableName} WHERE ${mapping.dateColumn} < $1`,
+              [cutoffIso],
+            );
+            resultCount = rowCount ?? 0;
+          }
         } else if (policy.deletionMethod === "soft" && mapping.softDeleteSql) {
-          const { rowCount } = await pool.query(mapping.softDeleteSql, [
-            cutoffIso,
-          ]);
-          resultCount = rowCount ?? 0;
+          if (dryRun) {
+            const { rows } = await pool.query(`SELECT COUNT(*) FROM ${mapping.tableName} WHERE ${mapping.dateColumn} < $1 AND deleted_at IS NULL`, [cutoffIso]);
+            resultCount = parseInt(rows[0].count, 10);
+          } else {
+            const { rowCount } = await pool.query(mapping.softDeleteSql, [
+              cutoffIso,
+            ]);
+            resultCount = rowCount ?? 0;
+          }
         } else if (
           policy.deletionMethod === "anonymize" &&
           mapping.anonymizeSql
         ) {
-          const { rowCount } = await pool.query(mapping.anonymizeSql, [
-            cutoffIso,
-          ]);
-          resultCount = rowCount ?? 0;
+          if (dryRun) {
+            // For dry run we assume everything matching the date will be anonymized
+            const { rows } = await pool.query(`SELECT COUNT(*) FROM ${mapping.tableName} WHERE ${mapping.dateColumn} < $1`, [cutoffIso]);
+            resultCount = parseInt(rows[0].count, 10);
+          } else {
+            const { rowCount } = await pool.query(mapping.anonymizeSql, [
+              cutoffIso,
+            ]);
+            resultCount = rowCount ?? 0;
+          }
         } else {
           details.push({
             dataType: policy.dataType,
@@ -554,14 +606,16 @@ export const ComplianceService = {
       }
     }
 
-    await AuditLogService.log({
-      userId: null,
-      action: "RETENTION_ENFORCEMENT_RUN",
-      resourceType: "retention_policy",
-      metadata: {
-        summary: details,
-      },
-    });
+    if (!dryRun) {
+      await AuditLogService.log({
+        userId: null,
+        action: "RETENTION_ENFORCEMENT_RUN",
+        resourceType: "retention_policy",
+        metadata: {
+          summary: details,
+        },
+      });
+    }
 
     return {
       applied: details.filter(
