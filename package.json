@@ -25,6 +25,8 @@
     "docker:build": "docker compose build",
     "docker:dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build",
     "sync:elasticsearch": "ts-node scripts/sync-elasticsearch.ts",
+    "security:headers-check": "ts-node --transpile-only src/scripts/security-headers-check.ts",
+    "security:scan": "docker run --rm -v $(pwd)/.zap:/zap/wrk/:rw -t ghcr.io/zaproxy/zaproxy:stable zap-full-scan.py -t ${ZAP_TARGET_URL:-http://host.docker.internal:5000/api/v1} -n /zap/wrk/context.xml -r security-scan-report.html",
     "prepare": "husky"
   },
   "keywords": [
