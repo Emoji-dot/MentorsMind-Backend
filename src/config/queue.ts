@@ -51,6 +51,8 @@ export const QUEUE_NAMES = {
   TRANSCRIPTION: "transcription-queue",
   BULK: "bulk-queue",
   DOMAIN_EVENTS: "domain-events-queue",
+  RECORDING_CLEANUP: "recording-cleanup-queue",
+  ANALYTICS_REFRESH: "analytics-refresh-queue",
   QUALITY_SCORE: "quality-score-queue",
 } as const;
 

@@ -18,6 +18,8 @@ const REQUIRED_QUEUE_NAMES = [
     'MAINTENANCE',
     'TRANSCRIPTION',
     'DOMAIN_EVENTS',
+    'RECORDING_CLEANUP',
+    'ANALYTICS_REFRESH',
 ] as const;
 
 for (const queueKey of REQUIRED_QUEUE_NAMES) {
@@ -48,3 +50,5 @@ export { transcriptionWorker } from './transcription.worker';
 export { domainEventsWorker } from './domain-events.worker';
 export { qualityScoreWorker } from './quality-score.worker';
 export { startRetentionEnforcementWorker, stopRetentionEnforcementWorker } from './retention-enforcement.worker';
+export { recordingCleanupWorker } from './recordingCleanup.worker';
+export { analyticsRefreshWorker } from './analyticsRefresh.worker';

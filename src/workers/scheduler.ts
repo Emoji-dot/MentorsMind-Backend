@@ -3,6 +3,8 @@ import { sessionReminderQueue } from "../queues/sessionReminder.queue";
 import { escrowCheckQueue } from "../queues/escrow-check.queue";
 import { notificationCleanupQueue } from "../queues/notificationCleanup.queue";
 import { maintenanceQueue } from "../queues/maintenance.queue";
+import { recordingCleanupQueue } from "../queues/recordingCleanup.queue";
+import { analyticsRefreshQueue } from "../queues/analyticsRefresh.queue";
 import { qualityScoreQueue } from "../queues/quality-score.queue";
 import { VerificationService } from "../services/verification.service";
 import { accountDeletionJob } from "../jobs/accountDeletion.job";
@@ -60,6 +62,19 @@ async function logRepeatableJobCounts(): Promise<void> {
  * Call once at server startup.
  */
 export async function startScheduler(): Promise<void> {
+  // Analytics refresh — every 15 minutes
+  // Each run enqueues one BullMQ job per materialized view; the worker holds a
+  // per-view distributed lock so concurrent Railway instances never race.
+  await addRepeatableJobIfNotExists(
+    analyticsRefreshQueue,
+    "analytics-refresh-scheduled",
+    { jobType: "analytics-refresh" }, // no viewName → job enqueues individual view jobs
+    {
+      repeat: { pattern: "*/15 * * * *" },
+      jobId: "analytics-refresh-recurring",
+    },
+  );
+
   // Weekly earnings report — every Monday at 08:00 UTC
   await addRepeatableJobIfNotExists(
     reportQueue,
@@ -108,6 +123,18 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
+  // Recording cleanup — weekly on Saturdays at 02:00 UTC
+  // Identifies and soft-deletes orphaned S3 objects; aborts incomplete multipart uploads
+  await addRepeatableJobIfNotExists(
+    recordingCleanupQueue,
+    "recording-cleanup-scheduled",
+    { jobType: "recording-cleanup" },
+    {
+      repeat: { pattern: "0 2 * * 6" }, // Saturday 02:00 UTC
+      jobId: "recording-cleanup-recurring",
+    },
+  );
+
   // Daily maintenance job — 04:00 UTC
   await maintenanceQueue.add(
     "daily-maintenance",
@@ -130,7 +157,7 @@ export async function startScheduler(): Promise<void> {
   );
 
   logger.info(
-    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, and quality scoring registered",
+    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, recording cleanup, and daily maintenance registered",
   );
 }
 
