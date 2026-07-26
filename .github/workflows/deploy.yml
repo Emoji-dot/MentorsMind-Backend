@@ -65,7 +65,74 @@ jobs:
           retention-days: 1
 
   # ───────────────────────────────────────────────────────────────────────────
-  # 2. Security scan — OWASP ZAP baseline + security headers gate (issue #785)
+  # 2. Migration Tests — fresh apply + idempotency + validate (issue #751)
+  #    Runs after `ci` on every push and PR to main.  E2E and deploy jobs both
+  #    wait for this job so a broken migration can never reach production.
+  # ───────────────────────────────────────────────────────────────────────────
+  migration-test:
+    name: Migration Tests
+    runs-on: ubuntu-latest
+    needs: ci
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mentorminds_migration_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mentorminds_migration_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate migration ordering (no duplicates)
+        run: pnpm run migrate:validate
+
+      - name: Apply all migrations (fresh database)
+        run: pnpm run migrate:up
+
+      - name: Idempotency check (second migrate:up must be a no-op)
+        run: |
+          OUTPUT=$(pnpm run migrate:up 2>&1)
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -qi "migrating"; then
+            echo "ERROR: Second migrate:up applied migrations that should already be present."
+            exit 1
+          fi
+          echo "Idempotency confirmed — no new migrations were applied."
+
+      - name: Rollback test (migrate:down)
+        run: pnpm run migrate:down -- --count 9999
+        continue-on-error: true
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 3. Security scan — OWASP ZAP baseline + security headers gate (issue #785)
   #    Runs on every push and PR, in parallel with `ci`.
   # ───────────────────────────────────────────────────────────────────────────
   security-scan:
@@ -170,7 +237,7 @@ jobs:
           if-no-files-found: warn
 
   # ───────────────────────────────────────────────────────────────────────────
-  # 3. E2E Tests — runs after build, blocks deployment if any suite fails
+  # 4. E2E Tests — runs after build + migration-test, blocks deployment if any suite fails
   #
   # Uses testcontainers (Docker-in-Docker via the ubuntu runner's Docker daemon).
   # Each suite gets a fresh PostgreSQL + Redis container managed by Jest's
@@ -180,7 +247,7 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: ci
+    needs: [ci, migration-test]
     timeout-minutes: 15
 
     # testcontainers needs the Docker daemon — ubuntu-latest provides this
