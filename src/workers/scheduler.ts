@@ -5,6 +5,7 @@ import { notificationCleanupQueue } from "../queues/notificationCleanup.queue";
 import { maintenanceQueue } from "../queues/maintenance.queue";
 import { recordingCleanupQueue } from "../queues/recordingCleanup.queue";
 import { analyticsRefreshQueue } from "../queues/analyticsRefresh.queue";
+import { qualityScoreQueue } from "../queues/quality-score.queue";
 import { VerificationService } from "../services/verification.service";
 import { accountDeletionJob } from "../jobs/accountDeletion.job";
 import { logger } from "../utils/logger.utils";
@@ -141,6 +142,17 @@ export async function startScheduler(): Promise<void> {
     {
       repeat: { pattern: "0 4 * * *" },
       jobId: "daily-maintenance-recurring",
+    },
+  );
+
+  // Mentor quality score computation — nightly at 03:00 UTC
+  await addRepeatableJobIfNotExists(
+    qualityScoreQueue,
+    "quality-score-scheduled",
+    { jobType: "quality-score-cron", triggeredAt: new Date().toISOString() },
+    {
+      repeat: { pattern: "0 3 * * *" },
+      jobId: "quality-score-recurring",
     },
   );
 

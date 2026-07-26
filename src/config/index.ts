@@ -48,6 +48,7 @@ const config = {
 
   cors: {
     origins: env.CORS_ORIGIN.split(",").map((o: string) => o.trim()),
+    maxAge: parseInt(env.CORS_MAX_AGE, 10),
   },
 
   rateLimit: {
