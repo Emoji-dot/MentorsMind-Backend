@@ -42,6 +42,17 @@ Use the **Authorize** button (🔒) above to set your token for all requests.
         url: `https://api.mentorminds.com/api/${apiVersion}`,
         description: 'Production server',
       },
+      // Selecting this server makes the Swagger UI "Try it out" button call
+      // the fixture-data sandbox instead of real endpoints (issue #784).
+      // Only offered when SANDBOX_MODE=true.
+      ...(process.env.SANDBOX_MODE === 'true'
+        ? [
+          {
+            url: `http://localhost:${port}/api/${apiVersion}/sandbox`,
+            description: 'Sandbox (Try it out) — fixture data, no real side effects',
+          },
+        ]
+        : []),
     ],
     components: {
       securitySchemes: {

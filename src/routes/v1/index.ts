@@ -26,6 +26,7 @@ import walletRoutes from "../wallets.routes";
 import consentRoutes from "../consent.routes";
 import complianceRoutes from "../compliance.routes";
 import bulkRoutes from "../bulk.routes";
+import adminBulkRoutes from "../admin-bulk.routes";
 import integrationsRoutes from "../integrations.routes";
 import notesRoutes from "../notes.routes";
 import deepLinkRoutes from "../deepLink.routes";
@@ -41,6 +42,7 @@ import referralRoutes from "../referral.routes";
 import eventsRoutes from "../events.routes";
 import sessionQualityRoutes from "../session-quality.routes";
 import apiDocsPortalRoutes from "../api-docs-portal.routes";
+import sandboxRoutes from "../sandbox.routes";
 import tenantRoutes from "../tenant.routes";
 import dynamicPricingRoutes from "../dynamic-pricing.routes";
 import mentorOnboardingRoutes from "../mentor-onboarding.routes";
@@ -77,6 +79,7 @@ router.use("/bulk", bulkRoutes);
 // Apply IP whitelisting to all admin routes
 router.use("/admin", adminAllowlistMiddleware);
 router.use("/admin", adminRoutes);
+router.use("/admin/bulk", adminBulkRoutes);
 router.use("/admin/moderation", moderationRoutes);
 
 router.use("/bookings", bookingsRoutes);
@@ -107,8 +110,12 @@ router.use("/events", eventsRoutes);
 // Session Quality Analytics (issue #538)
 router.use("/session-quality", sessionQualityRoutes);
 
-// API Documentation Portal (issue #537)
+// API Documentation Portal (issue #537, extended in #784)
 router.use("/docs", apiDocsPortalRoutes);
+
+// Sandbox fixture routes for the docs portal "Try it out" flow (issue #784).
+// Gated by SANDBOX_MODE — see src/routes/sandbox.routes.ts.
+router.use("/sandbox", sandboxRoutes);
 
 // Multi-tenant routes
 router.use("/tenants", tenantRoutes);

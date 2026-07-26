@@ -42,6 +42,7 @@ const envSchema = z.object({
   DB_CONNECTION_TIMEOUT_MS: z.string().regex(/^\d+$/).default("2000"),
   DB_STATEMENT_TIMEOUT_MS: z.string().regex(/^\d+$/).default("10000"),
   DB_POOL_EXHAUSTION_THRESHOLD: z.string().regex(/^\d+$/).default("90"),
+  DB_CIRCUIT_BREAKER_ENABLED: z.enum(["true", "false"]).default("true"),
 
   // JWT — supports dual secrets for zero-downtime rotation
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
@@ -72,6 +73,14 @@ const envSchema = z.object({
   CORS_ORIGIN: z
     .string()
     .default("http://localhost:3000,http://localhost:5173"),
+  /**
+   * Preflight cache duration in seconds (sent as Access-Control-Max-Age).
+   * Default: 86400 (24 h). Set to 0 to disable caching during development.
+   */
+  CORS_MAX_AGE: z
+    .string()
+    .regex(/^\d+$/, "CORS_MAX_AGE must be a non-negative integer")
+    .default("86400"),
 
   // Rate Limiting
   RATE_LIMIT_WINDOW_MS: z.string().regex(/^\d+$/).default("900000"),
@@ -230,6 +239,12 @@ const envSchema = z.object({
   RETENTION_AUDIT_LOGS_YEARS: z.string().regex(/^\d+$/).default("7"),
   RETENTION_PAYMENTS_YEARS: z.string().regex(/^\d+$/).default("7"),
   RETENTION_SESSIONS_YEARS: z.string().regex(/^\d+$/).default("2"),
+
+  // API Documentation Portal (issue #784)
+  // Enables the /api/v1/sandbox/* routes and adds a "Sandbox" server option
+  // to the Swagger UI so third-party developers can try endpoints against
+  // fixture data with no real side effects.
+  SANDBOX_MODE: z.enum(["true", "false"]).default("false"),
 });
 
 // ---------------------------------------------------------------------------

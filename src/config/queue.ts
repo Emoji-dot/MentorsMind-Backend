@@ -56,6 +56,13 @@ export const QUEUE_NAMES = {
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 
+export const QUEUE_PRIORITIES = {
+  CRITICAL: 1,
+  HIGH: 5,
+  NORMAL: 10,
+  BULK: 100,
+} as const;
+
 export enum JobType {
   EMAIL = "email",
   PAYMENT = "payment",
