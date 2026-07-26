@@ -46,6 +46,9 @@ import sandboxRoutes from "../sandbox.routes";
 import tenantRoutes from "../tenant.routes";
 import dynamicPricingRoutes from "../dynamic-pricing.routes";
 import mentorOnboardingRoutes from "../mentor-onboarding.routes";
+import featureFlagRoutes from "../feature-flag.routes";
+import offlineRoutes from "../offline.routes";
+import syncRoutes from "../sync.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -122,5 +125,14 @@ router.use("/pricing", dynamicPricingRoutes);
 
 // Mentor Onboarding Automation (issue #562)
 router.use("/onboarding", mentorOnboardingRoutes);
+
+// Feature Flags (issue #688) — real-time rollout/targeting evaluation + admin CRUD
+router.use("/", featureFlagRoutes);
+
+// Offline sync — snapshot/delta/queue endpoints for mobile clients (issue #689)
+router.use("/offline", offlineRoutes);
+
+// Offline sync v2 — vector-clock batch sync endpoints (issue #689)
+router.use("/sync", syncRoutes);
 
 export default router;

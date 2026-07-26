@@ -18,6 +18,7 @@ import {
   listVerificationsSchema,
 } from "../validators/schemas/verification.schemas";
 import { ConsentController } from "../controllers/consent.controller";
+import { MentorQualityController } from "../controllers/mentor-quality.controller";
 import { TraceController } from "../controllers/trace.controller";
 import { EscrowController } from "../controllers/escrow.controller";
 import { getTraceSchema } from "../validators/schemas/trace.schemas";
@@ -84,6 +85,9 @@ router.use(requireAdmin);
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.get("/stats", asyncHandler(AdminController.getStats));
+
+/** GET /admin/mentors/quality — paginated/sortable/filterable mentor quality scores */
+router.get("/mentors/quality", MentorQualityController.list);
 
 /**
  * @swagger

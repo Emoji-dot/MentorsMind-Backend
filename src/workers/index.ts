@@ -46,4 +46,5 @@ export { notificationsWorker } from '../jobs/notifications.worker';
 export { webhookDeliveryWorker } from '../jobs/webhookDelivery.job';
 export { transcriptionWorker } from './transcription.worker';
 export { domainEventsWorker } from './domain-events.worker';
+export { qualityScoreWorker } from './quality-score.worker';
 export { startRetentionEnforcementWorker, stopRetentionEnforcementWorker } from './retention-enforcement.worker';

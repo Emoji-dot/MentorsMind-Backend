@@ -16,7 +16,6 @@ import { BookingsService } from '../../services/bookings.service';
 import { MentorsService } from '../../services/mentors.service';
 import { PaymentsService } from '../../services/payments.service';
 import { UsersService } from '../../services/users.service';
-import { WalletsService } from '../../services/wallets.service';
 import { GraphQLLoaders } from '../dataloaders';
 
 interface GraphQLContext {
@@ -136,17 +135,22 @@ const resolvers = {
       if (!context.user || context.user.userId !== parent.id) {
         return null;
       }
-      return WalletsService.getWalletInfo(parent.id);
+      return context.loaders.walletLoader.load(parent.id);
     },
     bookings: async (parent: any, args: { status?: string; cursor?: string; limit?: number }, context: GraphQLContext) => {
       if (!context.user || context.user.userId !== parent.id) {
         throw new AuthenticationError('Unauthorized');
       }
-      return BookingsService.getUserBookings(parent.id, {
-        status: args.status,
-        cursor: args.cursor,
-        limit: args.limit,
-      });
+      // Filtered/paginated bookings can't be served from the batch loader —
+      // only the unfiltered default view benefits from N+1 batching.
+      if (args.status || args.cursor || args.limit) {
+        return BookingsService.getUserBookings(parent.id, {
+          status: args.status,
+          cursor: args.cursor,
+          limit: args.limit,
+        });
+      }
+      return context.loaders.bookingLoader.load(parent.id);
     },
     payments: async (parent: any, _args: unknown, context: GraphQLContext) => {
       if (!context.user || context.user.userId !== parent.id) {
@@ -177,17 +181,20 @@ const resolvers = {
       if (!context.user || context.user.userId !== parent.id) {
         return null;
       }
-      return WalletsService.getWalletInfo(parent.id);
+      return context.loaders.walletLoader.load(parent.id);
     },
     bookings: async (parent: any, args: { status?: string; cursor?: string; limit?: number }, context: GraphQLContext) => {
       if (!context.user || context.user.userId !== parent.id) {
         throw new AuthenticationError('Unauthorized');
       }
-      return BookingsService.getUserBookings(parent.id, {
-        status: args.status,
-        cursor: args.cursor,
-        limit: args.limit,
-      });
+      if (args.status || args.cursor || args.limit) {
+        return BookingsService.getUserBookings(parent.id, {
+          status: args.status,
+          cursor: args.cursor,
+          limit: args.limit,
+        });
+      }
+      return context.loaders.bookingLoader.load(parent.id);
     },
     payments: async (parent: any, _args: unknown, context: GraphQLContext) => {
       if (!context.user || context.user.userId !== parent.id) {

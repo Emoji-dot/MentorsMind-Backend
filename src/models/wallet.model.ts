@@ -17,6 +17,13 @@ export const WalletModel = {
     return rows[0] || null;
   },
 
+  async findByUserIds(userIds: string[]): Promise<Wallet[]> {
+    if (userIds.length === 0) return [];
+    const query = "SELECT * FROM wallets WHERE user_id = ANY($1);";
+    const { rows } = await db.query(query, [userIds]);
+    return rows;
+  },
+
   async findByStellarPublicKey(
     stellarPublicKey: string,
   ): Promise<Wallet | null> {

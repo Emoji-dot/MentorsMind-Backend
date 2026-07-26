@@ -37,6 +37,8 @@ export interface MentorRecord {
   total_reviews: number;
   kyc_verified: boolean;
   is_active: boolean;
+  quality_score: number | null;
+  quality_tier: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -73,7 +75,8 @@ const MENTOR_COLUMNS = `
   id, email, role, first_name, last_name, bio, avatar_url,
   hourly_rate, expertise, years_of_experience, availability_schedule,
   is_available, timezone, average_rating, total_sessions_completed,
-  total_reviews, kyc_verified, is_active, created_at, updated_at
+  total_reviews, kyc_verified, is_active, quality_score, quality_tier,
+  created_at, updated_at
 `;
 
 export const MentorsService = {

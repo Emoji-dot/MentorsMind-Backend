@@ -51,6 +51,7 @@ export const QUEUE_NAMES = {
   TRANSCRIPTION: "transcription-queue",
   BULK: "bulk-queue",
   DOMAIN_EVENTS: "domain-events-queue",
+  QUALITY_SCORE: "quality-score-queue",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -105,4 +106,5 @@ export const CONCURRENCY = {
   SESSION_REMINDER: 1,
   MAINTENANCE: 1,
   TRANSCRIPTION: 5,
+  QUALITY_SCORE: 1,
 } as const;
