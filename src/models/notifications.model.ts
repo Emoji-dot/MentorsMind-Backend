@@ -30,6 +30,8 @@ export enum NotificationType {
   BOOKING_CONFIRMED = "booking_confirmed",
   PAYMENT_PROCESSED = "payment_processed",
   SESSION_REMINDER = "session_reminder",
+  GOAL_DEADLINE_REMINDER = "goal_deadline_reminder",
+  GOAL_OVERDUE = "goal_overdue",
   DISPUTE_CREATED = "dispute_created",
   SYSTEM_ALERT = "system_alert",
   MEETING_CONFIRMED = "meeting_confirmed",

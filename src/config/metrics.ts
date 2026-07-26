@@ -175,3 +175,12 @@ export const rateLimitExceededTotal = new Counter<string>({
   labelNames: ["tier", "endpoint_category"],
   registers: [metricsRegistry],
 });
+
+// ─── Goals ────────────────────────────────────────────────────────────────────
+
+export const goalRemindersSentTotal = new Counter<string>({
+  name: "goal_reminders_sent_total",
+  help: "Total number of goal deadline reminders sent, partitioned by reminder type",
+  labelNames: ["reminder_type"],
+  registers: [metricsRegistry],
+});
