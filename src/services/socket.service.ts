@@ -69,6 +69,23 @@ export const SocketService = {
   },
 
   /**
+   * Emit an event to an arbitrary shared room (for example, the admin room).
+   */
+  emitToRoom(room: string, event: string, data: any): void {
+    if (!io) {
+      logger.warn("SocketService: Socket.IO not initialized");
+      return;
+    }
+
+    io.to(room).emit(event, data);
+
+    logger.debug(
+      { room, event, dataKeys: Object.keys(data || {}) },
+      "SocketService: Emitted event to room",
+    );
+  },
+
+  /**
    * Emit an event to all connected clients
    * @param event - The event name
    * @param data - The event data
