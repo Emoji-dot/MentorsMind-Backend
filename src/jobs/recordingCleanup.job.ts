@@ -7,6 +7,7 @@
  */
 
 import { SessionRecordingService } from '../services/session-recording.service';
+import { RecordingLifecycleService } from '../services/recording-lifecycle.service';
 import { logger } from '../utils/logger.utils';
 
 /**
@@ -53,6 +54,29 @@ export async function runRecordingCleanupJob(): Promise<void> {
       total: expiredRecordings.length,
       success: successCount,
       failure: failureCount,
+    });
+
+    // ── Storage tiering: transition recordings to lower-cost storage classes ──
+
+    logger.info('[RecordingCleanup] Starting storage-class tiering for older recordings');
+
+    const iaResult = await RecordingLifecycleService.tierRecordingsToInfrequentAccess();
+    logger.info('[RecordingCleanup] STANDARD_IA tiering completed', {
+      transitioned: iaResult.transitioned,
+      errors: iaResult.errors,
+    });
+
+    const glacierResult = await RecordingLifecycleService.tierRecordingsToGlacier();
+    logger.info('[RecordingCleanup] GLACIER tiering completed', {
+      transitioned: glacierResult.transitioned,
+      errors: glacierResult.errors,
+    });
+
+    logger.info('[RecordingCleanup] Storage tiering phase complete', {
+      iaTransitioned: iaResult.transitioned,
+      iaErrors: iaResult.errors,
+      glacierTransitioned: glacierResult.transitioned,
+      glacierErrors: glacierResult.errors,
     });
   } catch (error) {
     logger.error('[RecordingCleanup] Recording cleanup job failed', {
