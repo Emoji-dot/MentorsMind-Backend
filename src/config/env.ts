@@ -61,6 +61,11 @@ const envSchema = z.object({
     .string()
     .min(32, "FILE_SIGNING_SECRET must be at least 32 characters"),
 
+  // Cache Key Signing (issue #716) — HMACs the userId component of authenticated
+  // cache keys so keys can't be guessed/enumerated. Falls back to FILE_SIGNING_SECRET
+  // when unset so existing deployments don't need a new required secret.
+  CACHE_KEY_HMAC_SECRET: z.string().min(32).optional(),
+
   // Stellar
   STELLAR_NETWORK: z.enum(["testnet", "mainnet"]).default("testnet"),
   STELLAR_HORIZON_URL: z
@@ -240,6 +245,11 @@ const envSchema = z.object({
   RETENTION_PAYMENTS_YEARS: z.string().regex(/^\d+$/).default("7"),
   RETENTION_SESSIONS_YEARS: z.string().regex(/^\d+$/).default("2"),
 
+  // Audit Log Archival (issue #772) — audit rows older than this move from hot
+  // PostgreSQL storage to a compressed, S3 Object Lock (WORM) archive, so they
+  // remain queryable for RETENTION_AUDIT_LOGS_YEARS without staying in the DB.
+  AUDIT_ARCHIVE_AFTER_DAYS: z.string().regex(/^\d+$/).default("90"),
+
   // API Documentation Portal (issue #784)
   // Enables the /api/v1/sandbox/* routes and adds a "Sandbox" server option
   // to the Swagger UI so third-party developers can try endpoints against
@@ -256,6 +266,7 @@ const SENSITIVE_KEYS = new Set([
   "JWT_REFRESH_SECRET",
   "JWT_SECRET_PREVIOUS",
   "FILE_SIGNING_SECRET",
+  "CACHE_KEY_HMAC_SECRET",
   "PII_ENCRYPTION_KEYS",
   "PLATFORM_SECRET_KEY",
   "SMTP_PASS",

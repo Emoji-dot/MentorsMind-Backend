@@ -117,8 +117,34 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
+  // On-chain verification retry — every 2 hours (issue #768). Retries mentor
+  // verifications left in `on_chain_pending = true` when SOROBAN_RPC_URL was
+  // unreachable at approval time.
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "verification-retry-scheduled",
+    { jobType: "verification-retry" },
+    {
+      repeat: { pattern: "0 */2 * * *" }, // cron: every 2 hours
+      jobId: "verification-retry-recurring",
+    },
+  );
+
+  // Audit log archival — daily at 01:00 UTC (issue #772). Moves audit_logs
+  // rows older than AUDIT_ARCHIVE_AFTER_DAYS to a compressed, Object-Locked
+  // S3 archive.
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "audit-log-archival-scheduled",
+    { jobType: "audit-log-archival" },
+    {
+      repeat: { pattern: "0 1 * * *" }, // cron: daily 01:00 UTC
+      jobId: "audit-log-archival-recurring",
+    },
+  );
+
   logger.info(
-    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, and daily maintenance registered",
+    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, and audit log archival registered",
   );
 }
 
