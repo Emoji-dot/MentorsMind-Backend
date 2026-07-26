@@ -642,4 +642,91 @@ export const AdminController = {
       ResponseUtil.error(res, err.message, 500);
     }
   },
+
+  // ─── Impersonation (issue #750) ────────────────────────────────────────────
+
+  /**
+   * POST /admin/users/:id/impersonate
+   *
+   * Start an admin impersonation session for the specified user.
+   * Returns a short-lived (15 min) JWT that the admin can use to act as that user.
+   */
+  async startImpersonation(
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> {
+    const adminId = req.user!.id;
+    const targetUserId = req.params.id as string;
+    const { reason } = req.body as { reason?: string };
+
+    if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
+      ResponseUtil.error(res, 'A reason for impersonation is required', 400);
+      return;
+    }
+
+    const { ImpersonationService } = await import('../services/impersonation.service');
+    const { ipAddress, userAgent } = ImpersonationService.extractRequestMeta(req);
+
+    try {
+      const result = await ImpersonationService.startImpersonation(
+        adminId,
+        targetUserId,
+        reason.trim(),
+        ipAddress,
+        userAgent,
+      );
+
+      ResponseUtil.success(res, result, 'Impersonation session started');
+    } catch (err: any) {
+      const status = err.status ?? 500;
+      ResponseUtil.error(res, err.message, status);
+    }
+  },
+
+  /**
+   * DELETE /admin/impersonation/:sessionId
+   *
+   * Explicitly end an active impersonation session.
+   */
+  async endImpersonation(
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> {
+    const adminId = req.user!.id;
+    const { sessionId } = req.params;
+
+    const { ImpersonationService } = await import('../services/impersonation.service');
+    const { ipAddress, userAgent } = ImpersonationService.extractRequestMeta(req);
+
+    try {
+      const session = await ImpersonationService.endImpersonation(
+        sessionId as string,
+        adminId,
+        ipAddress,
+        userAgent,
+      );
+
+      ResponseUtil.success(res, session, 'Impersonation session ended');
+    } catch (err: any) {
+      const status = err.status ?? 500;
+      ResponseUtil.error(res, err.message, status);
+    }
+  },
+
+  /**
+   * GET /admin/impersonation
+   *
+   * List all active impersonation sessions initiated by the calling admin.
+   */
+  async listActiveImpersonations(
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> {
+    const adminId = req.user!.id;
+
+    const { ImpersonationService } = await import('../services/impersonation.service');
+    const sessions = await ImpersonationService.getActiveImpersonations(adminId);
+
+    ResponseUtil.success(res, sessions, 'Active impersonation sessions retrieved');
+  },
 };

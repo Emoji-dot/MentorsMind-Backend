@@ -16,6 +16,12 @@ export interface AuthenticatedRequest extends Request {
     email?: string;
     role: string;
     mfaVerified?: boolean;
+    /** Set to true when this request is authenticated via an impersonation token */
+    isImpersonation?: boolean;
+    /** The admin user ID who initiated the impersonation */
+    impersonatedBy?: string;
+    /** The impersonation session ID — used for revocation checks */
+    impersonationSessionId?: string;
   };
 }
 
@@ -42,7 +48,7 @@ export const authenticate = async (
       alg?: string;
     } | null;
 
-    let decoded: { sub: string; role: string; iat?: number; mfaVerified?: boolean };
+    let decoded: { sub: string; role: string; iat?: number; mfaVerified?: boolean; isImpersonation?: boolean; impersonatedBy?: string; impersonationSessionId?: string };
 
     if (header?.kid && header?.alg === "RS256") {
       // ── RSA-256 path: look up the public key by kid ──
@@ -77,6 +83,9 @@ export const authenticate = async (
           sub: string;
           role: string;
           mfaVerified?: boolean;
+          isImpersonation?: boolean;
+          impersonatedBy?: string;
+          impersonationSessionId?: string;
         };
       } catch (err) {
         // Accept previous secret during rotation window (JWT_SECRET_PREVIOUS)
@@ -85,6 +94,9 @@ export const authenticate = async (
             sub: string;
             role: string;
             mfaVerified?: boolean;
+            isImpersonation?: boolean;
+            impersonatedBy?: string;
+            impersonationSessionId?: string;
           };
         } else {
           throw err;
@@ -104,11 +116,29 @@ export const authenticate = async (
       return;
     }
 
+    // ── Impersonation token validation ──────────────────────────────────────
+    if (decoded.isImpersonation && decoded.impersonationSessionId) {
+      const { ImpersonationService } = await import("../services/impersonation.service");
+      const sessionValid = await ImpersonationService.validateSession(
+        decoded.impersonationSessionId,
+      );
+      if (!sessionValid) {
+        res.status(401).json({
+          success: false,
+          error: "Impersonation session has expired or been terminated.",
+        });
+        return;
+      }
+    }
+
     req.user = {
       id: userId,
       userId,
       role: decoded.role,
       mfaVerified: !!decoded.mfaVerified,
+      isImpersonation: decoded.isImpersonation ?? false,
+      impersonatedBy: decoded.impersonatedBy,
+      impersonationSessionId: decoded.impersonationSessionId,
     } as any;
 
     // Debounced last_active_at update — max once per minute per user
