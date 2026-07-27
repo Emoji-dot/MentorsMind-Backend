@@ -69,6 +69,40 @@ export const SocketService = {
   },
 
   /**
+   * Broadcast mentor availability changes to all connected clients so learners
+   * browsing mentor profiles can refresh the UI immediately.
+   */
+  emitMentorAvailabilityChanged(
+    mentorId: string,
+    data: {
+      mentorId: string;
+      isAvailable: boolean;
+      availability: {
+        schedule: unknown;
+        isAvailable: boolean;
+      };
+    },
+  ): void {
+    if (!io) {
+      logger.warn("SocketService: Socket.IO not initialized");
+      return;
+    }
+
+    const payload = {
+      ...data,
+      mentorId,
+      timestamp: new Date().toISOString(),
+    };
+
+    io.emit("mentor:availability_changed", payload);
+
+    logger.debug(
+      { mentorId, isAvailable: data.isAvailable },
+      "SocketService: Emitted mentor availability update",
+    );
+  },
+
+  /**
    * Emit an event to all connected clients
    * @param event - The event name
    * @param data - The event data
