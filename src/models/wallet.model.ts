@@ -4,6 +4,8 @@ export interface Wallet {
   id: string;
   user_id: string;
   stellar_public_key: string;
+  ethereum_address?: string | null;
+  polygon_address?: string | null;
   status: "active" | "inactive" | "suspended";
   wallet_activated?: boolean;
   created_at: Date;
@@ -67,6 +69,29 @@ export const WalletModel = {
       RETURNING *;
     `;
     const { rows } = await db.query(query, [userId, stellarPublicKey]);
+    return rows[0] || null;
+  },
+
+  async updateChainAddresses(
+    userId: string,
+    addresses: {
+      ethereumAddress?: string | null;
+      polygonAddress?: string | null;
+    },
+  ): Promise<Wallet | null> {
+    const query = `
+      UPDATE wallets
+      SET ethereum_address = COALESCE($2, ethereum_address),
+          polygon_address = COALESCE($3, polygon_address),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = $1
+      RETURNING *;
+    `;
+    const { rows } = await db.query(query, [
+      userId,
+      addresses.ethereumAddress ?? null,
+      addresses.polygonAddress ?? null,
+    ]);
     return rows[0] || null;
   },
 
