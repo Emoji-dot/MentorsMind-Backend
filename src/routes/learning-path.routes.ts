@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { LearningPathController } from "../controllers/learning-path.controller";
+import { LearningPathPurchaseController } from "../controllers/learning-path-purchase.controller";
 import { authenticate as authenticateToken } from "../middleware/auth.middleware";
 import { validationMiddleware as validateRequest } from "../middleware/validation.middleware";
 import { body, param } from "express-validator";
@@ -142,6 +143,20 @@ router.post(
  *         description: Learning paths retrieved successfully
  */
 router.get("/", LearningPathController.getPaths);
+
+router.get(
+  "/:pathId/purchase",
+  validatePathId,
+  validateRequest,
+  LearningPathPurchaseController.getPurchaseInfo,
+);
+
+router.post(
+  "/:pathId/trial",
+  validatePathId,
+  validateRequest,
+  LearningPathPurchaseController.startTrial,
+);
 
 /**
  * @swagger

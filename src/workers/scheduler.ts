@@ -7,6 +7,8 @@ import { recordingCleanupQueue } from "../queues/recordingCleanup.queue";
 import { analyticsRefreshQueue } from "../queues/analyticsRefresh.queue";
 import { qualityScoreQueue } from "../queues/quality-score.queue";
 import { VerificationService } from "../services/verification.service";
+import { BackgroundCheckService } from "../services/background-check.service";
+import { EnrollmentService } from "../services/enrollment.service";
 import { accountDeletionJob } from "../jobs/accountDeletion.job";
 import { logger } from "../utils/logger.utils";
 import config from "../config";
@@ -14,6 +16,8 @@ import { AuditLogModel } from "../models/audit-log.model";
 import { PaymentModel } from "../models/payment.model";
 import SessionModel from "../models/session.model";
 import { Queue, JobsOptions } from "bullmq";
+
+let backgroundCheckPollingTimer: NodeJS.Timeout | null = null;
 
 /**
  * Add a repeatable job only if it doesn't already exist.
@@ -174,9 +178,22 @@ export async function startScheduler(): Promise<void> {
   logger.info(
     "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, and audit log archival registered",
   );
+
+  if (!backgroundCheckPollingTimer) {
+    backgroundCheckPollingTimer = setInterval(() => {
+      BackgroundCheckService.pollPendingChecks().catch((error) => {
+        logger.error("Background check polling failed", { error });
+      });
+    }, 6 * 60 * 60 * 1000);
+    backgroundCheckPollingTimer.unref?.();
+  }
 }
 
 export async function stopScheduler(): Promise<void> {
+  if (backgroundCheckPollingTimer) {
+    clearInterval(backgroundCheckPollingTimer);
+    backgroundCheckPollingTimer = null;
+  }
   logger.info("Job scheduler stopped");
 }
 
@@ -188,6 +205,13 @@ export async function runMaintenanceTasks(): Promise<void> {
   if (expired > 0) {
     logger.info("Maintenance: expired verifications flagged", {
       count: expired,
+    });
+  }
+
+  const expiredTrials = await EnrollmentService.expireTrials();
+  if (expiredTrials > 0) {
+    logger.info("Maintenance: expired learning path trials paused", {
+      count: expiredTrials,
     });
   }
 

@@ -290,6 +290,8 @@ export class HealthService {
         "mv_session_stats",
         "mv_top_mentors",
         "mv_asset_distribution",
+        "mv_revenue_time_series",
+        "mv_hourly_session_demand",
       ];
 
       const query = `
@@ -321,7 +323,7 @@ export class HealthService {
         details: {
           missingViews: missing,
           totalViews: requiredViews.length,
-          message: "Run migration 015_analytics_views.sql to create views",
+          message: "Run migrations 015_analytics_views.sql and 102_create_forecasting_views.sql to create analytics views",
         },
       };
     } catch (err: any) {

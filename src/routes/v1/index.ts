@@ -46,6 +46,7 @@ import sandboxRoutes from "../sandbox.routes";
 import tenantRoutes from "../tenant.routes";
 import dynamicPricingRoutes from "../dynamic-pricing.routes";
 import mentorOnboardingRoutes from "../mentor-onboarding.routes";
+import chatbotRoutes from "../chatbot.routes";
 import featureFlagRoutes from "../feature-flag.routes";
 import offlineRoutes from "../offline.routes";
 import syncRoutes from "../sync.routes";
@@ -125,6 +126,7 @@ router.use("/pricing", dynamicPricingRoutes);
 
 // Mentor Onboarding Automation (issue #562)
 router.use("/onboarding", mentorOnboardingRoutes);
+router.use("/chatbot", chatbotRoutes);
 
 // Feature Flags (issue #688) — real-time rollout/targeting evaluation + admin CRUD
 router.use("/", featureFlagRoutes);

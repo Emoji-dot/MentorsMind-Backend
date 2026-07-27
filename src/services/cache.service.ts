@@ -164,6 +164,51 @@ export class CacheService {
     }
   }
 
+  /** Push a JSON value onto a capped Redis list, with in-memory fallback. */
+  static async lpushTrim<T>(
+    key: string,
+    value: T,
+    maxLength: number,
+    ttlSeconds = redisConfig.defaultTtl,
+  ): Promise<void> {
+    try {
+      const serialized = JSON.stringify(value);
+      const client = await getClient();
+      if (client) {
+        await client.lpush(key, serialized);
+        await client.ltrim(key, 0, maxLength - 1);
+        await client.expire(key, ttlSeconds);
+      } else {
+        const current = JSON.parse(memGet(key) || '[]') as T[];
+        current.unshift(value);
+        memSet(key, JSON.stringify(current.slice(0, maxLength)), ttlSeconds);
+      }
+      track('sets', key);
+    } catch (err: any) {
+      track('errors', key);
+      logger.warn('Cache list push error', { key, error: err.message });
+    }
+  }
+
+  /** Read a JSON Redis list range, newest first for lists written by lpushTrim. */
+  static async lrange<T>(key: string, start = 0, stop = -1): Promise<T[]> {
+    try {
+      const client = await getClient();
+      const rawItems: string[] = client
+        ? await client.lrange(key, start, stop)
+        : (JSON.parse(memGet(key) || '[]') as T[])
+            .slice(start, stop === -1 ? undefined : stop + 1)
+            .map((item) => JSON.stringify(item));
+
+      track(rawItems.length > 0 ? 'hits' : 'misses', key);
+      return rawItems.map((raw) => JSON.parse(raw) as T);
+    } catch (err: any) {
+      track('errors', key);
+      logger.warn('Cache list range error', { key, error: err.message });
+      return [];
+    }
+  }
+
   /** Delete all keys matching a glob pattern (e.g. `mm:mentors:*`) */
   static async invalidatePattern(pattern: string): Promise<void> {
     try {
