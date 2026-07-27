@@ -804,6 +804,27 @@ router.get(
  */
 router.get("/audit-log/stats", validate(auditLogStatsSchema), asyncHandler(AdminController.getAuditLogStats));
 
+/**
+ * @swagger
+ * /admin/audit-log/archives:
+ *   get:
+ *     summary: List S3-archived audit log batches with presigned download links
+ *     tags: [Admin, Audit]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: page
+ *         in: query
+ *         schema: { type: integer, default: 1 }
+ *       - name: limit
+ *         in: query
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200:
+ *         description: Paginated audit log archives
+ */
+router.get("/audit-log/archives", asyncHandler(AdminController.getAuditLogArchives));
+
 // ── Email Template Routes ──────────────────────────────────────────────────────
 
 /**

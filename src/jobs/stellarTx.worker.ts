@@ -11,7 +11,51 @@ import { AuditLoggerService } from "../services/audit-logger.service";
 import { LogLevel, AuditAction } from "../utils/log-formatter.utils";
 import pool from "../config/database";
 import { PaymentsService } from "../services/payments.service";
+import { VerificationService } from "../services/verification.service";
 import type { StellarTxJobData } from "../queues/stellar-tx.queue";
+
+/**
+ * Handles `type: 'verification'` jobs — a reliable, independently-retried
+ * delivery path for on-chain mentor verification submissions that failed
+ * during the direct retry sweep (see VerificationService.retryPendingOnChainVerifications,
+ * issue #768). Submission itself is idempotent, so re-running this after a
+ * partial failure is safe.
+ */
+async function processVerificationTx(job: Job<StellarTxJobData>): Promise<void> {
+  const { userId: mentorId, metadata } = job.data;
+  const verificationId = metadata?.verificationId as string | undefined;
+
+  logger.info("Verification on-chain retry job started", {
+    jobId: job.id,
+    mentorId,
+    verificationId,
+    attempt: job.attemptsMade + 1,
+  });
+
+  const txHash = await VerificationService.triggerOnChainVerification(mentorId);
+  if (!txHash) {
+    throw new Error(
+      `On-chain verification retry produced no tx hash for mentor ${mentorId}`,
+    );
+  }
+
+  if (verificationId) {
+    await pool.query(
+      `UPDATE mentor_verifications
+       SET on_chain_tx_hash = $1, on_chain_pending = FALSE, retry_count = 0,
+           last_retry_at = NOW(), updated_at = NOW()
+       WHERE id = $2`,
+      [txHash, verificationId],
+    );
+  }
+
+  logger.info("Verification on-chain retry job succeeded", {
+    jobId: job.id,
+    mentorId,
+    verificationId,
+    txHash,
+  });
+}
 
 async function processStellarTx(job: Job<StellarTxJobData>): Promise<void> {
   const {
@@ -23,6 +67,10 @@ async function processStellarTx(job: Job<StellarTxJobData>): Promise<void> {
     currency,
     description,
   } = job.data;
+
+  if (type === "verification") {
+    return processVerificationTx(job);
+  }
 
   logger.info("Stellar TX job started", {
     jobId: job.id,

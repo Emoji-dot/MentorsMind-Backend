@@ -10,6 +10,7 @@ import { LoginAttemptsService } from "../services/loginAttempts.service";
 import { IpFilterService } from "../services/ipFilter.service";
 import pool from "../config/database";
 import { keyRotationJob } from "../jobs/keyRotation.job";
+import { AuditLogArchivalJob } from "../jobs/auditLog.job";
 import { accountDeletionService } from "../services/accountDeletion.service";
 import { WebhookService } from "../services/webhook.service";
 
@@ -455,6 +456,29 @@ export const AdminController = {
       res,
       stats,
       "Audit log statistics retrieved successfully",
+    );
+  },
+
+  /** GET /admin/audit-log/archives — lists S3-archived audit log batches (issue #772) */
+  async getAuditLogArchives(
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+
+    const result = await AuditLogArchivalJob.listArchives(page, limit);
+    ResponseUtil.success(
+      res,
+      result.archives,
+      "Audit log archives retrieved successfully",
+      200,
+      {
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+      } as any,
     );
   },
 
