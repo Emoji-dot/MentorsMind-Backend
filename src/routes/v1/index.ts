@@ -42,10 +42,14 @@ import referralRoutes from "../referral.routes";
 import eventsRoutes from "../events.routes";
 import sessionQualityRoutes from "../session-quality.routes";
 import apiDocsPortalRoutes from "../api-docs-portal.routes";
+import sandboxRoutes from "../sandbox.routes";
 import tenantRoutes from "../tenant.routes";
 import dynamicPricingRoutes from "../dynamic-pricing.routes";
 import mentorOnboardingRoutes from "../mentor-onboarding.routes";
 import chatbotRoutes from "../chatbot.routes";
+import featureFlagRoutes from "../feature-flag.routes";
+import offlineRoutes from "../offline.routes";
+import syncRoutes from "../sync.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -107,8 +111,12 @@ router.use("/events", eventsRoutes);
 // Session Quality Analytics (issue #538)
 router.use("/session-quality", sessionQualityRoutes);
 
-// API Documentation Portal (issue #537)
+// API Documentation Portal (issue #537, extended in #784)
 router.use("/docs", apiDocsPortalRoutes);
+
+// Sandbox fixture routes for the docs portal "Try it out" flow (issue #784).
+// Gated by SANDBOX_MODE — see src/routes/sandbox.routes.ts.
+router.use("/sandbox", sandboxRoutes);
 
 // Multi-tenant routes
 router.use("/tenants", tenantRoutes);
@@ -119,5 +127,14 @@ router.use("/pricing", dynamicPricingRoutes);
 // Mentor Onboarding Automation (issue #562)
 router.use("/onboarding", mentorOnboardingRoutes);
 router.use("/chatbot", chatbotRoutes);
+
+// Feature Flags (issue #688) — real-time rollout/targeting evaluation + admin CRUD
+router.use("/", featureFlagRoutes);
+
+// Offline sync — snapshot/delta/queue endpoints for mobile clients (issue #689)
+router.use("/offline", offlineRoutes);
+
+// Offline sync v2 — vector-clock batch sync endpoints (issue #689)
+router.use("/sync", syncRoutes);
 
 export default router;

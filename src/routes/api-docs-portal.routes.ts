@@ -2,6 +2,20 @@ import { Router, Request, Response } from "express";
 import swaggerJsdoc from "swagger-jsdoc";
 import { swaggerOptions } from "../config/swagger";
 
+const HTTP_METHODS = ["get", "post", "put", "patch", "delete"] as const;
+type HttpMethod = (typeof HTTP_METHODS)[number];
+
+interface OpenApiOperation {
+  tags?: string[];
+  summary?: string;
+  operationId?: string;
+  security?: unknown[];
+  requestBody?: {
+    content?: Record<string, { schema?: unknown; example?: unknown }>;
+  };
+  responses?: Record<string, unknown>;
+}
+
 const router = Router();
 
 // Lazily build the spec once
@@ -11,6 +25,104 @@ function getSpec(): Record<string, unknown> {
     cachedSpec = swaggerJsdoc(swaggerOptions) as Record<string, unknown>;
   }
   return cachedSpec;
+}
+
+function getOperations(
+  spec: Record<string, unknown>,
+): Array<{ path: string; method: HttpMethod; operation: OpenApiOperation }> {
+  const paths = (spec.paths as Record<string, Record<string, unknown>>) ?? {};
+  const operations: Array<{ path: string; method: HttpMethod; operation: OpenApiOperation }> = [];
+
+  for (const [path, methods] of Object.entries(paths)) {
+    for (const [method, operation] of Object.entries(methods)) {
+      if (!(HTTP_METHODS as readonly string[]).includes(method)) continue;
+      operations.push({ path, method: method as HttpMethod, operation: operation as OpenApiOperation });
+    }
+  }
+
+  return operations;
+}
+
+/**
+ * An operation counts as "documented" when it has a summary and at least one
+ * declared response — the minimum needed for a third-party developer to
+ * understand what the endpoint does and what it returns.
+ */
+function isDocumented(operation: OpenApiOperation): boolean {
+  const hasSummary = !!operation.summary && operation.summary.trim().length > 0;
+  const hasResponses = !!operation.responses && Object.keys(operation.responses).length > 0;
+  return hasSummary && hasResponses;
+}
+
+function computeCoverage(spec: Record<string, unknown>): {
+  totalEndpoints: number;
+  documentedEndpoints: number;
+  coveragePct: number;
+} {
+  const operations = getOperations(spec);
+  const totalEndpoints = operations.length;
+  const documentedEndpoints = operations.filter((o) => isDocumented(o.operation)).length;
+  const coveragePct = totalEndpoints === 0
+    ? 0
+    : Math.round((documentedEndpoints / totalEndpoints) * 10000) / 100;
+
+  return { totalEndpoints, documentedEndpoints, coveragePct };
+}
+
+/** Builds a Postman Collection v2.1 from the live OpenAPI spec. */
+function buildPostmanCollection(spec: Record<string, unknown>): Record<string, unknown> {
+  const info = (spec.info as { title?: string; version?: string; description?: string }) ?? {};
+  const servers = (spec.servers as { url: string }[]) ?? [];
+  const baseUrl = servers[0]?.url ?? "{{baseUrl}}";
+
+  const folders = new Map<string, unknown[]>();
+
+  for (const { path, method, operation } of getOperations(spec)) {
+    const tag = operation.tags?.[0] ?? "Uncategorized";
+    if (!folders.has(tag)) folders.set(tag, []);
+
+    const urlPath = path.replace(/\{([^}]+)}/g, ":$1");
+    const jsonBody = operation.requestBody?.content?.["application/json"];
+    const hasBody = ["post", "put", "patch"].includes(method) && !!jsonBody;
+
+    folders.get(tag)!.push({
+      name: operation.summary || `${method.toUpperCase()} ${path}`,
+      request: {
+        method: method.toUpperCase(),
+        header: [{ key: "Content-Type", value: "application/json" }],
+        url: {
+          raw: `${baseUrl}${urlPath}`,
+          host: [baseUrl],
+          path: urlPath.split("/").filter(Boolean),
+        },
+        ...(operation.security
+          ? { auth: { type: "bearer", bearer: [{ key: "token", value: "{{accessToken}}", type: "string" }] } }
+          : {}),
+        ...(hasBody
+          ? {
+            body: {
+              mode: "raw",
+              raw: JSON.stringify(jsonBody?.example ?? {}, null, 2),
+              options: { raw: { language: "json" } },
+            },
+          }
+          : {}),
+      },
+    });
+  }
+
+  return {
+    info: {
+      name: info.title ?? "MentorMinds API",
+      description: info.description ?? "",
+      schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    },
+    item: Array.from(folders.entries()).map(([tag, items]) => ({ name: tag, item: items })),
+    variable: [
+      { key: "baseUrl", value: baseUrl },
+      { key: "accessToken", value: "" },
+    ],
+  };
 }
 
 /**
@@ -81,8 +193,11 @@ router.get("/portal", (_req: Request, res: Response) => {
       links: {
         swaggerUi: "/api/v1/docs",
         openApiSpec: "/api/v1/docs/spec.json",
+        openApi: "/api/v1/docs/openapi",
+        postmanCollection: "/api/v1/docs/postman",
         changelog: "/api/v1/docs/changelog",
         sdkGuide: "/api/v1/docs/sdk-guide",
+        coverage: "/api/v1/docs/health",
       },
     },
   });
@@ -103,8 +218,19 @@ router.get("/changelog", (_req: Request, res: Response) => {
   res.json({
     success: true,
     data: {
-      currentVersion: "1.0.0",
+      currentVersion: "1.4.0",
       entries: [
+        {
+          version: "1.4.0",
+          date: "2026-07-25",
+          type: "minor",
+          changes: [
+            "Notifications worker (#782): per-channel delivery tracking, independent retry limits, and a dead-letter queue — a PUSH failure no longer causes duplicate EMAIL sends on retry",
+            "Webhook delivery (#783): per-endpoint circuit breaker — a broken subscriber endpoint no longer delays delivery to healthy endpoints. GET /webhooks/:id now returns a circuit_breaker field (additive, non-breaking)",
+            "API docs portal (#784): Postman collection generator, raw OpenAPI endpoint with content negotiation, documentation coverage metrics, and sandbox try-it-out mode",
+            "CI (#785): OWASP ZAP baseline scan, npm audit gate, and automated security headers check",
+          ],
+        },
         {
           version: "1.0.0",
           date: "2026-01-01",
@@ -295,6 +421,77 @@ router.get("/health-status", (_req: Request, res: Response) => {
       },
     },
   });
+});
+
+/**
+ * @swagger
+ * /docs/health:
+ *   get:
+ *     summary: API documentation coverage
+ *     description: Returns how many documented endpoints exist versus the total route count, computed live from the OpenAPI spec (issue #784).
+ *     tags: [Documentation]
+ *     responses:
+ *       200:
+ *         description: Documentation coverage metrics
+ */
+router.get("/health", (_req: Request, res: Response) => {
+  const coverage = computeCoverage(getSpec());
+  res.json({ success: true, data: coverage });
+});
+
+/**
+ * @swagger
+ * /docs/openapi:
+ *   get:
+ *     summary: Raw OpenAPI 3.0 specification
+ *     description: Serves the same specification as /docs/spec.json with explicit content negotiation on the Accept header (issue #784).
+ *     tags: [Documentation]
+ *     responses:
+ *       200:
+ *         description: OpenAPI 3.0 document
+ *       406:
+ *         description: Requested representation is not available
+ */
+router.get("/openapi", (req: Request, res: Response) => {
+  const accept = req.headers.accept ?? "*/*";
+  const acceptsJson = accept.includes("*/*") || accept.includes("json");
+
+  if (!acceptsJson) {
+    res.status(406).json({
+      success: false,
+      error: "Only application/json (or application/vnd.oai.openapi+json) is supported by this endpoint",
+    });
+    return;
+  }
+
+  const wantsOpenApiMediaType = accept.includes("vnd.oai.openapi");
+  // Serialize to a string first — Express's res.send() routes plain objects
+  // through res.json(), which unconditionally resets Content-Type and would
+  // clobber the negotiated media type set below.
+  const body = JSON.stringify(getSpec());
+  res.setHeader(
+    "Content-Type",
+    wantsOpenApiMediaType ? "application/vnd.oai.openapi+json;version=3.0" : "application/json",
+  );
+  res.send(body);
+});
+
+/**
+ * @swagger
+ * /docs/postman:
+ *   get:
+ *     summary: Postman Collection v2.1
+ *     description: Generates a Postman Collection v2.1 covering every documented endpoint, for one-click import (issue #784).
+ *     tags: [Documentation]
+ *     responses:
+ *       200:
+ *         description: Postman collection JSON
+ */
+router.get("/postman", (_req: Request, res: Response) => {
+  const collection = buildPostmanCollection(getSpec());
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Disposition", 'attachment; filename="mentorminds-api.postman_collection.json"');
+  res.json(collection);
 });
 
 export default router;
