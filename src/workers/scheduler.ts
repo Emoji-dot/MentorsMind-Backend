@@ -2,6 +2,7 @@ import { reportQueue } from "../queues/report.queue";
 import { sessionReminderQueue } from "../queues/sessionReminder.queue";
 import { escrowCheckQueue } from "../queues/escrow-check.queue";
 import { notificationCleanupQueue } from "../queues/notificationCleanup.queue";
+import { pushTokenCleanupQueue } from "../queues/pushTokenCleanup.queue";
 import { maintenanceQueue } from "../queues/maintenance.queue";
 import { VerificationService } from "../services/verification.service";
 import { accountDeletionJob } from "../jobs/accountDeletion.job";
@@ -20,10 +21,10 @@ async function addRepeatableJobIfNotExists(
 ): Promise<void> {
   const existingJobs = await queue.getRepeatableJobs();
   const jobId = options.jobId;
-  
+
   // Check if job already exists by jobId
-  const exists = existingJobs.find(job => job.id === jobId);
-  
+  const exists = existingJobs.find((job) => job.id === jobId);
+
   if (!exists) {
     await queue.add(jobName, data, options);
     logger.info(`Added repeatable job: ${jobName} (${jobId})`);
@@ -103,6 +104,17 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
+  // Push token cleanup — weekly at 03:00 UTC on Sunday
+  await addRepeatableJobIfNotExists(
+    pushTokenCleanupQueue,
+    "push-token-cleanup-scheduled",
+    { jobType: "push-token-cleanup" },
+    {
+      repeat: { pattern: "0 3 * * 0" }, // Sunday 03:00 UTC
+      jobId: "push-token-cleanup-recurring",
+    },
+  );
+
   // Daily maintenance job — 04:00 UTC
   await maintenanceQueue.add(
     "daily-maintenance",
@@ -116,6 +128,8 @@ export async function startScheduler(): Promise<void> {
   logger.info(
     "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, and daily maintenance registered",
   );
+  // Log repeatable job counts for observability
+  await logRepeatableJobCounts();
 }
 
 export async function stopScheduler(): Promise<void> {
