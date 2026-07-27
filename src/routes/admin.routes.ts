@@ -5,6 +5,9 @@ import { AdvancedAnalyticsController } from "../controllers/advanced-analytics.c
 import { VerificationController } from "../controllers/verification.controller";
 import { RevenueReportController } from "../controllers/revenueReport.controller";
 import { JwksController } from "../controllers/jwks.controller";
+import { RecordingCleanupController } from "../controllers/recording-cleanup.controller";
+import { AnalyticsRefreshStatusController } from "../controllers/analytics-refresh-status.controller";
+import { ExportAdminController } from "../controllers/export-progress.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { requireAdmin } from "../middleware/admin-auth.middleware";
 import { validate } from "../middleware/validation.middleware";
@@ -18,6 +21,7 @@ import {
   listVerificationsSchema,
 } from "../validators/schemas/verification.schemas";
 import { ConsentController } from "../controllers/consent.controller";
+import { MentorQualityController } from "../controllers/mentor-quality.controller";
 import { TraceController } from "../controllers/trace.controller";
 import { EscrowController } from "../controllers/escrow.controller";
 import { getTraceSchema } from "../validators/schemas/trace.schemas";
@@ -84,6 +88,9 @@ router.use(requireAdmin);
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.get("/stats", asyncHandler(AdminController.getStats));
+
+/** GET /admin/mentors/quality — paginated/sortable/filterable mentor quality scores */
+router.get("/mentors/quality", MentorQualityController.list);
 
 /**
  * @swagger
@@ -1001,6 +1008,65 @@ router.post("/analytics/refresh", AdvancedAnalyticsController.refreshAnalytics);
 
 /**
  * @swagger
+ * /admin/analytics/refresh-status:
+ *   get:
+ *     summary: Per-view analytics refresh health and last-run times
+ *     description: >
+ *       Shows the current state of each PostgreSQL materialized view managed
+ *       by the analytics refresh coordinator — last refreshed timestamp,
+ *       current lock holder, whether the view is stale, and BullMQ queue depth.
+ *     tags: [Admin, Analytics]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Refresh status per view
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         views:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               viewName: { type: string }
+ *                               status: { type: string, enum: [idle, refreshing, failed, unknown] }
+ *                               lastRefreshedAt: { type: string, format: date-time, nullable: true }
+ *                               secondsSinceRefresh: { type: integer, nullable: true }
+ *                               isStale: { type: boolean }
+ *                               lastDurationMs: { type: integer, nullable: true }
+ *                         queue:
+ *                           type: object
+ *                           properties:
+ *                             waiting: { type: integer }
+ *                             active: { type: integer }
+ *                             delayed: { type: integer }
+ *                             failed: { type: integer }
+ *                         summary:
+ *                           type: object
+ *                           properties:
+ *                             total: { type: integer }
+ *                             idle: { type: integer }
+ *                             refreshing: { type: integer }
+ *                             failed: { type: integer }
+ *                             stale: { type: integer }
+ *       403:
+ *         description: Admin role required
+ */
+router.get(
+  "/analytics/refresh-status",
+  asyncHandler(AnalyticsRefreshStatusController.getRefreshStatus),
+);
+
+/**
+ * @swagger
  * /admin/reports/revenue:
  *   get:
  *     summary: Get platform revenue summary for a period
@@ -1374,5 +1440,206 @@ router.get(
 );
 
 router.use("/backup", backupRoutes);
+
+// ── Recording Cleanup Routes ─────────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /admin/recordings/cleanup-report:
+ *   get:
+ *     summary: Latest S3 recording cleanup stats
+ *     description: >
+ *       Returns the most recent cleanup job run report — orphans found,
+ *       bytes reclaimed, estimated monthly cost savings, and multipart
+ *       uploads aborted. Pass ?limit=N (max 20) to see the last N runs.
+ *     tags: [Admin, Recordings]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: limit
+ *         in: query
+ *         schema: { type: integer, default: 1, maximum: 20 }
+ *         description: Number of job runs to return (default 1 = latest only)
+ *     responses:
+ *       200:
+ *         description: Cleanup report
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         jobRunId: { type: string, format: uuid }
+ *                         ranAt: { type: string, format: date-time }
+ *                         orphansFound: { type: integer }
+ *                         pendingDeletion: { type: integer }
+ *                         hardDeleted: { type: integer }
+ *                         recovered: { type: integer }
+ *                         multipartUploadsAborted: { type: integer }
+ *                         bytesReclaimed: { type: integer }
+ *                         bytesPendingReclaim: { type: integer }
+ *                         estimatedMonthlySavingsUsd: { type: number }
+ *       403:
+ *         description: Admin role required
+ */
+router.get(
+  "/recordings/cleanup-report",
+  asyncHandler(RecordingCleanupController.getCleanupReport),
+);
+
+/**
+ * @swagger
+ * /admin/recordings/cleanup-run:
+ *   post:
+ *     summary: Trigger an immediate recording cleanup run
+ *     description: Enqueues a high-priority cleanup job without waiting for the Saturday cron.
+ *     tags: [Admin, Recordings]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       202:
+ *         description: Job queued
+ *       403:
+ *         description: Admin role required
+ */
+router.post(
+  "/recordings/cleanup-run",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: () => ({ type: "RECORDING_CLEANUP", id: "manual-trigger" }),
+  }),
+  asyncHandler(RecordingCleanupController.triggerCleanupRun),
+);
+
+/**
+ * @swagger
+ * /admin/recordings/cleanup-recover:
+ *   post:
+ *     summary: Recover a recording object pending deletion
+ *     description: >
+ *       Marks a pending-deletion log entry as recovered within the 7-day
+ *       soft-delete window, preventing the object from being hard-deleted.
+ *     tags: [Admin, Recordings]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [logId]
+ *             properties:
+ *               logId:
+ *                 type: string
+ *                 format: uuid
+ *                 description: The recording_cleanup_log row ID
+ *     responses:
+ *       200:
+ *         description: Object recovered
+ *       400:
+ *         description: logId is required
+ *       404:
+ *         description: Log entry not found or not in pending_deletion state
+ *       403:
+ *         description: Admin role required
+ */
+router.post(
+  "/recordings/cleanup-recover",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({
+      type: "RECORDING_CLEANUP",
+      id: req.body.logId as string,
+    }),
+  }),
+  asyncHandler(RecordingCleanupController.recoverPendingDeletion),
+);
+
+// ── Export Admin Routes ──────────────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /admin/exports/pending-approvals:
+ *   get:
+ *     summary: List data export requests awaiting admin approval (>1 GB)
+ *     tags: [Admin, Export]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of export jobs pending approval
+ */
+router.get(
+  "/exports/pending-approvals",
+  asyncHandler(ExportAdminController.listPendingApprovals),
+);
+
+/**
+ * @swagger
+ * /admin/exports/{jobId}/approve:
+ *   post:
+ *     summary: Approve a large export request and re-queue it
+ *     tags: [Admin, Export]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: jobId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Export approved and queued
+ *       400:
+ *         description: Export is not awaiting approval
+ *       404:
+ *         description: Export job not found
+ */
+router.post(
+  "/exports/:jobId/approve",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "EXPORT_JOB", id: req.params.jobId as string }),
+  }),
+  asyncHandler(ExportAdminController.approveExport),
+);
+
+/**
+ * @swagger
+ * /admin/exports/{jobId}/reject:
+ *   post:
+ *     summary: Reject a large export request
+ *     tags: [Admin, Export]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: jobId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason: { type: string }
+ *     responses:
+ *       200:
+ *         description: Export rejected
+ */
+router.post(
+  "/exports/:jobId/reject",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "EXPORT_JOB", id: req.params.jobId as string }),
+  }),
+  asyncHandler(ExportAdminController.rejectExport),
+);
 
 export default router;

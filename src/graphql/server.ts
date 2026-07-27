@@ -6,7 +6,7 @@ import {
 } from '@apollo/server/plugin/landingPage/default';
 import { Application, json } from 'express';
 import jwt from 'jsonwebtoken';
-import { GraphQLError, ValidationContext } from 'graphql';
+import { GraphQLError, ValidationContext, FieldNode, Kind } from 'graphql';
 import typeDefs from './schema';
 import resolvers from './resolvers';
 import { graphqlConfig } from '../config/graphql';
@@ -53,6 +53,45 @@ const createQueryComplexityRule = (maximumComplexity: number) => {
   };
 };
 
+const createQueryDepthRule = (maxDepth: number) => {
+  return (context: ValidationContext) => {
+    function fieldDepth(node: FieldNode, depth: number): number {
+      const selectionSet = node.selectionSet;
+      if (!selectionSet) return depth;
+
+      let maxChildDepth = depth;
+      for (const selection of selectionSet.selections) {
+        if (selection.kind === Kind.FIELD) {
+          maxChildDepth = Math.max(maxChildDepth, fieldDepth(selection, depth + 1));
+        } else if (selection.kind === Kind.INLINE_FRAGMENT) {
+          for (const inner of selection.selectionSet.selections) {
+            if (inner.kind === Kind.FIELD) {
+              maxChildDepth = Math.max(maxChildDepth, fieldDepth(inner, depth + 1));
+            }
+          }
+        }
+      }
+      return maxChildDepth;
+    }
+
+    return {
+      OperationDefinition: (node: any) => {
+        let depth = 0;
+        for (const selection of node.selectionSet.selections) {
+          if (selection.kind === Kind.FIELD) {
+            depth = Math.max(depth, fieldDepth(selection, 1));
+          }
+        }
+        if (depth > maxDepth) {
+          context.reportError(
+            new GraphQLError(`GraphQL query depth ${depth} exceeds maximum allowed depth of ${maxDepth}.`),
+          );
+        }
+      },
+    };
+  };
+};
+
 export async function initializeGraphQL(app: Application): Promise<void> {
   const server = new ApolloServer({
     typeDefs,
@@ -65,6 +104,7 @@ export async function initializeGraphQL(app: Application): Promise<void> {
     ],
     validationRules: [
       createQueryComplexityRule(graphqlConfig.maxComplexity),
+      createQueryDepthRule(graphqlConfig.maxDepth),
     ],
   });
 

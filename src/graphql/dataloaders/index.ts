@@ -2,6 +2,7 @@ import DataLoader from "dataloader";
 import { BookingModel, BookingRecord } from "../../models/booking.model";
 import { PaymentModel, Payment } from "../../models/payment.model";
 import { ReviewModel, Review } from "../../models/review.model";
+import { WalletModel, Wallet } from "../../models/wallet.model";
 import { UsersService } from "../../services/users.service";
 import { MentorsService, MentorRecord } from "../../services/mentors.service";
 import { PublicUserRecord } from "../../services/users.service";
@@ -12,6 +13,7 @@ export interface GraphQLLoaders {
   bookingLoader: DataLoader<string, BookingRecord[]>;
   paymentLoader: DataLoader<string, Payment[]>;
   reviewLoader: DataLoader<string, Review[]>;
+  walletLoader: DataLoader<string, Wallet | null>;
 }
 
 export const createLoaders = (): GraphQLLoaders => ({
@@ -82,5 +84,12 @@ export const createLoaders = (): GraphQLLoaders => ({
 
     // Keep ordering consistent with requested ids.
     return ids.map((id) => grouped[id] ?? []);
+  }),
+
+  walletLoader: new DataLoader<string, Wallet | null>(async (userIds) => {
+    const uniqueIds = Array.from(new Set(userIds));
+    const wallets = await WalletModel.findByUserIds(uniqueIds);
+    const walletMap = new Map(wallets.map((w) => [w.user_id, w]));
+    return userIds.map((id) => walletMap.get(id) || null);
   }),
 });
