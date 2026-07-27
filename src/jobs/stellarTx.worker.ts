@@ -1,5 +1,7 @@
 import { Worker, Job } from "bullmq";
-import { Asset } from "@stellar/stellar-sdk";
+import { Asset, TransactionBuilder, Transaction } from "@stellar/stellar-sdk";
+import { redis } from "../config/redis";
+import { getPlatformKeypair, networkPassphrase } from "../config/stellar";
 import {
   redisConnection,
   CONCURRENCY,
@@ -80,9 +82,15 @@ async function processStellarTx(job: Job<StellarTxJobData>): Promise<void> {
     attempt: job.attemptsMade + 1,
   });
 
+  // Idempotency check
+  const idempotencyKey = `stellar_tx:success:${job.id}`;
+  if (await redis.exists(idempotencyKey)) {
+    logger.info("Stellar TX job already processed", { jobId: job.id });
+    return;
+  }
+
   let xdr = txEnvelopeXdr;
   if (!xdr && type === "refund" && paymentId && amount && currency) {
-    // Build refund XDR
     const payment = await pool.query(
       "SELECT from_address FROM transactions WHERE id = $1",
       [paymentId],
@@ -95,33 +103,97 @@ async function processStellarTx(job: Job<StellarTxJobData>): Promise<void> {
       toPublicKey,
       amount,
       currency === "XLM" ? undefined : new Asset(currency, "GA..."),
-    ); // Need to handle assets
-    // For now, assume XLM
+    ); 
   }
 
   if (!xdr) {
     throw new Error("No transaction XDR to submit");
   }
 
-  const result = await stellarService.submitTransaction(xdr);
+  // Parse TX to check expiry
+  let tx = TransactionBuilder.fromXDR(xdr, networkPassphrase) as Transaction;
+  
+  // Check if expired
+  if (tx.timeBounds && tx.timeBounds.maxTime && tx.timeBounds.maxTime !== "0") {
+    const maxTime = parseInt(tx.timeBounds.maxTime, 10);
+    const now = Math.floor(Date.now() / 1000);
+    if (maxTime < now) {
+      logger.warn("Stellar transaction expired, rebuilding", { jobId: job.id });
+      const sourceAccount = await stellarService.server.getAccount(tx.source);
+      tx = new TransactionBuilder(sourceAccount, {
+        fee: tx.fee,
+        networkPassphrase,
+      })
+        .setTimeout(30)
+        .addOperations(tx.operations)
+        .build();
+        
+      const kp = getPlatformKeypair();
+      if (kp) tx.sign(kp);
+      xdr = tx.toXDR();
+    }
+  }
 
-  if (!result.successful) {
-    // Submission reached Stellar but the tx was rejected — do not retry
-    logger.error("Stellar transaction rejected", {
-      jobId: job.id,
-      hash: result.hash,
-      resultXdr: result.resultXdr,
-    });
+  let result;
+  try {
+    result = await stellarService.submitTransaction(xdr);
+  } catch (err: any) {
+    const txResultCode = err?.response?.data?.extras?.result_codes?.transaction;
+    if (txResultCode === "tx_bad_seq") {
+      logger.warn("tx_bad_seq encountered, rebuilding transaction", { jobId: job.id });
+      const sourceAccount = await stellarService.server.getAccount(tx.source);
+      tx = new TransactionBuilder(sourceAccount, {
+        fee: tx.fee,
+        networkPassphrase,
+      })
+        .setTimeout(30)
+        .addOperations(tx.operations)
+        .build();
+      const kp = getPlatformKeypair();
+      if (kp) tx.sign(kp);
+      xdr = tx.toXDR();
+      result = await stellarService.submitTransaction(xdr);
+    } else if (txResultCode === "tx_insufficient_fee") {
+      logger.warn("tx_insufficient_fee encountered, bumping fee", { jobId: job.id });
+      const newFee = String(parseInt(tx.fee, 10) * 2);
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        getPlatformKeypair()!,
+        newFee,
+        tx,
+        networkPassphrase
+      );
+      const kp = getPlatformKeypair();
+      if (kp) feeBumpTx.sign(kp);
+      xdr = feeBumpTx.toXDR();
+      result = await stellarService.submitTransaction(xdr);
+    } else {
+      logger.error("Stellar transaction rejected", {
+        jobId: job.id,
+        error: err.message,
+        extras: err?.response?.data?.extras,
+      });
 
+      if (paymentId) {
+        await pool.query(
+          "UPDATE transactions SET status = 'failed', updated_at = NOW() WHERE id = $1",
+          [paymentId],
+        );
+      }
+      
+      const wrappedErr = new Error(`Stellar transaction rejected: ${txResultCode || err.message}`);
+      (wrappedErr as any).retryable = false;
+      throw wrappedErr;
+    }
+  }
+
+  if (!result || !result.successful) {
     if (paymentId) {
       await pool.query(
         "UPDATE transactions SET status = 'failed', updated_at = NOW() WHERE id = $1",
         [paymentId],
       );
     }
-
-    // Mark job as permanently failed by throwing a non-retryable error
-    const err = new Error(`Stellar transaction rejected: ${result.resultXdr}`);
+    const err = new Error(`Stellar transaction unsuccessful`);
     (err as any).retryable = false;
     throw err;
   }
@@ -133,9 +205,11 @@ async function processStellarTx(job: Job<StellarTxJobData>): Promise<void> {
     paymentId,
   });
 
+  // Save idempotency key
+  await redis.set(idempotencyKey, result.hash, "EX", 86400);
+
   if (paymentId) {
     if (type === "refund") {
-      // For refunds, call refundPayment to create the refund record and update booking
       await PaymentsService.refundPayment(
         paymentId,
         userId,
@@ -144,7 +218,6 @@ async function processStellarTx(job: Job<StellarTxJobData>): Promise<void> {
         result.hash,
       );
     } else {
-      // For regular payments, update the payment record
       await pool.query(
         "UPDATE transactions SET status = 'completed', stellar_tx_hash = $1, completed_at = NOW(), updated_at = NOW() WHERE id = $2",
         [result.hash, paymentId],

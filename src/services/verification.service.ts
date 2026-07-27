@@ -172,6 +172,22 @@ export const VerificationService = {
         };
     },
 
+    /** Admin: get list of verifications expiring within X days */
+    async getExpiringSoon(days: number = 60): Promise<any[]> {
+        const { rows } = await pool.query(
+            `SELECT mv.id, mv.mentor_id, u.first_name, u.last_name, u.email, mv.expires_at, 
+                    mv.reminder_sent_60d, mv.reminder_sent_30d, mv.reminder_sent_14d, mv.reminder_sent_7d
+             FROM mentor_verifications mv
+             JOIN users u ON mv.mentor_id = u.id
+             WHERE mv.status = 'approved'
+               AND mv.expires_at IS NOT NULL
+               AND mv.expires_at <= NOW() + INTERVAL '${days} days'
+               AND mv.expires_at > NOW()
+             ORDER BY mv.expires_at ASC`
+        );
+        return rows;
+    },
+
     /** GET /mentors/:id/verification-status */
     async getStatusByMentorId(mentorId: string): Promise<VerificationRecord | null> {
         const { rows } = await pool.query<VerificationRecord>(
@@ -298,6 +314,58 @@ export const VerificationService = {
         });
 
         return rows[0];
+    },
+
+    /** Background Job: Send proactive reminders before verification expires */
+    async sendExpiryReminders(): Promise<number> {
+        let totalSent = 0;
+        
+        // Ensure queue prioritizes these emails over standard marketing
+        const emailOpts = { priority: 2 };
+        
+        const thresholds = [
+            { days: 60, col: 'reminder_sent_60d' },
+            { days: 30, col: 'reminder_sent_30d' },
+            { days: 14, col: 'reminder_sent_14d' },
+            { days: 7, col: 'reminder_sent_7d' }
+        ];
+
+        for (const t of thresholds) {
+            const { rows } = await pool.query(`
+                UPDATE mentor_verifications mv
+                SET ${t.col} = TRUE
+                FROM users u
+                WHERE mv.mentor_id = u.id
+                  AND mv.status = 'approved'
+                  AND mv.expires_at IS NOT NULL
+                  AND mv.expires_at <= NOW() + INTERVAL '${t.days} days'
+                  AND mv.expires_at > NOW() + INTERVAL '${t.days - 1} days'
+                  AND mv.${t.col} = FALSE
+                RETURNING u.email, u.first_name, mv.expires_at, u.phone_number
+            `);
+
+            for (const row of rows) {
+                if (row.email) {
+                    await enqueueEmail({
+                        to: [row.email],
+                        subject: `[MentorsMind] Action Required: Mentor Verification Expires in ${t.days} Days`,
+                        html: `<p>Hi ${row.first_name || 'Mentor'},</p><p>Your verification expires on ${new Date(row.expires_at).toLocaleDateString()}. Please renew it to keep your mentor status active.</p>`
+                    }, emailOpts as any);
+                }
+                
+                // Placeholder for push/SMS notifications
+                // if (row.phone_number) {
+                //    await NotificationService.sendSms(row.phone_number, `Your MentorsMind verification expires in ${t.days} days. Renew now.`);
+                // }
+                totalSent++;
+            }
+        }
+        
+        if (totalSent > 0) {
+            logger.info('[VerificationService] Sent verification expiry reminders', { count: totalSent });
+        }
+        
+        return totalSent;
     },
 
     /** Cron: flag verifications past their expiry date */

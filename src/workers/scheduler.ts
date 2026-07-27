@@ -171,8 +171,19 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
+  // JWT Key Rotation — monthly on the 1st at 00:00 UTC (issue #778)
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "key-rotation-scheduled",
+    { jobType: "key-rotation" },
+    {
+      repeat: { pattern: "0 0 1 * *" }, // cron: 1st of every month at midnight
+      jobId: "key-rotation-recurring",
+    },
+  );
+
   logger.info(
-    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, and audit log archival registered",
+    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, audit log archival, and key rotation registered",
   );
 }
 

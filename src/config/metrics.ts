@@ -173,6 +173,13 @@ export const stellarApiCallsTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
+export const escrowSyncMismatchesTotal = new Counter<string>({
+  name: "escrow_sync_mismatches_total",
+  help: "Total number of Soroban escrow state mismatches corrected by the check worker",
+  labelNames: ["type"],
+  registers: [metricsRegistry],
+});
+
 // ─── Mentor Quality Scoring ───────────────────────────────────────────────────
 
 export const mentorQualityScoreGauge = new Gauge<string>({
