@@ -666,4 +666,33 @@ export const AdminController = {
       ResponseUtil.error(res, err.message, 500);
     }
   },
+
+  /**
+   * GET /api/v1/admin/stellar/stuck-transactions
+   */
+  async getStuckStellarTransactions(
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> {
+    try {
+      const { Queue } = require("bullmq");
+      const { QUEUE_NAMES, redisConnection } = require("../queues/queue.config");
+      const stellarQueue = new Queue(QUEUE_NAMES.STELLAR_TX, { connection: redisConnection });
+      
+      const failedJobs = await stellarQueue.getFailed();
+      const stuck = failedJobs
+        .filter((job: any) => job.attemptsMade > 5)
+        .map((job: any) => ({
+          id: job.id,
+          data: job.data,
+          attemptsMade: job.attemptsMade,
+          failedReason: job.failedReason,
+          timestamp: job.timestamp,
+        }));
+        
+      ResponseUtil.success(res, { count: stuck.length, stuck }, "Stuck stellar transactions retrieved");
+    } catch (err: any) {
+      ResponseUtil.error(res, err.message, 500);
+    }
+  },
 };

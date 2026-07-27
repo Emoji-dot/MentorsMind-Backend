@@ -404,6 +404,14 @@ router.post(
   asyncHandler(JwksController.rotateKeys),
 );
 router.post(
+  "/jwks/rotate",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: () => ({ type: "AUTH", id: "JWKS" }),
+  }),
+  asyncHandler(JwksController.rotateKeys),
+);
+router.post(
   "/security/rotate-encryption-key",
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
@@ -1296,6 +1304,11 @@ router.post(
  *         description: Paginated list of verifications
  */
 router.get(
+  "/verifications/expiring-soon",
+  asyncHandler(VerificationController.listExpiringSoon),
+);
+
+router.get(
   "/verifications",
   validate(listVerificationsSchema),
   asyncHandler(VerificationController.listVerifications),
@@ -1646,6 +1659,21 @@ router.post(
     getEntityDetails: (req) => ({ type: "EXPORT_JOB", id: req.params.jobId as string }),
   }),
   asyncHandler(ExportAdminController.rejectExport),
+);
+
+/**
+ * @swagger
+ * /admin/stellar/stuck-transactions:
+ *   get:
+ *     summary: Retrieve stuck stellar transactions
+ *     tags: [Admin, Stellar]
+ *     responses:
+ *       200:
+ *         description: Stuck transactions retrieved
+ */
+router.get(
+  "/stellar/stuck-transactions",
+  asyncHandler(AdminController.getStuckStellarTransactions),
 );
 
 export default router;
