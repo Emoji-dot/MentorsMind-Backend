@@ -26,9 +26,9 @@ import walletRoutes from "../wallets.routes";
 import consentRoutes from "../consent.routes";
 import integrationsRoutes from "../integrations.routes";
 import notesRoutes from "../notes.routes";
+import tenantEmailTemplatesRoutes from "../tenantEmailTemplates.routes";
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
-import { VerificationService } from "../../services/verification.service";
 import { notificationCleanupService } from "../../services/notification-cleanup.service";
 
 const router = Router();
@@ -63,5 +63,6 @@ router.use("/escrow", escrowRoutes);
 router.use("/wallets", walletRoutes);
 router.use("/integrations", integrationsRoutes);
 router.use("/", notesRoutes);
+router.use("/tenant/email-templates", tenantEmailTemplatesRoutes);
 
 export default router;
