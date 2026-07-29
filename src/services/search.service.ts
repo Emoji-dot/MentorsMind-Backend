@@ -1,3 +1,16 @@
+/**
+ * Search Service
+ *
+ * Provides mentor search via Elasticsearch (primary) or PostgreSQL (fallback).
+ *
+ * Caching strategy:
+ *   - Generic search results cached by filter hash (no user context in cache key)
+ *   - User-specific analytics are tracked separately after cache lookup
+ *   - TTL: 2 minutes for general searches, 10 minutes for popular/warmed searches
+ *   - Cache warming: runs every 15 minutes for top-20 popular queries
+ *   - Cache invalidation: call invalidateSearchCache() when mentor profiles update
+ */
+
 import pool from '../config/database';
 import { CacheService } from './cache.service';
 import { CacheTTL } from '../utils/cache-key.utils';
@@ -6,6 +19,20 @@ import elasticsearchService, { SearchQuery, SearchResult, MentorDocument } from 
 import { MessagingService } from './messaging.service';
 import config from '../config';
 import crypto from 'crypto';
+import { logger } from '../utils/logger.utils';
+
+// ── TTL constants ─────────────────────────────────────────────────────────────
+
+/** General search results cache — 2 minutes */
+const SEARCH_CACHE_TTL = 120;
+
+/** Pre-warmed popular search cache — 10 minutes */
+const POPULAR_SEARCH_CACHE_TTL = 600;
+
+/** Autocomplete suggestions cache — 5 minutes */
+const AUTOCOMPLETE_CACHE_TTL = 300;
+
+// ── Key helpers ───────────────────────────────────────────────────────────────
 
 export type GlobalSearchResultType = 'mentor' | 'session' | 'message';
 
@@ -37,14 +64,28 @@ function hashParams(params: Record<string, any>): string {
   return crypto.createHash('md5').update(JSON.stringify(params)).digest('hex').substring(0, 8);
 }
 
+/** Build a stable, user-agnostic cache key from search filters */
+function buildEsCacheKey(filters: any): string {
+  // Omit userId from the cache key so generic results are shared across users
+  const { userId: _userId, ...cacheableFilters } = filters;
+  return `mm:search:es:v1:${hashParams(cacheableFilters)}`;
+}
+
+/** Build cache key for PostgreSQL fallback search */
+function buildPgCacheKey(filters: any): string {
+  const { userId: _userId, ...cacheableFilters } = filters;
+  return `mm:search:mentors:v1:${hashParams(cacheableFilters)}`;
+}
+
+// ── Service ───────────────────────────────────────────────────────────────────
+
 export class SearchService {
   /**
    * Search mentors with Elasticsearch (if enabled) or fallback to PostgreSQL.
-   * Uses a distinct cache namespace (mm:search:mentors:v2:*) to avoid
-   * collisions with MentorsService.list which returns a different response shape.
+   * Uses a distinct cache namespace (mm:search:*) to avoid collisions with
+   * MentorsService.list which returns a different response shape.
    */
   static async searchMentors(filters: any, userId?: string) {
-    // Check if Elasticsearch is enabled and connected
     const esEnabled = config.elasticsearch.enabled;
     const esConnected = await elasticsearchService.checkConnection();
 
@@ -52,12 +93,17 @@ export class SearchService {
       return this.searchMentorsWithElasticsearch(filters, userId);
     }
 
-    // Fallback to PostgreSQL search
     return this.searchMentorsWithPostgreSQL(filters);
   }
 
   /**
-   * Search mentors using Elasticsearch for advanced full-text search.
+   * Search mentors using Elasticsearch with result caching.
+   *
+   * Cache strategy:
+   *   1. Cache key is based on filters ONLY (no userId) — generic results
+   *      are shared across all users to maximise cache hit rate.
+   *   2. After obtaining results (from cache or ES), track analytics with userId
+   *      so personalization data is still collected.
    */
   private static async searchMentorsWithElasticsearch(filters: any, userId?: string) {
     const { query, skills, minPrice, maxPrice, minRating, language, page = 1, limit = 10, sort = 'relevance' } = filters;
@@ -75,15 +121,34 @@ export class SearchService {
       sort,
     };
 
+    const cacheKey = buildEsCacheKey(filters);
+
+    // Check cache first — generic results shared across users
+    const cached = await CacheService.get<{
+      mentors: any[];
+      meta: Record<string, any>;
+    }>(cacheKey);
+
+    if (cached !== null) {
+      // Cache HIT — still track analytics for the specific user asynchronously
+      if (userId) {
+        elasticsearchService
+          .trackSearch(searchQuery.query, searchQuery.filters, cached.meta?.total ?? 0, userId)
+          .catch(() => {});
+      }
+      return cached;
+    }
+
+    // Cache MISS — execute search
     try {
       const result: SearchResult<MentorDocument> = await elasticsearchService.searchMentors(searchQuery);
 
-      // Track search analytics
+      // Track analytics with user context (does not affect cache)
       await elasticsearchService.trackSearch(
         searchQuery.query,
         searchQuery.filters,
         result.total,
-        userId
+        userId,
       );
 
       const searchResult = {
@@ -96,10 +161,13 @@ export class SearchService {
         },
       };
 
+      // Cache generic results without user context
+      await CacheService.set(cacheKey, searchResult, SEARCH_CACHE_TTL);
+
       return searchResult;
     } catch (error) {
       // Fallback to PostgreSQL if Elasticsearch fails
-      console.error('Elasticsearch search failed, falling back to PostgreSQL:', error);
+      logger.warn('Elasticsearch search failed, falling back to PostgreSQL', { error });
       return this.searchMentorsWithPostgreSQL(filters);
     }
   }
@@ -108,7 +176,7 @@ export class SearchService {
    * Search mentors using PostgreSQL (fallback method).
    */
   private static async searchMentorsWithPostgreSQL(filters: any) {
-    const cacheKey = `mm:search:mentors:v1:${hashParams(filters)}`;
+    const cacheKey = buildPgCacheKey(filters);
 
     const cached = await CacheService.get<any>(cacheKey);
     if (cached !== null) {
@@ -134,22 +202,36 @@ export class SearchService {
   }
 
   /**
-   * Get autocomplete suggestions for mentor names.
+   * Get autocomplete suggestions for mentor names with caching.
    */
   static async autocomplete(query: string, limit: number = 10): Promise<string[]> {
+    // Normalise query for cache key
+    const normalised = query.toLowerCase().trim();
+    const cacheKey = `mm:search:autocomplete:${normalised}:${limit}`;
+
+    const cached = await CacheService.get<string[]>(cacheKey);
+    if (cached !== null) {
+      return cached;
+    }
+
     const esEnabled = config.elasticsearch.enabled;
     const esConnected = await elasticsearchService.checkConnection();
 
+    let suggestions: string[];
+
     if (esEnabled && esConnected) {
-      return elasticsearchService.autocomplete(query, 'name', limit);
+      suggestions = await elasticsearchService.autocomplete(query, 'name', limit);
+    } else {
+      // Fallback to PostgreSQL for autocomplete
+      const result = await pool.query(
+        `SELECT name FROM users WHERE role = 'mentor' AND name ILIKE $1 LIMIT $2`,
+        [`${query}%`, limit],
+      );
+      suggestions = result.rows.map((row: any) => row.name);
     }
 
-    // Fallback to PostgreSQL for autocomplete
-    const result = await pool.query(
-      `SELECT name FROM users WHERE role = 'mentor' AND name ILIKE $1 LIMIT $2`,
-      [`${query}%`, limit]
-    );
-    return result.rows.map((row: any) => row.name);
+    await CacheService.set(cacheKey, suggestions, AUTOCOMPLETE_CACHE_TTL);
+    return suggestions;
   }
 
   /**
@@ -166,7 +248,7 @@ export class SearchService {
     // Fallback to PostgreSQL for similar mentors
     const result = await pool.query(
       `SELECT expertise FROM users WHERE id = $1 AND role = 'mentor'`,
-      [mentorId]
+      [mentorId],
     );
 
     if (result.rows.length === 0) {
@@ -176,7 +258,7 @@ export class SearchService {
     const expertise = result.rows[0].expertise;
     const similarResult = await pool.query(
       `SELECT * FROM users WHERE role = 'mentor' AND id != $1 AND expertise && $2 LIMIT $3`,
-      [mentorId, expertise, limit]
+      [mentorId, expertise, limit],
     );
 
     return similarResult.rows;
@@ -193,7 +275,6 @@ export class SearchService {
       return elasticsearchService.getPopularSearches(limit);
     }
 
-    // Return empty array if Elasticsearch is not available
     return [];
   }
 
