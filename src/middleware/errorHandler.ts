@@ -7,6 +7,7 @@ import { CircuitBreakerError } from "../services/database.service";
 export interface AppError extends Error {
   statusCode?: number;
   isOperational?: boolean;
+  details?: unknown;
 }
 
 export const errorHandler = (
@@ -69,6 +70,7 @@ export const errorHandler = (
   res.status(statusCode).json({
     status: "error",
     message,
+    details: "details" in err ? (err as AppError).details : undefined,
     requestId,
     timestamp: new Date().toISOString(),
     ...(process.env.NODE_ENV === "development" && {
@@ -81,9 +83,11 @@ export const errorHandler = (
 export const createError = (
   message: string,
   statusCode: number = 500,
+  details?: unknown,
 ): AppError => {
   const error: AppError = new Error(message);
   error.statusCode = statusCode;
   error.isOperational = true;
+  error.details = details;
   return error;
 };

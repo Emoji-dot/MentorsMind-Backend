@@ -218,13 +218,19 @@ const envSchema = z.object({
   CDN_FASTLY_SERVICE_ID: z.string().optional(),
   CDN_FASTLY_API_KEY: z.string().optional(),
 
-  // Elasticsearch
+  // Elasticsearch / ELK Stack (issue #740)
   ELASTICSEARCH_URL: z.string().url().default("http://localhost:9200"),
   ELASTICSEARCH_USERNAME: z.string().optional(),
   ELASTICSEARCH_PASSWORD: z.string().optional(),
   ELASTICSEARCH_API_KEY: z.string().optional(),
   ELASTICSEARCH_ENABLED: z.enum(["true", "false"]).default("true"),
   ELASTICSEARCH_INDEX_PREFIX: z.string().default("mentorminds"),
+  /** Max log documents to buffer before flushing to Elasticsearch */
+  ELK_BATCH_SIZE: z.string().regex(/^\d+$/).default("100"),
+  /** Flush interval in ms for the ELK batch transport */
+  ELK_FLUSH_INTERVAL_MS: z.string().regex(/^\d+$/).default("5000"),
+  /** Max retry attempts for failed ELK bulk requests */
+  ELK_MAX_RETRIES: z.string().regex(/^\d+$/).default("3"),
 
   // Stellar (additional keys)
   STELLAR_FUNDING_SECRET: z.string().optional(),
@@ -254,21 +260,14 @@ const envSchema = z.object({
   // to the Swagger UI so third-party developers can try endpoints against
   // fixture data with no real side effects.
   SANDBOX_MODE: z.enum(["true", "false"]).default("false"),
-  AUDIT_LOG_RETENTION_DAYS: z.string().regex(/^\d+$/).default("365"),
-  PUSH_TOKEN_RETENTION_DAYS: z.string().regex(/^\d+$/).default("30"),
-  NOTIFICATION_DELIVERY_RETENTION_DAYS: z
-    .string()
-    .regex(/^\d+$/)
-    .default("90"),
-  WEBHOOK_DELIVERY_RETENTION_DAYS: z
-    .string()
-    .regex(/^\d+$/)
-    .default("60"),
-  CHATBOT_MESSAGE_RETENTION_DAYS: z
-    .string()
-    .regex(/^\d+$/)
-    .default("180"),
-  STALE_CLEANUP_DRY_RUN: z.enum(["true", "false"]).default("false"),
+
+  // Email CDN assets (issue #752)
+  // Physical mailing address shown in email footers for CAN-SPAM / GDPR compliance.
+  COMPANY_ADDRESS: z.string().default("MentorMinds, Inc. — mentorminds.com"),
+  // Base URL for self-hosted email asset icons (logo, social icons).
+  // When CDN_BASE_URL is set, EmailCDNService uses it; otherwise this provides
+  // the fallback absolute URL prefix so email clients always get absolute URLs.
+  EMAIL_ASSETS_BASE_URL: z.string().url().optional(),
 });
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@ export interface WalletRecord {
   id: string;
   user_id: string;
   stellar_public_key: string;
+  ethereum_address?: string | null;
+  polygon_address?: string | null;
   status: 'active' | 'inactive' | 'suspended';
   created_at: Date;
   updated_at: Date;
