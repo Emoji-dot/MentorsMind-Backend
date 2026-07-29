@@ -255,7 +255,7 @@ class SorobanEscrowServiceImpl {
         bookingId: input.bookingId,
         txHash: tx.txHash,
         txResult: tx.result,
-        validationErrors: validationResult.error.errors,
+        validationErrors: (validationResult.error as any).errors,
       });
       throw new Error(`Invalid create_escrow response for booking ${input.bookingId}.`);
     }

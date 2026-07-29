@@ -42,15 +42,19 @@ export const MfaService = {
   /**
    * Encrypt a secret for storage.
    */
-  encryptSecret(secret: string): string {
-    return EncryptionUtil.encrypt(secret);
+  async encryptSecret(secret: string): Promise<string> {
+    const encrypted = await EncryptionUtil.encrypt(secret);
+    if (!encrypted) throw new Error("Encryption failed");
+    return encrypted;
   },
 
   /**
    * Decrypt a secret from storage.
    */
-  decryptSecret(encryptedSecret: string): string {
-    return EncryptionUtil.decrypt(encryptedSecret);
+  async decryptSecret(encryptedSecret: string): Promise<string> {
+    const decrypted = await EncryptionUtil.decrypt(encryptedSecret);
+    if (!decrypted) throw new Error("Decryption failed");
+    return decrypted;
   },
 
   /**

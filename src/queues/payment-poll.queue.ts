@@ -1,9 +1,5 @@
-import { Queue } from 'bullmq';
-import {
-  redisConnection,
-  defaultJobOptions,
-  QUEUE_NAMES,
-} from './queue.config';
+import { createManagedQueue, buildJobOptions, JobConfig } from './queue.manager';
+import { defaultJobOptions, QUEUE_NAMES } from './queue.config';
 
 export interface PaymentPollJobData {
   paymentId: string;
@@ -11,10 +7,9 @@ export interface PaymentPollJobData {
   transactionHash: string | null;
 }
 
-export const paymentPollQueue = new Queue<PaymentPollJobData>(
+export const paymentPollQueue = createManagedQueue<PaymentPollJobData>(
   QUEUE_NAMES.PAYMENT_POLL,
   {
-    connection: redisConnection,
     defaultJobOptions: {
       ...defaultJobOptions,
       // Poll every 30 seconds, up to 20 attempts (10 minutes total)
@@ -30,9 +25,15 @@ export const paymentPollQueue = new Queue<PaymentPollJobData>(
  */
 export async function enqueuePaymentPoll(
   data: PaymentPollJobData,
+  options?: Partial<JobConfig>,
 ): Promise<void> {
   // Deduplicate by paymentId — only one active poll per payment
-  await paymentPollQueue.add('poll-payment', data, {
-    jobId: `payment-poll:${data.paymentId}`,
-  });
+  await paymentPollQueue.add(
+    options?.name ?? 'poll-payment',
+    data,
+    {
+      ...buildJobOptions(options),
+      jobId: `payment-poll:${data.paymentId}`,
+    },
+  );
 }

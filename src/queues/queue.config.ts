@@ -7,5 +7,14 @@ export {
   defaultJobOptions,
   QUEUE_NAMES,
   CONCURRENCY,
+  JOB_RATE_LIMITS,
+  QUEUE_PRIORITIES,
+  JobConfig,
+  JobType,
+  JobBackoffConfig,
+  JobRateLimit,
 } from "../config/queue";
 export type { QueueName } from "../config/queue";
+
+// Backward-compat alias used by some workers
+export { redisConnection as queueConnection } from "../config/queue";

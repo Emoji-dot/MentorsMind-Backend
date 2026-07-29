@@ -2,6 +2,7 @@ import { Router, IRouter } from "express";
 import { ReviewsController } from "../controllers/reviews.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { requireAdmin } from "../middleware/rbac.middleware";
+import { screenReview } from "../middleware/content-moderation.middleware";
 import {
   validate,
   createReviewSchema,
@@ -49,6 +50,7 @@ router.post(
   "/",
   authenticate,
   validate(createReviewSchema),
+  screenReview,
   ReviewsController.createReview,
 );
 
@@ -64,11 +66,13 @@ router.post(
  *         required: true
  *         schema: { type: string, format: uuid }
  *       - in: query
- *         name: page
- *         schema: { type: integer, default: 1 }
+ *         name: cursor
+ *         schema: { type: string }
+ *         description: Cursor for cursor-based pagination
  *       - in: query
  *         name: limit
  *         schema: { type: integer, default: 10 }
+ *
  *     responses:
  *       200:
  *         description: Paginated list of reviews
@@ -123,6 +127,7 @@ router.put(
   authenticate,
   validate(reviewIdParamSchema),
   validate(updateReviewSchema),
+  screenReview,
   ReviewsController.updateReview,
 );
 

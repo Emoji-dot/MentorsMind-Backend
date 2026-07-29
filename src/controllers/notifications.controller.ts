@@ -54,7 +54,7 @@ export const NotificationsController = {
    */
   markAsRead: asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).user?.id;
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
     if (!userId) return ResponseUtil.error(res, 'Unauthorized', 401);
 
     const updated = await InAppNotificationService.markRead(id, userId);
@@ -85,7 +85,7 @@ export const NotificationsController = {
    */
   deleteNotification: asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).user?.id;
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
     if (!userId) return ResponseUtil.error(res, 'Unauthorized', 401);
 
     const dismissed = await InAppNotificationService.dismiss(id, userId);

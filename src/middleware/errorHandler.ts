@@ -2,25 +2,41 @@ import { Request, Response, NextFunction } from "express";
 import * as Sentry from "@sentry/node";
 import { logger } from "../utils/logger.utils";
 import { traceStore } from "./tracing.middleware";
+import { CircuitBreakerError } from "../services/database.service";
 
 export interface AppError extends Error {
   statusCode?: number;
   isOperational?: boolean;
+  details?: unknown;
 }
 
 export const errorHandler = (
-  err: AppError,
-  _req: Request,
+  err: AppError | CircuitBreakerError,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ) => {
-  const statusCode = err.statusCode || 500;
+  if (err instanceof CircuitBreakerError) {
+    const retryAfter = (err as CircuitBreakerError).retryAfterSeconds;
+    res.setHeader("Retry-After", String(retryAfter));
+    res.status(503).json({
+      status: "error",
+      error: "Service temporarily unavailable",
+      message: err.message,
+      retryAfter,
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const statusCode = (err as AppError).statusCode || 500;
   const message = err.message || "Internal Server Error";
-  
+
   const context = traceStore.getStore();
-  const requestId = context?.requestId || (req as any).requestId || res.locals?.requestId;
+  const requestId =
+    context?.requestId || (req as any).requestId || res.locals?.requestId;
   const correlationId = context?.correlationId || (req as any).correlationId;
-  
+
   const user = (req as any).user;
 
   logger.error(`${req.method} ${req.path}`, {
@@ -48,10 +64,13 @@ export const errorHandler = (
       Sentry.captureException(err);
     });
   }
+  res.setHeader("X-Request-ID", (req.headers["x-request-id"] as string) || "");
+  res.setHeader("X-Trace-ID", (req.headers["x-trace-id"] as string) || "");
 
   res.status(statusCode).json({
     status: "error",
     message,
+    details: "details" in err ? (err as AppError).details : undefined,
     requestId,
     timestamp: new Date().toISOString(),
     ...(process.env.NODE_ENV === "development" && {
@@ -64,9 +83,11 @@ export const errorHandler = (
 export const createError = (
   message: string,
   statusCode: number = 500,
+  details?: unknown,
 ): AppError => {
   const error: AppError = new Error(message);
   error.statusCode = statusCode;
   error.isOperational = true;
+  error.details = details;
   return error;
 };

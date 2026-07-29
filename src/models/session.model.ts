@@ -1,8 +1,26 @@
-import pool from "../config/database";
+import pool, { db } from "../config/database";
+import { CollaborationState } from "../types/collaboration.types";
 import { PaginationUtil } from "../utils/pagination.utils";
+import { logger } from "../utils/logger";
+import {
+  TenantContext,
+  withTenantFilter,
+  withCurrentTenantFilter,
+} from "../utils/tenant-context.utils";
+
+export interface Session {
+  id: string;
+  mentor_id: string;
+  learner_id: string;
+  start_time: Date;
+  end_time: Date;
+  status: "scheduled" | "completed" | "cancelled";
+  created_at: Date;
+}
 
 export interface SessionRecord {
   id: string;
+  tenant_id: string | null;
   mentor_id: string;
   mentee_id: string;
   title: string;
@@ -16,6 +34,7 @@ export interface SessionRecord {
   meeting_room_id: string | null;
   meeting_expires_at: Date | null;
   needs_manual_intervention: boolean;
+  collaboration_state: CollaborationState | null;
   notes: string | null;
   created_at: Date;
   updated_at: Date;
@@ -37,74 +56,52 @@ export interface UpdateMeetingUrlPayload {
   meetingExpiresAt: Date;
 }
 
+export interface UpdateCollaborationStatePayload {
+  collaborationState: CollaborationState;
+}
+
 /**
  * Session Model - Database operations for mentorship sessions
  */
 export const SessionModel = {
   /**
-   * Initialize sessions table with meeting URL support
-   */
-  async initializeTable(): Promise<void> {
-    const query = `
-      CREATE TABLE IF NOT EXISTS sessions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        mentor_id UUID NOT NULL REFERENCES users(id),
-        mentee_id UUID NOT NULL REFERENCES users(id),
-        title VARCHAR(255) NOT NULL,
-        description TEXT,
-        scheduled_at TIMESTAMP WITH TIME ZONE NOT NULL,
-        duration_minutes INTEGER NOT NULL DEFAULT 60,
-        status VARCHAR(20) NOT NULL DEFAULT 'scheduled',
-        meeting_link VARCHAR(500),
-        meeting_url VARCHAR(500),
-        meeting_provider VARCHAR(50),
-        meeting_room_id VARCHAR(255),
-        meeting_expires_at TIMESTAMP WITH TIME ZONE,
-        needs_manual_intervention BOOLEAN DEFAULT FALSE,
-        notes TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_sessions_mentor_id ON sessions(mentor_id);
-      CREATE INDEX IF NOT EXISTS idx_sessions_mentee_id ON sessions(mentee_id);
-      CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
-      CREATE INDEX IF NOT EXISTS idx_sessions_scheduled_at ON sessions(scheduled_at);
-      CREATE INDEX IF NOT EXISTS idx_sessions_meeting_url ON sessions(meeting_url) WHERE meeting_url IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_sessions_meeting_expires_at ON sessions(meeting_expires_at) WHERE meeting_expires_at IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_sessions_needs_manual_intervention ON sessions(needs_manual_intervention) WHERE needs_manual_intervention = TRUE;
-    `;
-    await pool.query(query);
-  },
-
-  /**
    * Create a new session
    */
   async create(payload: CreateSessionPayload): Promise<SessionRecord> {
+    const tenantId = TenantContext.hasTenantContext()
+      ? TenantContext.getTenantId()
+      : null;
+
     const query = `
-      INSERT INTO sessions (mentor_id, mentee_id, title, description, scheduled_at, duration_minutes)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO sessions (tenant_id, mentor_id, mentee_id, title, description, scheduled_at, duration_minutes, collaboration_state)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `;
 
-    const { rows } = await pool.query<SessionRecord>(query, [
+    const defaultState = null;
+    const { rows } = await db.query(query, [
+      tenantId,
       payload.mentorId,
       payload.menteeId,
       payload.title,
       payload.description || null,
       payload.scheduledAt,
       payload.durationMinutes,
+      defaultState,
     ]);
 
     return rows[0];
   },
 
   /**
-   * Find session by ID
+   * Find session by ID (tenant-scoped)
    */
   async findById(id: string): Promise<SessionRecord | null> {
-    const query = "SELECT * FROM sessions WHERE id = $1";
-    const { rows } = await pool.query<SessionRecord>(query, [id]);
+    const { query, params } = withCurrentTenantFilter(
+      "SELECT * FROM sessions WHERE id = $1",
+      [id],
+    );
+    const { rows } = await db.query(query, params);
     return rows[0] ?? null;
   },
 
@@ -123,30 +120,38 @@ export const SessionModel = {
     const limit = filters.limit ?? 20;
 
     const conditions: string[] = ["(mentor_id = $1 OR mentee_id = $1)"];
-    const params: unknown[] = [userId];
+    const baseParams: unknown[] = [userId];
     let idx = 2;
 
     if (filters.cursor) {
       const decoded = PaginationUtil.decodeCursor(filters.cursor);
       if (decoded) {
         conditions.push(`(scheduled_at, id) < ($${idx}, $${idx + 1})`);
-        params.push(decoded.created_at, decoded.id);
+        baseParams.push(decoded.created_at, decoded.id);
         idx += 2;
       }
     }
 
+    const baseWhere = conditions.join(" AND ");
+
+    // Apply tenant filter
+    const { query: dataQuery, params: dataParams } = withCurrentTenantFilter(
+      `SELECT * FROM sessions WHERE ${baseWhere}`,
+      baseParams,
+    );
+    const { query: countQuery, params: countParams } = withCurrentTenantFilter(
+      `SELECT COUNT(*) FROM sessions WHERE mentor_id = $1 OR mentee_id = $1`,
+      [userId],
+    );
+
+    const finalParamIdx = dataParams.length + 1;
+
     const [{ rows }, { rows: countRows }] = await Promise.all([
       pool.query<SessionRecord>(
-        `SELECT * FROM sessions
-         WHERE ${conditions.join(" AND ")}
-         ORDER BY scheduled_at DESC, id DESC
-         LIMIT $${idx}`,
-        [...params, limit + 1],
+        `${dataQuery} ORDER BY scheduled_at DESC, id DESC LIMIT $${finalParamIdx}`,
+        [...dataParams, limit + 1],
       ),
-      pool.query(
-        `SELECT COUNT(*) FROM sessions WHERE mentor_id = $1 OR mentee_id = $1`,
-        [userId],
-      ),
+      pool.query(countQuery, countParams),
     ]);
 
     const has_more = rows.length > limit;
@@ -173,12 +178,15 @@ export const SessionModel = {
    * Find all sessions for a user (both as mentor and mentee)
    */
   async findByUserId(userId: string): Promise<SessionRecord[]> {
-    const query = `
-      SELECT * FROM sessions
-      WHERE mentor_id = $1 OR mentee_id = $1
-      ORDER BY scheduled_at DESC, id DESC
-    `;
-    const { rows } = await pool.query<SessionRecord>(query, [userId]);
+    const { query, params } = withCurrentTenantFilter(
+      `SELECT * FROM sessions WHERE mentor_id = $1 OR mentee_id = $1`,
+      [userId],
+    );
+
+    const { rows } = await pool.query<SessionRecord>(
+      `${query} ORDER BY scheduled_at DESC, id DESC`,
+      params,
+    );
     return rows;
   },
 
@@ -186,136 +194,202 @@ export const SessionModel = {
    * Find upcoming sessions for a user
    */
   async findUpcomingByUserId(userId: string): Promise<SessionRecord[]> {
-    const query = `
-      SELECT * FROM sessions
-      WHERE (mentor_id = $1 OR mentee_id = $1)
-        AND scheduled_at >= NOW()
-        AND status IN ('pending', 'confirmed')
-      ORDER BY scheduled_at ASC
-    `;
-    const { rows } = await pool.query<SessionRecord>(query, [userId]);
+    const { query, params } = withCurrentTenantFilter(
+      `SELECT * FROM sessions
+       WHERE (mentor_id = $1 OR mentee_id = $1)
+         AND scheduled_at >= NOW()
+         AND status IN ('pending', 'confirmed')`,
+      [userId],
+    );
+
+    const { rows } = await pool.query<SessionRecord>(
+      `${query} ORDER BY scheduled_at ASC`,
+      params,
+    );
     return rows;
   },
 
   /**
-   * Update session status
+   * Update session status (tenant-scoped)
    */
   async updateStatus(
     id: string,
     status: string,
   ): Promise<SessionRecord | null> {
-    const query = `
-      UPDATE sessions
-      SET status = $1, updated_at = NOW()
-      WHERE id = $2
-      RETURNING *
-    `;
+    const { query, params } = withCurrentTenantFilter(
+      `UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2`,
+      [status, id],
+    );
 
-    const { rows } = await pool.query<SessionRecord>(query, [status, id]);
+    const { rows } = await pool.query<SessionRecord>(
+      `${query} RETURNING *`,
+      params,
+    );
     return rows[0] ?? null;
   },
 
   /**
-   * Update meeting URL and related fields
+   * Update meeting URL and related fields (tenant-scoped)
    */
   async updateMeetingUrl(
     id: string,
     payload: UpdateMeetingUrlPayload,
   ): Promise<SessionRecord | null> {
-    const query = `
-      UPDATE sessions
-      SET
-        meeting_url = $1,
-        meeting_provider = $2,
-        meeting_room_id = $3,
-        meeting_expires_at = $4,
-        updated_at = NOW()
-      WHERE id = $5
-      RETURNING *
-    `;
+    const { query, params } = withCurrentTenantFilter(
+      `UPDATE sessions
+       SET
+         meeting_url = $1,
+         meeting_provider = $2,
+         meeting_room_id = $3,
+         meeting_expires_at = $4,
+         updated_at = NOW()
+       WHERE id = $5`,
+      [
+        payload.meetingUrl,
+        payload.meetingProvider,
+        payload.meetingRoomId,
+        payload.meetingExpiresAt,
+        id,
+      ],
+    );
 
-    const { rows } = await pool.query<SessionRecord>(query, [
-      payload.meetingUrl,
-      payload.meetingProvider,
-      payload.meetingRoomId,
-      payload.meetingExpiresAt,
-      id,
-    ]);
+    const { rows } = await pool.query<SessionRecord>(
+      `${query} RETURNING *`,
+      params,
+    );
 
     return rows[0] ?? null;
   },
 
   /**
-   * Mark session for manual intervention
+   * Update collaboration state for a session (tenant-scoped)
+   */
+  async updateCollaborationState(
+    id: string,
+    collaborationState: CollaborationState,
+  ): Promise<SessionRecord | null> {
+    const { query, params } = withCurrentTenantFilter(
+      `UPDATE sessions SET collaboration_state = $1, updated_at = NOW() WHERE id = $2`,
+      [collaborationState, id],
+    );
+
+    const { rows } = await pool.query<SessionRecord>(
+      `${query} RETURNING *`,
+      params,
+    );
+    return rows[0] ?? null;
+  },
+
+  /**
+   * Mark session for manual intervention (tenant-scoped)
    */
   async markForManualIntervention(id: string): Promise<SessionRecord | null> {
-    const query = `
-      UPDATE sessions
-      SET
-        needs_manual_intervention = TRUE,
-        updated_at = NOW()
-      WHERE id = $1
-      RETURNING *
-    `;
+    const { query, params } = withCurrentTenantFilter(
+      `UPDATE sessions SET needs_manual_intervention = TRUE, updated_at = NOW() WHERE id = $1`,
+      [id],
+    );
 
-    const { rows } = await pool.query<SessionRecord>(query, [id]);
+    const { rows } = await pool.query<SessionRecord>(
+      `${query} RETURNING *`,
+      params,
+    );
     return rows[0] ?? null;
   },
 
   /**
-   * Get sessions needing manual intervention
+   * Get sessions needing manual intervention (tenant-scoped)
    */
   async findNeedingManualIntervention(): Promise<SessionRecord[]> {
-    const query = `
-      SELECT * FROM sessions
-      WHERE needs_manual_intervention = TRUE
-      ORDER BY created_at DESC
-    `;
+    const { query, params } = withCurrentTenantFilter(
+      `SELECT * FROM sessions WHERE needs_manual_intervention = TRUE`,
+      [],
+    );
 
-    const { rows } = await pool.query<SessionRecord>(query);
+    const { rows } = await pool.query<SessionRecord>(
+      `${query} ORDER BY created_at DESC`,
+      params,
+    );
     return rows;
   },
 
   /**
-   * Get expired meetings
+   * Get expired meetings (tenant-scoped)
    */
   async findExpiredMeetings(): Promise<SessionRecord[]> {
-    const query = `
-      SELECT * FROM sessions
-      WHERE meeting_expires_at IS NOT NULL
-        AND meeting_expires_at < NOW()
-        AND status IN ('confirmed', 'completed')
-      ORDER BY meeting_expires_at ASC
-    `;
+    const { query, params } = withCurrentTenantFilter(
+      `SELECT * FROM sessions
+       WHERE meeting_expires_at IS NOT NULL
+         AND meeting_expires_at < NOW()
+         AND status IN ('confirmed', 'completed')`,
+      [],
+    );
 
-    const { rows } = await pool.query<SessionRecord>(query);
+    const { rows } = await pool.query<SessionRecord>(
+      `${query} ORDER BY meeting_expires_at ASC`,
+      params,
+    );
     return rows;
   },
 
   /**
-   * Clear manual intervention flag
+   * Clear manual intervention flag (tenant-scoped)
    */
   async clearManualIntervention(id: string): Promise<boolean> {
-    const query = `
-      UPDATE sessions
-      SET
-        needs_manual_intervention = FALSE,
-        updated_at = NOW()
-      WHERE id = $1
-      RETURNING id
-    `;
+    const { query, params } = withCurrentTenantFilter(
+      `UPDATE sessions SET needs_manual_intervention = FALSE, updated_at = NOW() WHERE id = $1`,
+      [id],
+    );
 
-    const { rowCount } = await pool.query(query, [id]);
+    const { rowCount } = await pool.query(
+      `${query} RETURNING id`,
+      params,
+    );
     return (rowCount ?? 0) > 0;
   },
 
   /**
-   * Delete a session
+   * Delete a session (tenant-scoped)
    */
   async delete(id: string): Promise<boolean> {
-    const query = "DELETE FROM sessions WHERE id = $1 RETURNING id";
-    const { rowCount } = await pool.query(query, [id]);
+    const { query, params } = withCurrentTenantFilter(
+      "DELETE FROM sessions WHERE id = $1",
+      [id],
+    );
+    const { rowCount } = await pool.query(`${query} RETURNING id`, params);
     return (rowCount ?? 0) > 0;
+  },
+
+  /**
+   * Archive sessions older than the specified number of years.
+   * Moves rows into `sessions_archive` and deletes from `sessions` in a single CTE.
+   * Returns number of archived sessions.
+   *
+   * Note: archive runs across all tenants (system-level operation).
+   */
+  async archiveOlderThanYears(years: number): Promise<number> {
+    const moveQuery = `
+      WITH moved AS (
+        DELETE FROM sessions
+        WHERE created_at < NOW() - ($1::int * INTERVAL '1 year')
+        RETURNING id, tenant_id, mentor_id, mentee_id, title, description, scheduled_at, duration_minutes, status, meeting_link, meeting_url, meeting_provider, meeting_room_id, meeting_expires_at, needs_manual_intervention, notes, created_at, updated_at
+      )
+      INSERT INTO sessions_archive (id, tenant_id, mentor_id, mentee_id, title, description, scheduled_at, duration_minutes, status, meeting_link, meeting_url, meeting_provider, meeting_room_id, meeting_expires_at, needs_manual_intervention, notes, created_at, updated_at, archived_at)
+      SELECT id, tenant_id, mentor_id, mentee_id, title, description, scheduled_at, duration_minutes, status, meeting_link, meeting_url, meeting_provider, meeting_room_id, meeting_expires_at, needs_manual_intervention, notes, created_at, updated_at, NOW()
+      FROM moved
+      RETURNING id;
+    `;
+
+    try {
+      const { rowCount } = await pool.query(moveQuery, [years]);
+      const moved = rowCount ?? 0;
+      if (moved > 0) {
+        logger.info("SessionModel: archived old sessions", { years, moved });
+      }
+      return moved;
+    } catch (error) {
+      logger.error("Failed to archive old sessions:", error);
+      return 0;
+    }
   },
 };
 

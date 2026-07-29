@@ -1,14 +1,7 @@
-import {
-  NotificationTemplatesModel,
-  NotificationTemplateRecord,
-} from "../models/notification-templates.model";
-import {
-  TenantEmailTemplatesModel,
-  TenantEmailTemplateRecord,
-} from "../models/tenant-email-templates.model";
-import { redis } from "../config/redis";
-import { createHash } from "crypto";
-import { logger } from "../utils/logger";
+import { NotificationTemplatesModel, NotificationTemplateRecord } from '../models/notification-templates.model';
+import { createHash } from 'crypto';
+import { logger } from '../utils/logger';
+import { EmailCDNService } from './email-cdn.service';
 
 export interface RenderedEmail {
   subject: string;
@@ -88,70 +81,10 @@ export const TemplateEngineService = {
   cache: new TemplateCache(),
 
   /**
-   * Resolve a template name for an optional tenantId.
-   * Checks Redis cache, then tenant overrides, then filesystem/db defaults.
-   */
-  async resolveTemplate(
-    templateName: string,
-    tenantId?: string,
-  ): Promise<
-    | NotificationTemplateRecord
-    | (NotificationTemplateRecord & Partial<TenantEmailTemplateRecord>)
-    | null
-  > {
-    // If tenantId provided, check redis first
-    if (tenantId) {
-      const key = `template:${tenantId}:${templateName}`;
-      try {
-        const cached = await redis.get(key);
-        if (cached) {
-          return JSON.parse(cached);
-        }
-      } catch (err) {
-        logger.warn("Redis GET failed for template cache", err);
-      }
-
-      // Not cached, check tenant overrides in DB
-      const tenantTpl = await TenantEmailTemplatesModel.get(
-        tenantId,
-        templateName,
-      );
-      if (tenantTpl) {
-        // normalize to same shape as NotificationTemplateRecord where possible
-        const merged: any = {
-          id: templateName,
-          name: tenantTpl.template_name,
-          type: "email",
-          subject: tenantTpl.subject_template || undefined,
-          html_content: tenantTpl.html_template,
-          text_content: tenantTpl.text_template,
-          variables: Object.keys(
-            (tenantTpl.variables_schema &&
-              (tenantTpl.variables_schema.properties || {})) ||
-              {},
-          ),
-          is_active: tenantTpl.is_active,
-          updated_at: tenantTpl.updated_at,
-        };
-
-        // Cache it in redis for 5 minutes
-        try {
-          await redis.set(key, JSON.stringify(merged), "EX", 5 * 60);
-        } catch (err) {
-          logger.warn("Redis SET failed for template cache", err);
-        }
-
-        return merged;
-      }
-    }
-
-    // Fallback to existing cached/default NotificationTemplatesModel by id
-    const dbTpl = await this.getTemplate(templateName);
-    return dbTpl;
-  },
-
-  /**
-   * Render email template with data
+   * Render email template with data.
+   * CDN-resolved asset variables (logoUrl, social icons, etc.) are automatically
+   * merged into the data object so every Handlebars template receives absolute
+   * CDN URLs — fixing broken images in Outlook and corporate email clients.
    */
   async renderEmail(
     templateId: string | { name: string; tenantId?: string },
@@ -170,18 +103,14 @@ export const TemplateEngineService = {
         return this.getFallbackEmailTemplate(data);
       }
 
-      const subject = this.interpolateTemplate(
-        (template as any).subject || "Notification",
-        data,
-      );
-      const htmlContent = this.interpolateTemplate(
-        (template as any).html_content,
-        data,
-      );
-      const textContent = this.interpolateTemplate(
-        (template as any).text_content,
-        data,
-      );
+      // Merge CDN-resolved variables so templates get absolute asset URLs.
+      // User-provided data takes precedence, allowing per-call overrides.
+      const cdnVars = EmailCDNService.getTemplateVariables();
+      const mergedData = { ...cdnVars, ...data };
+
+      const subject = this.interpolateTemplate(template.subject || 'Notification', mergedData);
+      const htmlContent = this.interpolateTemplate(template.html_content, mergedData);
+      const textContent = this.interpolateTemplate(template.text_content, mergedData);
 
       return {
         subject: this.sanitizeOutput(subject),

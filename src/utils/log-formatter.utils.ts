@@ -19,6 +19,8 @@ export enum AuditAction {
     DATA_DELETED = 'DATA_DELETED',
     ADMIN_ACTION = 'ADMIN_ACTION',
     SECURITY_EVENT = 'SECURITY_EVENT',
+    DEEP_LINK_ACCESSED = 'DEEP_LINK_ACCESSED',
+    VERIFICATION_RETRY = 'VERIFICATION_RETRY',
 }
 
 export interface StructuredLogPayload {

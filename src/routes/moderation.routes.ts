@@ -1,142 +1,197 @@
 import { Router } from "express";
 import { ModerationController } from "../controllers/moderation.controller";
+import { asyncHandler } from "../utils/asyncHandler.utils";
 import { authenticate } from "../middleware/auth.middleware";
 import { requireAdmin } from "../middleware/admin-auth.middleware";
-import { asyncHandler } from "../utils/asyncHandler.utils";
+import { validate } from "../middleware/validation.middleware";
+import {
+  moderationFlagIdParamSchema,
+  getModerationQueueSchema,
+  getAIQueueSchema,
+  triggerAIScanSchema,
+  approveContentSchema,
+  rejectContentSchema,
+  escalateFlagSchema,
+  deleteFlagSchema,
+  getAppealsSchema,
+  resolveAppealSchema,
+} from "../validators/schemas/moderation.schemas";
 
 const router = Router();
 
-// Apply authentication and admin role requirement to all moderation routes
-router.use(authenticate);
-router.use(requireAdmin);
+// Add DELETE endpoint for flag deletion
+router.delete(
+  "/:id",
+  validate(deleteFlagSchema),
+  asyncHandler(ModerationController.deleteFlag),
+);
+
+// ── All moderation routes require authentication + admin role ─────────────────
+router.use(authenticate, requireAdmin);
 
 /**
  * @swagger
- * /admin/moderation/queue:
+ * /api/v1/admin/moderation/queue:
  *   get:
- *     summary: Get paginated flag queue
- *     tags: [Admin, Moderation]
+ *     summary: Get the manual moderation queue (human-flagged content)
+ *     tags: [Moderation]
  *     security:
  *       - bearerAuth: []
  *     parameters:
- *       - name: limit
- *         in: query
+ *       - in: query
+ *         name: limit
  *         schema: { type: integer, default: 50 }
- *       - name: offset
- *         in: query
+ *       - in: query
+ *         name: offset
  *         schema: { type: integer, default: 0 }
  *     responses:
  *       200:
- *         description: Moderation queue items
- *       403:
- *         description: Admin role required
+ *         description: Paginated moderation queue
  */
-router.get("/queue", asyncHandler(ModerationController.getQueue));
+router.get("/queue", validate(getModerationQueueSchema), asyncHandler(ModerationController.getQueue));
 
 /**
  * @swagger
- * /admin/moderation/{id}/approve:
- *   post:
- *     summary: Approve content
- *     tags: [Admin, Moderation]
+ * /api/v1/admin/moderation/ai-queue:
+ *   get:
+ *     summary: Get AI-flagged items awaiting human review
+ *     tags: [Moderation]
  *     security:
  *       - bearerAuth: []
- *     parameters:
- *       - name: id
- *         in: path
- *         required: true
- *         schema: { type: string, format: uuid }
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               notes: { type: string }
- *     responses:
- *       200:
- *         description: Content approved
- *       403:
- *         description: Admin role required
- *       404:
- *         description: Flag not found
  */
-router.post("/:id/approve", asyncHandler(ModerationController.approveContent));
+router.get("/ai-queue", validate(getAIQueueSchema), asyncHandler(ModerationController.getAIQueue));
 
 /**
  * @swagger
- * /admin/moderation/{id}/reject:
- *   post:
- *     summary: Reject and hide content
- *     tags: [Admin, Moderation]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - name: id
- *         in: path
- *         required: true
- *         schema: { type: string, format: uuid }
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               notes: { type: string }
- *     responses:
- *       200:
- *         description: Content rejected and hidden
- *       403:
- *         description: Admin role required
- *       404:
- *         description: Flag not found
- */
-router.post("/:id/reject", asyncHandler(ModerationController.rejectContent));
-
-/**
- * @swagger
- * /admin/moderation/{id}/escalate:
- *   post:
- *     summary: Escalate to senior admin
- *     tags: [Admin, Moderation]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - name: id
- *         in: path
- *         required: true
- *         schema: { type: string, format: uuid }
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               notes: { type: string }
- *     responses:
- *       200:
- *         description: Flag escalated to senior admin
- *       403:
- *         description: Admin role required
- *       404:
- *         description: Flag not found
- */
-router.post("/:id/escalate", asyncHandler(ModerationController.escalateFlag));
-
-/**
- * @swagger
- * /admin/moderation/stats:
+ * /api/v1/admin/moderation/stats:
  *   get:
  *     summary: Get moderation statistics
- *     tags: [Admin, Moderation]
+ *     tags: [Moderation]
  *     security:
  *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Moderation statistics
- *       403:
- *         description: Admin role required
  */
 router.get("/stats", asyncHandler(ModerationController.getStats));
+
+/**
+ * @swagger
+ * /api/v1/admin/moderation/scan:
+ *   post:
+ *     summary: Manually trigger an AI scan on arbitrary text (admin tool)
+ *     tags: [Moderation]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [contentId, contentType, text]
+ *             properties:
+ *               contentId:  { type: string }
+ *               contentType: { type: string, enum: [profile, review, message] }
+ *               text:       { type: string }
+ */
+router.post("/scan", validate(triggerAIScanSchema), asyncHandler(ModerationController.triggerAIScan));
+
+/**
+ * @swagger
+ * /api/v1/admin/moderation/{id}/approve:
+ *   put:
+ *     summary: Approve flagged content (keep visible)
+ *     tags: [Moderation]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ */
+router.put("/:id/approve", validate(approveContentSchema), asyncHandler(ModerationController.approveContent));
+
+/**
+ * @swagger
+ * /api/v1/admin/moderation/{id}/reject:
+ *   put:
+ *     summary: Reject flagged content (remove + notify author)
+ *     tags: [Moderation]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put("/:id/reject", validate(rejectContentSchema), asyncHandler(ModerationController.rejectContent));
+
+/**
+ * @swagger
+ * /api/v1/admin/moderation/{id}/escalate:
+ *   put:
+ *     summary: Escalate flag to senior admin
+ *     tags: [Moderation]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put("/:id/escalate", validate(escalateFlagSchema), asyncHandler(ModerationController.escalateFlag));
+
+/**
+ * @swagger
+ * /api/v1/admin/moderation/{id}:
+ *   delete:
+ *     summary: Delete a resolved flag
+ *     tags: [Moderation]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete("/:id", validate(deleteFlagSchema), asyncHandler(ModerationController.deleteFlag));
+
+// ── Appeals ──────────────────────────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /api/v1/admin/moderation/appeals:
+ *   get:
+ *     summary: Get appeals queue
+ *     tags: [Moderation]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50 }
+ *       - in: query
+ *         name: offset
+ *         schema: { type: integer, default: 0 }
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, default: pending }
+ *     responses:
+ *       200:
+ *         description: Paginated appeals queue
+ */
+router.get("/appeals", validate(getAppealsSchema), asyncHandler(ModerationController.getAppeals));
+
+/**
+ * @swagger
+ * /api/v1/admin/moderation/appeals/{id}/resolve:
+ *   put:
+ *     summary: Resolve an appeal
+ *     tags: [Moderation]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [status]
+ *             properties:
+ *               status: { type: string, enum: [approved, rejected] }
+ *               notes:  { type: string }
+ */
+router.put(
+  "/appeals/:id/resolve",
+  validate(resolveAppealSchema),
+  asyncHandler(ModerationController.resolveAppeal),
+);
 
 export default router;

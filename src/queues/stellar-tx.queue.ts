@@ -1,9 +1,5 @@
-import { Queue } from "bullmq";
-import {
-  redisConnection,
-  defaultJobOptions,
-  QUEUE_NAMES,
-} from "./queue.config";
+import { createManagedQueue, buildJobOptions, JobConfig } from './queue.manager';
+import { defaultJobOptions, QUEUE_NAMES } from './queue.config';
 
 export interface StellarTxJobData {
   /** Base64-encoded signed transaction envelope XDR. */
@@ -15,7 +11,7 @@ export interface StellarTxJobData {
   /** Free-form metadata stored against the job for audit/debug. */
   metadata?: Record<string, unknown>;
   /** Transaction type for building XDR if not provided. */
-  type?: 'payment' | 'refund';
+  type?: 'payment' | 'refund' | 'verification';
   /** Amount for refund transactions. */
   amount?: string;
   /** Currency for refund transactions. */
@@ -24,15 +20,14 @@ export interface StellarTxJobData {
   description?: string;
 }
 
-export const stellarTxQueue = new Queue<StellarTxJobData>(
+export const stellarTxQueue = createManagedQueue<StellarTxJobData>(
   QUEUE_NAMES.STELLAR_TX,
   {
-    connection: redisConnection,
     defaultJobOptions: {
       ...defaultJobOptions,
       // Poll every 15 seconds, up to 40 attempts (~10 minutes total)
       attempts: 40,
-      backoff: { type: "fixed", delay: 15_000 },
+      backoff: { type: 'fixed', delay: 15_000 },
     },
   },
 );
@@ -44,8 +39,14 @@ export const stellarTxQueue = new Queue<StellarTxJobData>(
 export async function enqueueStellarTx(
   data: StellarTxJobData,
   jobId?: string,
+  options?: Partial<JobConfig>,
 ): Promise<void> {
-  await stellarTxQueue.add("submit-stellar-tx", data, {
-    jobId: jobId ?? `stellar-tx:${data.paymentId ?? Date.now()}`,
-  });
+  await stellarTxQueue.add(
+    options?.name ?? 'submit-stellar-tx',
+    data,
+    {
+      ...buildJobOptions(options),
+      jobId: jobId ?? `stellar-tx:${data.paymentId ?? Date.now()}`,
+    },
+  );
 }

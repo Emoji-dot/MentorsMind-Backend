@@ -2,7 +2,18 @@ import { Router } from 'express';
 import multer from 'multer';
 import { ConversationsController } from '../controllers/conversations.controller';
 import { authenticate } from '../middleware/auth.middleware';
+import { screenMessage } from '../middleware/content-moderation.middleware';
 import { asyncHandler } from '../utils/asyncHandler.utils';
+import { validate } from '../middleware/validation.middleware';
+import {
+  createOrGetConversationSchema,
+  getMessagesSchema,
+  sendMessageSchema,
+  deleteMessageSchema,
+  markReadSchema,
+  batchMarkReadSchema,
+  uploadAttachmentSchema,
+} from '../validators/schemas/conversations.schemas';
 
 const router = Router();
 
@@ -44,7 +55,12 @@ const upload = multer({
  *       403:
  *         description: No shared booking between users
  */
-router.post('/', authenticate, asyncHandler(ConversationsController.createOrGet));
+router.post(
+  '/',
+  authenticate,
+  validate(createOrGetConversationSchema),
+  asyncHandler(ConversationsController.createOrGet),
+);
 
 /**
  * @swagger
@@ -89,7 +105,12 @@ router.get('/', authenticate, asyncHandler(ConversationsController.list));
  *       200:
  *         description: Paginated messages with nextCursor
  */
-router.get('/:id/messages', authenticate, asyncHandler(ConversationsController.getMessages));
+router.get(
+  '/:id/messages',
+  authenticate,
+  validate(getMessagesSchema),
+  asyncHandler(ConversationsController.getMessages),
+);
 
 /**
  * @swagger
@@ -120,7 +141,7 @@ router.get('/:id/messages', authenticate, asyncHandler(ConversationsController.g
  *       201:
  *         description: Message sent
  */
-router.post('/:id/messages', authenticate, asyncHandler(ConversationsController.sendMessage));
+router.post('/:id/messages', authenticate, screenMessage, asyncHandler(ConversationsController.sendMessage));
 
 /**
  * @swagger
@@ -152,6 +173,7 @@ router.post('/:id/messages', authenticate, asyncHandler(ConversationsController.
 router.delete(
   '/:id/messages/:msgId',
   authenticate,
+  validate(deleteMessageSchema),
   asyncHandler(ConversationsController.deleteMessage),
 );
 
@@ -174,7 +196,53 @@ router.delete(
  *       200:
  *         description: Messages marked as read
  */
-router.post('/:id/read', authenticate, asyncHandler(ConversationsController.markRead));
+router.post(
+  '/:id/read',
+  authenticate,
+  validate(markReadSchema),
+  asyncHandler(ConversationsController.markRead),
+);
+
+/**
+ * @swagger
+ * /api/v1/conversations/{id}/messages/read:
+ *   post:
+ *     summary: Batch mark specific messages as read
+ *     tags: [Conversations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [messageIds]
+ *             properties:
+ *               messageIds:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                   format: uuid
+ *     responses:
+ *       200:
+ *         description: Messages marked as read
+ *       400:
+ *         description: Invalid input
+ */
+router.post(
+  '/:id/messages/read',
+  authenticate,
+  validate(batchMarkReadSchema),
+  asyncHandler(ConversationsController.batchMarkAsRead),
+);
 
 /**
  * @swagger
@@ -211,6 +279,7 @@ router.post('/:id/read', authenticate, asyncHandler(ConversationsController.mark
 router.post(
   '/:id/attachments',
   authenticate,
+  validate(uploadAttachmentSchema),
   upload.single('file'),
   asyncHandler(ConversationsController.uploadAttachment),
 );

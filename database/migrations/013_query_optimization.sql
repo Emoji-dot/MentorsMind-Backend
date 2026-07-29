@@ -28,34 +28,6 @@ CREATE INDEX IF NOT EXISTS idx_slow_query_log_created_at
 -- DELETE FROM slow_query_log WHERE created_at < NOW() - INTERVAL '30 days';
 
 -- ============================================================================
--- 2. Notifications — composite indexes for hot query paths
--- ============================================================================
-
--- getByUserId + getUnreadByUserId: WHERE user_id = $1 AND is_read = false ORDER BY created_at DESC
-CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
-  ON notifications(user_id, created_at DESC)
-  WHERE is_read = FALSE;
-
--- getScheduledNotifications: WHERE scheduled_at <= NOW() ORDER BY priority DESC, scheduled_at ASC
-CREATE INDEX IF NOT EXISTS idx_notifications_scheduled_pending
-  ON notifications(scheduled_at ASC, priority DESC)
-  WHERE scheduled_at IS NOT NULL;
-
--- getCountsByUserId: COUNT with CASE on is_read for a given user
-CREATE INDEX IF NOT EXISTS idx_notifications_user_read_status
-  ON notifications(user_id, is_read);
-
--- ============================================================================
--- 3. Payments — missing user_id index
--- ============================================================================
-
-CREATE INDEX IF NOT EXISTS idx_payments_user_id
-  ON payments(user_id);
-
-CREATE INDEX IF NOT EXISTS idx_payments_user_created
-  ON payments(user_id, created_at DESC);
-
--- ============================================================================
 -- 4. Sessions — OR-clause optimization
 --    Queries use (mentor_id = $1 OR mentee_id = $1) which cannot use a
 --    single B-tree efficiently. Add individual covering indexes so the
@@ -63,18 +35,18 @@ CREATE INDEX IF NOT EXISTS idx_payments_user_created
 -- ============================================================================
 
 CREATE INDEX IF NOT EXISTS idx_sessions_mentor_scheduled
-  ON sessions(mentor_id, scheduled_at DESC);
+  ON sessions(mentor_id, scheduled_at_utc DESC);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_mentee_scheduled
-  ON sessions(mentee_id, scheduled_at DESC);
+  ON sessions(mentee_id, scheduled_at_utc DESC);
 
 -- Upcoming sessions partial index (used by findUpcomingByUserId)
 CREATE INDEX IF NOT EXISTS idx_sessions_upcoming_mentor
-  ON sessions(mentor_id, scheduled_at ASC)
+  ON sessions(mentor_id, scheduled_at_utc ASC)
   WHERE status IN ('pending', 'confirmed');
 
 CREATE INDEX IF NOT EXISTS idx_sessions_upcoming_mentee
-  ON sessions(mentee_id, scheduled_at ASC)
+  ON sessions(mentee_id, scheduled_at_utc ASC)
   WHERE status IN ('pending', 'confirmed');
 
 -- Expired meetings lookup
@@ -89,23 +61,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_manual_intervention
   WHERE needs_manual_intervention = TRUE;
 
 -- ============================================================================
--- 5. Escrows — OR-clause optimization (same pattern as sessions)
--- ============================================================================
-
-CREATE INDEX IF NOT EXISTS idx_escrows_learner_created
-  ON escrows(learner_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_escrows_mentor_created
-  ON escrows(mentor_id, created_at DESC);
-
--- ============================================================================
 -- 6. Bookings — conflict-check optimization
 --    checkConflict filters: mentor_id, status NOT IN (cancelled, completed),
 --    and overlapping time range.
 -- ============================================================================
 
 CREATE INDEX IF NOT EXISTS idx_bookings_conflict_check
-  ON bookings(mentor_id, scheduled_at)
+  ON bookings(mentor_id, scheduled_start)
   WHERE status NOT IN ('cancelled', 'completed');
 
 -- ============================================================================
@@ -127,8 +89,8 @@ CREATE INDEX IF NOT EXISTS idx_disputes_unresolved_age
 --    Then query: SELECT * FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;
 -- ============================================================================
 
--- Uncomment the line below if you have superuser access:
--- CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+-- Enable the extension:
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
 -- ============================================================================
 -- 9. Query analysis view — top slow queries (requires pg_stat_statements)

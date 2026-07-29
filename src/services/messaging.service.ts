@@ -1,6 +1,7 @@
 import pool from '../config/database';
 import { SocketService } from './socket.service';
 import { logger } from '../utils/logger.utils';
+import { PaginationUtil } from '../utils/pagination.utils';
 
 export interface ConversationRecord {
   id: string;
@@ -36,7 +37,8 @@ export interface MessageRecord {
 export const MessagingService = {
   /**
    * Get or create a conversation between two users.
-   * Returns null when they share no booking.
+   * Returns null when they share no valid booking.
+   * Valid bookings are those that are confirmed, in_progress, or completed.
    */
   async getOrCreateConversation(
     userAId: string,
@@ -46,6 +48,7 @@ export const MessagingService = {
       `SELECT id FROM bookings
        WHERE (mentor_id = $1 AND mentee_id = $2)
           OR (mentor_id = $2 AND mentee_id = $1)
+       AND status IN ('confirmed', 'in_progress', 'completed')
        LIMIT 1`,
       [userAId, userBId],
     );
@@ -93,8 +96,11 @@ export const MessagingService = {
            FROM messages um
            WHERE um.conversation_id = c.id
              AND um.sender_id != $1
-             AND um.read_at IS NULL
              AND um.is_deleted = FALSE
+             AND NOT EXISTS (
+               SELECT 1 FROM message_reads mr 
+               WHERE mr.message_id = um.id AND mr.user_id = $1
+             )
          ) AS unread_count
        FROM conversations c
        JOIN users u ON u.id = CASE
@@ -144,20 +150,18 @@ export const MessagingService = {
     let cursorClause = '';
 
     if (cursor) {
-      const { rows: cursorRows } = await pool.query<{ created_at: Date }>(
-        `SELECT created_at FROM messages WHERE id = $1`,
-        [cursor],
-      );
-      if (cursorRows[0]) {
-        cursorClause = `AND m.created_at < $3`;
-        params.push(cursorRows[0].created_at);
+      const decoded = PaginationUtil.decodeCursor(cursor);
+      if (decoded) {
+        cursorClause = `AND (m.created_at, m.id) < ($3, $4)`;
+        params.push(decoded.created_at, decoded.id);
       }
     }
 
     const { rows } = await pool.query<MessageRecord>(
       `SELECT
          m.id, m.conversation_id, m.sender_id, m.body,
-         m.is_deleted, m.deleted_at, m.read_at,
+         m.is_deleted, m.deleted_at, 
+         (SELECT mr.read_at FROM message_reads mr WHERE mr.message_id = m.id AND mr.user_id = $1 LIMIT 1) as read_at,
          m.created_at, m.updated_at,
          CONCAT(u.first_name, ' ', u.last_name) AS sender_name,
          u.avatar_url AS sender_avatar
@@ -165,14 +169,22 @@ export const MessagingService = {
        JOIN users u ON u.id = m.sender_id
        WHERE m.conversation_id = $1
          ${cursorClause}
-       ORDER BY m.created_at DESC
+       ORDER BY m.created_at DESC, m.id DESC
        LIMIT $2`,
       params,
     );
 
     const hasMore = rows.length > limit;
     const messages = hasMore ? rows.slice(0, limit) : rows;
-    const nextCursor = hasMore ? messages[messages.length - 1].id : null;
+    
+    let nextCursor = null;
+    if (messages.length > 0 && hasMore) {
+      const lastMsg = messages[messages.length - 1];
+      const payload = PaginationUtil.getCursorFromItem(lastMsg);
+      if (payload) {
+        nextCursor = PaginationUtil.encodeCursor(payload);
+      }
+    }
 
     return {
       messages: messages.map((m) =>
@@ -278,6 +290,51 @@ export const MessagingService = {
     );
 
     return rowCount ?? 0;
+    userId: string,
+    messageIds: string[],
+  ): Promise<number> {
+    if (!messageIds.length) return 0;
+
+    const conv = await this.getConversation(conversationId, userId);
+    if (!conv) return 0;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      const values = messageIds.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(', ');
+      const params = messageIds.flatMap(id => [id, userId]);
+
+      const { rowCount } = await client.query(
+        `INSERT INTO message_reads (message_id, user_id)
+         VALUES ${values}
+         ON CONFLICT (message_id, user_id) DO NOTHING`,
+        params
+      );
+
+      await client.query('COMMIT');
+
+      if ((rowCount ?? 0) > 0) {
+        const recipientId =
+          conv.participant_one_id === userId
+            ? conv.participant_two_id
+            : conv.participant_one_id;
+
+        SocketService.emitToUser(recipientId, 'message:read', {
+          conversationId,
+          userId,
+          messageIds,
+        });
+      }
+
+      return rowCount ?? 0;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      logger.error('MessagingService: batchMarkAsRead failed', { err });
+      throw err;
+    } finally {
+      client.release();
+    }
   },
 
   /**

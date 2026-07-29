@@ -1,7 +1,10 @@
-import pool from "../config/database";
+import { db } from "../config/database";
+import { logger } from "../utils/logger";
+import { withCurrentTenantFilter } from "../utils/tenant-context.utils";
 
 export interface Payment {
   id: string;
+  tenant_id: string | null;
   user_id: string;
   amount: number;
   currency: string;
@@ -11,26 +14,29 @@ export interface Payment {
 }
 
 export const PaymentModel = {
-  async initializeTable(): Promise<void> {
-    // This is now handled by transactions table, but keeping the method for compatibility
-    const query = `
-      CREATE TABLE IF NOT EXISTS transactions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID NOT NULL,
-        amount DECIMAL(12, 2) NOT NULL,
-        currency VARCHAR(10) DEFAULT 'USD',
-        status VARCHAR(20) NOT NULL DEFAULT 'pending',
-        stellar_tx_hash TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-    `;
-    await pool.query(query);
+  async findByUserId(userId: string): Promise<Payment[]> {
+    const { query, params } = withCurrentTenantFilter(
+      "SELECT * FROM transactions WHERE user_id = $1",
+      [userId],
+    );
+    const { rows } = await db.query(`${query} ORDER BY created_at DESC`, params);
+    return rows;
   },
 
-  async findByUserId(userId: string): Promise<Payment[]> {
-    const query =
-      "SELECT * FROM transactions WHERE user_id = $1 ORDER BY created_at DESC;";
-    const { rows } = await pool.query<Payment>(query, [userId]);
+  /**
+   * Bulk fetch payments for multiple users.
+   * Returns one array per requested userId.
+   */
+  async findByUserIds(userIds: string[]): Promise<Payment[]> {
+    if (userIds.length === 0) return [];
+    const { query, params } = withCurrentTenantFilter(
+      "SELECT * FROM transactions WHERE user_id = ANY($1)",
+      [userIds],
+    );
+    const { rows } = await db.query(
+      `${query} ORDER BY user_id, created_at DESC`,
+      params,
+    );
     return rows;
   },
 
@@ -39,25 +45,56 @@ export const PaymentModel = {
     from?: string,
     to?: string,
   ): Promise<any[]> {
-    let query = `
+    let baseQuery = `
       SELECT p.*, s.start_time as session_time
       FROM transactions p
       JOIN sessions s ON p.user_id = s.learner_id
       WHERE s.mentor_id = $1
     `;
-    const params: any[] = [mentorId];
+    const baseParams: unknown[] = [mentorId];
 
     if (from) {
-      params.push(from);
-      query += ` AND p.created_at >= $${params.length}`;
+      baseParams.push(from);
+      baseQuery += ` AND p.created_at >= $${baseParams.length}`;
     }
     if (to) {
-      params.push(to);
-      query += ` AND p.created_at <= $${params.length}`;
+      baseParams.push(to);
+      baseQuery += ` AND p.created_at <= $${baseParams.length}`;
     }
 
-    query += " ORDER BY p.created_at DESC;";
-    const { rows } = await pool.query(query, params);
+    // Apply tenant filter
+    const { query, params } = withCurrentTenantFilter(
+      baseQuery,
+      baseParams,
+      "p.tenant_id",
+    );
+
+    const { rows } = await db.query(`${query} ORDER BY p.created_at DESC`, params);
     return rows;
+  },
+
+  /**
+   * Delete payments (transactions) older than given number of years.
+   * Returns number of records deleted.
+   *
+   * Note: This is a system maintenance operation — it runs across all tenants
+   * intentionally and should only be called from admin/maintenance contexts.
+   */
+  async deleteOlderThanYears(years: number): Promise<number> {
+    try {
+      const { rowCount } = await db.query(
+        `DELETE FROM transactions WHERE created_at < NOW() - ($1::int * INTERVAL '1 year') RETURNING id;`,
+        [years],
+      );
+
+      const deleted = rowCount ?? 0;
+      if (deleted > 0) {
+        logger.info("PaymentModel: deleted old payments", { years, deleted });
+      }
+      return deleted;
+    } catch (error) {
+      logger.error("Failed to delete old payments:", error);
+      return 0;
+    }
   },
 };

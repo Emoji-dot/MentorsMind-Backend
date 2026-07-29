@@ -36,12 +36,12 @@ CREATE UNIQUE INDEX idx_mv_daily_users_date_role ON mv_daily_users(date, role);
 -- Session statistics
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_session_stats AS
 SELECT 
-    DATE(scheduled_at) as date,
+    DATE(scheduled_start) as date,
     status,
     COUNT(*) as session_count,
-    AVG(EXTRACT(EPOCH FROM (completed_at - scheduled_at))/60) as avg_duration_minutes
+    AVG(EXTRACT(EPOCH FROM (completed_at - scheduled_start))/60) as avg_duration_minutes
 FROM bookings
-GROUP BY DATE(scheduled_at), status
+GROUP BY DATE(scheduled_start), status
 ORDER BY date DESC;
 
 CREATE UNIQUE INDEX idx_mv_session_stats_date_status ON mv_session_stats(date, status);

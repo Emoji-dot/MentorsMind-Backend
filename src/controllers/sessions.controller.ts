@@ -43,7 +43,7 @@ export const SessionsController = {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
-    const { id } = req.params;
+    const id = req.params.id as string;
     const revoked = await SessionManagerService.revokeSession(id, userId);
 
     if (!revoked) {

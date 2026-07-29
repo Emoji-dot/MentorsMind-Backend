@@ -1,13 +1,33 @@
+import { MfaOtpController } from "../controllers/mfa-otp.controller";
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { AuthController } from "../controllers/auth.controller";
 import { SessionsController } from "../controllers/sessions.controller";
 import { MfaController } from "../controllers/mfa.controller";
 import { OAuthController } from "../controllers/oauth.controller";
+import { JwksController } from "../controllers/jwks.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { handleTokenRefresh } from "../middleware/token-refresh.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
 import { loginLockoutCheck } from "../middleware/rate-limit.middleware";
+import { validate } from "../middleware/validation.middleware";
+import {
+  registerSchema,
+  loginSchema,
+  refreshTokenSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  mfaVerifySetupSchema,
+  mfaDisableSchema,
+  mfaValidateSchema,
+  mfaBackupSchema,
+  mfaOtpSendSchema,
+  mfaOtpSetupSchema,
+  mfaOtpValidateSchema,
+  listAuthSessionsSchema,
+  revokeSessionParamSchema,
+  oauthProviderParamSchema,
+} from "../validators/schemas/auth.schemas";
 
 const router = Router();
 
@@ -24,21 +44,47 @@ const authLimiter = rateLimit({
 });
 
 // Public routes (rate limited)
-router.post("/register", authLimiter, AuthController.register);
+router.post("/register", authLimiter, validate(registerSchema), AuthController.register);
 // loginLockoutCheck runs before the handler to short-circuit locked accounts early
 router.post(
   "/login",
   authLimiter,
+  validate(loginSchema),
   asyncHandler(loginLockoutCheck),
   AuthController.login,
 );
-router.post("/refresh", authLimiter, asyncHandler(handleTokenRefresh));
-router.post("/forgot-password", authLimiter, AuthController.forgotPassword);
-router.post("/reset-password", authLimiter, AuthController.resetPassword);
+router.post(
+  "/refresh",
+  authLimiter,
+  validate(refreshTokenSchema),
+  asyncHandler(handleTokenRefresh),
+);
+router.post(
+  "/forgot-password",
+  authLimiter,
+  validate(forgotPasswordSchema),
+  AuthController.forgotPassword,
+);
+router.post(
+  "/reset-password",
+  authLimiter,
+  validate(resetPasswordSchema),
+  AuthController.resetPassword,
+);
 
 // MFA Public routes
-router.post("/mfa/validate", authLimiter, asyncHandler(MfaController.validate));
-router.post("/mfa/backup", authLimiter, asyncHandler(MfaController.backup));
+router.post(
+  "/mfa/validate",
+  authLimiter,
+  validate(mfaValidateSchema),
+  asyncHandler(MfaController.validate),
+);
+router.post(
+  "/mfa/backup",
+  authLimiter,
+  validate(mfaBackupSchema),
+  asyncHandler(MfaController.backup),
+);
 
 // Protected routes (no strict rate limiting required beyond global)
 router.post("/logout", authenticate, AuthController.logout);
@@ -49,14 +95,41 @@ router.post("/mfa/setup", authenticate, asyncHandler(MfaController.setup));
 router.post(
   "/mfa/verify-setup",
   authenticate,
+  validate(mfaVerifySetupSchema),
   asyncHandler(MfaController.verifySetup),
 );
-router.post("/mfa/disable", authenticate, asyncHandler(MfaController.disable));
+router.post(
+  "/mfa/disable",
+  authenticate,
+  validate(mfaDisableSchema),
+  asyncHandler(MfaController.disable),
+);
+
+// MFA OTP routes (SMS/email)
+router.post(
+  "/mfa/otp/send",
+  authenticate,
+  validate(mfaOtpSendSchema),
+  asyncHandler(MfaOtpController.sendOtp),
+);
+router.post(
+  "/mfa/otp/setup",
+  authenticate,
+  validate(mfaOtpSetupSchema),
+  asyncHandler(MfaOtpController.setupOtp),
+);
+router.post(
+  "/mfa/otp/validate",
+  authLimiter,
+  validate(mfaOtpValidateSchema),
+  asyncHandler(MfaOtpController.validateOtp),
+);
 
 // Session management routes
 router.get(
   "/sessions",
   authenticate,
+  validate(listAuthSessionsSchema),
   asyncHandler(SessionsController.listSessions),
 );
 router.delete(
@@ -67,6 +140,7 @@ router.delete(
 router.delete(
   "/sessions/:id",
   authenticate,
+  validate(revokeSessionParamSchema),
   asyncHandler(SessionsController.revokeSession),
 );
 
@@ -83,7 +157,11 @@ router.get(
 router.delete(
   "/oauth/:provider",
   authenticate,
+  validate(oauthProviderParamSchema),
   asyncHandler(OAuthController.unlinkProvider),
 );
+
+// JWKS endpoint
+router.get("/jwks", asyncHandler(JwksController.getJwks));
 
 export default router;

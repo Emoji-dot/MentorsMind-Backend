@@ -4,6 +4,7 @@ import { UsersService } from '../services/users.service';
 import { ResponseUtil } from '../utils/response.utils';
 import { AuditLogService, extractIpAddress } from '../services/auditLog.service';
 import { accountDeletionService } from '../services/accountDeletion.service';
+import { LoyaltyService } from '../services/loyalty.service';
 
 function getAuthenticatedUserId(req: AuthenticatedRequest): string {
   return (req.user as any)?.id ?? (req.user as any)?.userId;
@@ -97,12 +98,26 @@ export const UsersController = {
 
   /** GET /users/me */
   async getMe(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const user = await UsersService.findById(getAuthenticatedUserId(req));
+    const userId = getAuthenticatedUserId(req);
+    const user = await UsersService.findById(userId);
     if (!user) {
       ResponseUtil.notFound(res, 'User not found');
       return;
     }
-    ResponseUtil.success(res, user, 'Profile retrieved successfully');
+
+    const loyalty = await LoyaltyService.getOrCreateAccount(userId).catch(
+      () => null,
+    );
+
+    ResponseUtil.success(
+      res,
+      {
+        ...user,
+        loyalty_tier: loyalty?.tier ?? 'bronze',
+        loyalty_points: loyalty ? parseFloat(loyalty.balance) : 0,
+      },
+      'Profile retrieved successfully',
+    );
   },
 
   /** PUT /users/me */
@@ -209,5 +224,44 @@ export const UsersController = {
     }
 
     ResponseUtil.success(res, result, 'Account deletion request cancelled');
+  },
+
+  /** PUT /users/me/language */
+  async updateLanguage(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const { language } = req.body;
+    const userId = getAuthenticatedUserId(req);
+    
+    // Get old value for audit
+    const oldUser = await UsersService.findById(userId);
+    
+    const updated = await UsersService.update(userId, { language });
+    if (!updated) {
+      ResponseUtil.notFound(res, 'User not found');
+      return;
+    }
+    
+    // Log language update
+    await AuditLogService.log({
+      userId,
+      action: 'LANGUAGE_UPDATED',
+      resourceType: 'user',
+      resourceId: userId,
+      oldValue: oldUser ? { language: oldUser.language } : null,
+      newValue: { language: updated.language },
+      ipAddress: extractIpAddress(req),
+      userAgent: req.headers['user-agent'] || null,
+    });
+    
+    ResponseUtil.success(res, { language: updated.language }, 'Language preference updated successfully');
+  },
+
+  /** GET /users/me/language */
+  async getLanguage(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const user = await UsersService.findById(getAuthenticatedUserId(req));
+    if (!user) {
+      ResponseUtil.notFound(res, 'User not found');
+      return;
+    }
+    ResponseUtil.success(res, { language: user.language }, 'Language preference retrieved successfully');
   },
 };

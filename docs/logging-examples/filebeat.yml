@@ -1,0 +1,93 @@
+# Filebeat configuration for MentorsMind Backend — Issue #740
+# Ships JSON structured logs (Pino format) from container stdout to Elasticsearch.
+#
+# Usage:
+#   filebeat -c filebeat.yml -e
+#
+# Or via Docker:
+#   docker run --rm \
+#     -v $(pwd)/docs/logging-examples/filebeat.yml:/usr/share/filebeat/filebeat.yml \
+#     -v /var/lib/docker/containers:/var/lib/docker/containers:ro \
+#     elastic/filebeat:8.13.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Input: container stdout (Docker JSON log driver)
+# ─────────────────────────────────────────────────────────────────────────────
+filebeat.inputs:
+  - type: container
+    paths:
+      - /var/lib/docker/containers/*/*.log
+    # Filter to only collect logs from the mentorminds-backend container
+    processors:
+      - add_docker_metadata:
+          host: "unix:///var/run/docker.sock"
+      - decode_json_fields:
+          fields: ["message"]
+          target: ""        # merge JSON fields into root
+          overwrite_keys: true
+          add_error_key: true
+      # Rename Pino 'msg' field to ECS 'message'
+      - rename:
+          fields:
+            - from: "msg"
+              to: "message"
+          ignore_missing: true
+      # Map Pino numeric level to ECS log.level string
+      - script:
+          lang: javascript
+          source: >
+            function process(event) {
+              var level = event.Get("level");
+              if (typeof level === "number") {
+                var label = "info";
+                if (level >= 60) label = "fatal";
+                else if (level >= 50) label = "error";
+                else if (level >= 40) label = "warn";
+                else if (level >= 30) label = "info";
+                else if (level >= 20) label = "debug";
+                else label = "trace";
+                event.Put("log.level", label);
+                event.Delete("level");
+              }
+            }
+      # Add service metadata
+      - add_fields:
+          target: "service"
+          fields:
+            name: "mentorminds-backend"
+            environment: "${NODE_ENV:development}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Output: Elasticsearch
+# ─────────────────────────────────────────────────────────────────────────────
+output.elasticsearch:
+  hosts: ["${ELASTICSEARCH_HOST:localhost}:${ELASTICSEARCH_PORT:9200}"]
+  username: "${ELASTICSEARCH_USERNAME:}"
+  password: "${ELASTICSEARCH_PASSWORD:}"
+  api_key: "${ELASTICSEARCH_API_KEY:}"
+  # Write to the ILM rolling alias created by setup-elk-index-template.ts
+  index: "mentorminds-logs"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ILM
+# ─────────────────────────────────────────────────────────────────────────────
+setup.ilm.enabled: true
+setup.ilm.policy_name: "mentorminds-logs-ilm-policy"
+setup.ilm.rollover_alias: "mentorminds-logs"
+# Skip template setup — managed by setup-elk-index-template.ts
+setup.template.enabled: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Processors (global)
+# ─────────────────────────────────────────────────────────────────────────────
+processors:
+  - drop_fields:
+      fields: ["agent", "input", "ecs", "host.architecture", "host.os"]
+      ignore_missing: true
+  - add_host_metadata: ~
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging (Filebeat's own logs)
+# ─────────────────────────────────────────────────────────────────────────────
+logging.level: info
+logging.to_files: false

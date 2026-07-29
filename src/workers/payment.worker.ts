@@ -46,7 +46,7 @@ export async function pollPaymentStatus(
   }
 
   // If there's a transaction hash, verify on Stellar
-  const hash = transactionHash || payment.stellar_tx_hash;
+  const hash = transactionHash || payment.transaction_hash;
   if (hash) {
     try {
       // submitTransaction will throw if the tx is not found/failed;

@@ -1,10 +1,10 @@
-import pool from '../config/database';
-import { logger } from '../utils/logger';
+import pool, { db } from "../config/database";
+import { logger } from "../utils/logger";
 
 export interface NotificationTemplateRecord {
   id: string;
   name: string;
-  type: 'email' | 'in_app';
+  type: "email" | "in_app";
   subject?: string;
   html_content: string;
   text_content: string;
@@ -17,7 +17,7 @@ export interface NotificationTemplateRecord {
 export interface NotificationTemplateInput {
   id: string;
   name: string;
-  type: 'email' | 'in_app';
+  type: "email" | "in_app";
   subject?: string;
   html_content: string;
   text_content: string;
@@ -30,33 +30,11 @@ export interface NotificationTemplateInput {
  */
 export const NotificationTemplatesModel = {
   /**
-   * Initialize the notification_templates table
-   */
-  async initializeTable(): Promise<void> {
-    const query = `
-      CREATE TABLE IF NOT EXISTS notification_templates (
-        id VARCHAR(100) PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        type VARCHAR(20) NOT NULL,
-        subject VARCHAR(255),
-        html_content TEXT NOT NULL,
-        text_content TEXT NOT NULL,
-        variables TEXT[] DEFAULT '{}',
-        is_active BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_notification_templates_type ON notification_templates(type);
-      CREATE INDEX IF NOT EXISTS idx_notification_templates_active ON notification_templates(is_active);
-    `;
-    await pool.query(query);
-  },
-
-  /**
    * Create a new notification template
    */
-  async create(input: NotificationTemplateInput): Promise<NotificationTemplateRecord | null> {
+  async create(
+    input: NotificationTemplateInput,
+  ): Promise<NotificationTemplateRecord | null> {
     const query = `
       INSERT INTO notification_templates (id, name, type, subject, html_content, text_content, variables, is_active)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -75,10 +53,10 @@ export const NotificationTemplatesModel = {
     ];
 
     try {
-      const { rows } = await pool.query<NotificationTemplateRecord>(query, values);
+      const { rows } = await db.query(query, values);
       return rows[0] || null;
     } catch (error) {
-      logger.error('Failed to create notification template:', error);
+      logger.error("Failed to create notification template:", error);
       return null;
     }
   },
@@ -93,10 +71,10 @@ export const NotificationTemplatesModel = {
     `;
 
     try {
-      const { rows } = await pool.query<NotificationTemplateRecord>(query, [id]);
+      const { rows } = await db.query(query, [id]);
       return rows[0] || null;
     } catch (error) {
-      logger.error('Failed to get notification template:', error);
+      logger.error("Failed to get notification template:", error);
       return null;
     }
   },
@@ -104,7 +82,9 @@ export const NotificationTemplatesModel = {
   /**
    * Get templates by type
    */
-  async getByType(type: 'email' | 'in_app'): Promise<NotificationTemplateRecord[]> {
+  async getByType(
+    type: "email" | "in_app",
+  ): Promise<NotificationTemplateRecord[]> {
     const query = `
       SELECT * FROM notification_templates
       WHERE type = $1 AND is_active = TRUE
@@ -112,10 +92,12 @@ export const NotificationTemplatesModel = {
     `;
 
     try {
-      const { rows } = await pool.query<NotificationTemplateRecord>(query, [type]);
+      const { rows } = await pool.query<NotificationTemplateRecord>(query, [
+        type,
+      ]);
       return rows;
     } catch (error) {
-      logger.error('Failed to get notification templates by type:', error);
+      logger.error("Failed to get notification templates by type:", error);
       return [];
     }
   },
@@ -123,7 +105,10 @@ export const NotificationTemplatesModel = {
   /**
    * Update a notification template
    */
-  async update(id: string, updates: Partial<NotificationTemplateInput>): Promise<NotificationTemplateRecord | null> {
+  async update(
+    id: string,
+    updates: Partial<NotificationTemplateInput>,
+  ): Promise<NotificationTemplateRecord | null> {
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -162,16 +147,16 @@ export const NotificationTemplatesModel = {
 
     const query = `
       UPDATE notification_templates
-      SET ${fields.join(', ')}
+      SET ${fields.join(", ")}
       WHERE id = $${paramCount}
       RETURNING *;
     `;
 
     try {
-      const { rows } = await pool.query<NotificationTemplateRecord>(query, values);
+      const { rows } = await db.query(query, values);
       return rows[0] || null;
     } catch (error) {
-      logger.error('Failed to update notification template:', error);
+      logger.error("Failed to update notification template:", error);
       return null;
     }
   },
@@ -188,10 +173,10 @@ export const NotificationTemplatesModel = {
     `;
 
     try {
-      const { rowCount } = await pool.query(query, [id]);
+      const { rowCount } = await db.query(query, [id]);
       return (rowCount ?? 0) > 0;
     } catch (error) {
-      logger.error('Failed to delete notification template:', error);
+      logger.error("Failed to delete notification template:", error);
       return false;
     }
   },
@@ -207,10 +192,10 @@ export const NotificationTemplatesModel = {
     `;
 
     try {
-      const { rows } = await pool.query<NotificationTemplateRecord>(query);
+      const { rows } = await db.query(query);
       return rows;
     } catch (error) {
-      logger.error('Failed to get all notification templates:', error);
+      logger.error("Failed to get all notification templates:", error);
       return [];
     }
   },

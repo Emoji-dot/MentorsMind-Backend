@@ -1,5 +1,8 @@
 import { env } from "./env";
 import monitoringConfig from "./monitoring.config";
+import retentionConfig from "./retention.config";
+import elasticsearchConfig from "./elasticsearch.config";
+import recordingConfig from "./recording.config";
 
 const config = {
   env: env.NODE_ENV,
@@ -19,9 +22,13 @@ const config = {
     name: env.DB_NAME,
     user: env.DB_USER,
     password: env.DB_PASSWORD,
-    poolMax: 20,
-    idleTimeoutMs: 30000,
-    connectionTimeoutMs: 2000,
+    poolMax: parseInt(env.DB_POOL_MAX, 10),
+    poolMin: parseInt(env.DB_POOL_MIN, 10),
+    idleTimeoutMs: parseInt(env.DB_IDLE_TIMEOUT_MS, 10),
+    connectionTimeoutMs: parseInt(env.DB_CONNECTION_TIMEOUT_MS, 10),
+    statementTimeoutMs: parseInt(env.DB_STATEMENT_TIMEOUT_MS, 10),
+    poolExhaustionThreshold: parseInt(env.DB_POOL_EXHAUSTION_THRESHOLD, 10),
+    circuitBreakerEnabled: env.DB_CIRCUIT_BREAKER_ENABLED === "true",
   },
 
   jwt: {
@@ -41,6 +48,7 @@ const config = {
 
   cors: {
     origins: env.CORS_ORIGIN.split(",").map((o: string) => o.trim()),
+    maxAge: parseInt(env.CORS_MAX_AGE, 10),
   },
 
   rateLimit: {
@@ -49,6 +57,7 @@ const config = {
   },
 
   email: {
+    provider: env.EMAIL_PROVIDER,
     smtp: {
       host: env.SMTP_HOST,
       port: parseInt(env.SMTP_PORT, 10),
@@ -60,11 +69,25 @@ const config = {
       user: env.GMAIL_USER,
       pass: env.GMAIL_PASS,
     },
+    sendgrid: {
+      apiKey: env.SENDGRID_API_KEY,
+    },
+    mailgun: {
+      apiKey: env.MAILGUN_API_KEY,
+      domain: env.MAILGUN_DOMAIN,
+      host: env.MAILGUN_HOST,
+    },
     fromEmail: env.FROM_EMAIL,
+    webhookSecret: env.EMAIL_WEBHOOK_SECRET,
   },
 
   redis: {
     url: env.REDIS_URL,
+    clusterNodes: env.REDIS_CLUSTER_NODES
+      ? env.REDIS_CLUSTER_NODES.split(",").map((s: string) => s.trim())
+      : undefined,
+    clusterEnabled: env.REDIS_CLUSTER_ENABLED === "true",
+    tlsEnabled: env.REDIS_TLS_ENABLED === "true",
   },
 
   logging: {
@@ -80,6 +103,13 @@ const config = {
   },
 
   monitoring: monitoringConfig,
+  retention: retentionConfig,
+  elasticsearch: elasticsearchConfig,
+  recording: recordingConfig,
+  stripe: {
+    secretKey: env.STRIPE_SECRET_KEY,
+    webhookSecret: env.STRIPE_WEBHOOK_SECRET,
+  },
 } as const;
 
 export default config;

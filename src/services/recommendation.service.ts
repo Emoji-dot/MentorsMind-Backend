@@ -61,7 +61,7 @@ class RecommendationServiceImpl {
      */
 
     async getRecommendedMentors(learnerId: string, limit = 5): Promise<MentorRecommendation[]> {
-        const cacheKey = CacheKeys.recommendationMentors(learnerId);
+        const cacheKey = CacheKeys.recommendations(learnerId);
         const cached = await CacheService.get<MentorRecommendation[]>(cacheKey);
         if (cached) {
             logger.debug('[RecommendationService] Returning cached recommendations', { learnerId });
@@ -334,7 +334,7 @@ class RecommendationServiceImpl {
             [learnerId, mentorId, reason || null],
         );
 
-        const cacheKey = CacheKeys.recommendationMentors(learnerId);
+        const cacheKey = CacheKeys.recommendations(learnerId);
         await CacheService.del(cacheKey);
 
         await pool.query(
@@ -347,7 +347,5 @@ class RecommendationServiceImpl {
         logger.info('[RecommendationService] Mentor dismissed', { learnerId, mentorId, reason });
     }
 }
-
-CacheKeys.recommendationMentors = (learnerId: string) => `mm:recommendations:${learnerId}`;
 
 export const RecommendationService = new RecommendationServiceImpl();

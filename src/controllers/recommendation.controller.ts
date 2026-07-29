@@ -38,7 +38,7 @@ export const RecommendationController = {
         res: Response,
     ): Promise<void> {
         const learnerId = req.user!.id;
-        const { mentorId } = req.params;
+        const { mentorId } = req.params as Record<string, string>;
         const { reason } = req.body;
 
         if (!mentorId) {
@@ -64,7 +64,7 @@ export const RecommendationController = {
         res: Response,
     ): Promise<void> {
         const learnerId = req.user!.id;
-        const { mentorId } = req.params;
+        const { mentorId } = req.params as Record<string, string>;
         const { position, context, scoring } = req.body;
 
         if (!mentorId) {

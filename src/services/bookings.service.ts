@@ -8,16 +8,21 @@ import {
   calculateRefundEligibility,
 } from "../utils/booking-conflicts.utils";
 import { SocketService } from "./socket.service";
-import pool from "../config/database";
+import { db } from "../config/database";
 import { CalendarService } from "./calendar.service";
 import { SorobanEscrowService } from "./sorobanEscrow.service";
 import { QueueService } from "./queue.service";
-import { NotificationService } from "./notification.service";
 import {
-  NotificationType,
+  NotificationService,
   NotificationChannel,
   NotificationPriority,
-} from "../models/notifications.model";
+} from "./notification.service";
+import { NotificationType } from "../models/notifications.model";
+import { SessionSummaryModel } from "../models/session-summary.model";
+import { MentorsService } from "./mentors.service";
+import { LoyaltyService } from "./loyalty.service";
+import { scheduleNoShowCheck } from "../queues/session-no-show.queue";
+import config from "../config";
 
 export interface CreateBookingData {
   menteeId: string;
@@ -43,7 +48,7 @@ interface BookingEscrowMetadata {
 async function getBookingEscrowMetadata(
   bookingId: string,
 ): Promise<BookingEscrowMetadata> {
-  const { rows } = await pool.query<BookingEscrowMetadata>(
+  const { rows } = await db.query(
     `SELECT escrow_id, escrow_contract_address FROM bookings WHERE id = $1`,
     [bookingId],
   );
@@ -62,7 +67,7 @@ async function setBookingEscrowMetadata(
   escrowId: string,
   txHash: string | null,
 ): Promise<void> {
-  await pool.query(
+  await db.query(
     `UPDATE bookings
      SET escrow_contract_address = $2,
          escrow_id = $3,
@@ -89,8 +94,8 @@ export const BookingsService = {
 
   async createBooking(data: CreateBookingData): Promise<BookingRecord> {
     // Batch-validate both users in a single query (avoids N+1)
-    const { rows: users } = await pool.query(
-      `SELECT id, role FROM users WHERE id = ANY($1) AND is_active = true`,
+    const { rows: users } = await db.query(
+      `SELECT id, role, status FROM users WHERE id = ANY($1) AND is_active = true`,
       [[data.menteeId, data.mentorId]],
     );
 
@@ -103,6 +108,24 @@ export const BookingsService = {
     if (!mentor) {
       throw createError("Mentor not found", 404);
     }
+
+    // Prevent suspended or banned users from booking
+    if (mentee.status === "suspended") {
+      throw createError(
+        "Your account is suspended. You cannot create bookings at this time.",
+        403,
+      );
+    }
+    if (mentee.status === "banned") {
+      throw createError("Your account has been permanently banned.", 403);
+    }
+    if (mentor.status === "suspended" || mentor.status === "banned") {
+      throw createError(
+        "This mentor is not currently available for bookings.",
+        400,
+      );
+    }
+
     if (mentor.role !== "mentor") {
       throw createError("User is not a mentor", 400);
     }
@@ -118,9 +141,26 @@ export const BookingsService = {
       throw createError("Mentor is not available at the requested time", 409);
     }
 
-    // Calculate amount (placeholder - should fetch from mentor profile)
-    const hourlyRate = 50; // TODO: Fetch from mentor profile
+    // Calculate amount from mentor profile
+    const mentorProfile = await MentorsService.findById(data.mentorId);
+    if (!mentorProfile || mentorProfile.hourly_rate === null) {
+      throw createError("Mentor profile or hourly rate not found", 404);
+    }
+    const hourlyRate = mentorProfile.hourly_rate;
     const amount = ((data.durationMinutes / 60) * hourlyRate).toFixed(7);
+
+    // Best-effort USD equivalent (oracle preferred, SDEX fallback via
+    // AssetExchangeService). Never blocks booking creation on failure.
+    let usdEquivalent: string | null = null;
+    try {
+      const rate = await AssetExchangeService.getRate("XLM", "USDC");
+      usdEquivalent = (parseFloat(amount) * parseFloat(rate.rate)).toFixed(2);
+    } catch (error) {
+      logger.warn("Failed to compute USD equivalent for booking amount", {
+        mentorId: data.mentorId,
+        error: error instanceof Error ? error.message : error,
+      });
+    }
 
     // Create booking
     const booking = await BookingModel.create({
@@ -132,6 +172,7 @@ export const BookingsService = {
       notes: data.notes,
       amount,
       currency: "XLM",
+      usdEquivalent,
     });
 
     return booking;
@@ -157,7 +198,7 @@ export const BookingsService = {
 
   async getUserBookings(
     userId: string,
-    filters?: { status?: string; page?: number; limit?: number },
+    filters?: { status?: string; cursor?: string; page?: number; limit?: number },
   ): Promise<{ bookings: BookingRecord[]; total: number }> {
     const cacheKey = CacheKeys.sessionList(userId);
 
@@ -354,6 +395,36 @@ export const BookingsService = {
       logger.error("Calendar create failed", { bookingId, error: err }),
     );
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Schedule no-show detection check
+    // ═══════════════════════════════════════════════════════════════════════════
+    const gracePeriodMinutes = parseInt(
+      process.env.NO_SHOW_GRACE_PERIOD_MINUTES || '10',
+      10
+    );
+
+    try {
+      await scheduleNoShowCheck({
+        bookingId,
+        mentorId: booking.mentor_id,
+        menteeId: booking.mentee_id,
+        scheduledStart: booking.scheduled_at,
+        gracePeriodMinutes,
+      });
+
+      logger.info('No-show check scheduled', {
+        bookingId,
+        scheduledStart: booking.scheduled_at,
+        gracePeriodMinutes,
+      });
+    } catch (error) {
+      logger.error('Failed to schedule no-show check', {
+        bookingId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      // Don't fail booking confirmation if scheduling fails
+    }
+
     return updated;
   },
 
@@ -381,17 +452,28 @@ export const BookingsService = {
       throw createError("Cannot complete booking before session ends", 400);
     }
 
-    if (userId === booking.mentee_id && SorobanEscrowService.isConfigured()) {
+    if (SorobanEscrowService.isConfigured()) {
       const metadata = await getBookingEscrowMetadata(bookingId);
       if (metadata.escrow_id) {
-        await SorobanEscrowService.releaseFunds({
-          escrowId: metadata.escrow_id,
-          releasedBy: userId,
-          contractAddress: metadata.escrow_contract_address || undefined,
-        });
+        if (userId === booking.mentee_id) {
+          await SorobanEscrowService.releaseFunds({
+            escrowId: metadata.escrow_id,
+            releasedBy: userId,
+            contractAddress: metadata.escrow_contract_address || undefined,
+          });
+        } else {
+          // Mentor is completing the booking -> Schedule auto-release
+          const { scheduleEscrowRelease } = await import("../queues/escrow-release.queue");
+          await scheduleEscrowRelease({
+            escrowId: metadata.escrow_id,
+            mentorId: booking.mentor_id,
+            learnerId: booking.mentee_id,
+            sessionCompletedAt: new Date(),
+          });
+        }
       } else {
         logger.warn(
-          "Skipping Soroban release_funds: no escrow metadata on booking",
+          "Skipping Soroban release/schedule: no escrow metadata on booking",
           {
             bookingId,
           },
@@ -426,6 +508,32 @@ export const BookingsService = {
       bookingId,
       status: "completed",
       updatedAt: updated.updated_at,
+    });
+
+    // Fire-and-forget: Award loyalty points for the completed session
+    LoyaltyService.accruePointsForCompletion(
+      booking.mentee_id,
+      bookingId,
+      booking.duration_minutes,
+    ).catch((err) => {
+      logger.warn("Failed to accrue loyalty points", {
+        bookingId,
+        menteeId: booking.mentee_id,
+        error: err,
+      });
+    });
+
+    // Fire-and-forget: Generate AI session summary
+    SessionSummaryModel.generateAndStore({
+      bookingId,
+      sessionId: booking.session_id || undefined,
+      sessionNotes: booking.notes || undefined,
+      sessionTitle: booking.topic,
+    }).catch((err) => {
+      logger.warn("Failed to generate session summary", {
+        bookingId,
+        error: err,
+      });
     });
 
     return updated;
@@ -475,6 +583,10 @@ export const BookingsService = {
           bookingId,
           txHash: refundResult.txHash,
         });
+        
+        // Cancel any pending auto-release
+        const { cancelEscrowRelease } = await import("../queues/escrow-release.queue");
+        await cancelEscrowRelease(metadata.escrow_id);
       } else {
         logger.warn("Skipping Soroban refund: no escrow metadata on booking", {
           bookingId,

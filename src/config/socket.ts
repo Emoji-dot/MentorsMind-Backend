@@ -24,7 +24,7 @@ const HEARTBEAT_INTERVAL_MS = 20_000;
 // ─── Module-level singletons ──────────────────────────────────────────────────
 
 let io: SocketIOServer;
-const presenceService = new PresenceService(redis);
+const presenceService = new PresenceService(redis as Redis);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -69,7 +69,10 @@ function createAdapterClients(): { pubClient: Redis; subClient: Redis } | null {
     return null;
   }
 
-  const pubClient = new Redis(redisUrl, { lazyConnect: true });
+  const isTls = redisUrl.startsWith('rediss://');
+  const tlsOptions = isTls ? { tls: { rejectUnauthorized: false } } : {};
+
+  const pubClient = new Redis(redisUrl, { lazyConnect: true, ...tlsOptions });
   const subClient = pubClient.duplicate();
 
   pubClient.on('error', (err) => logger.error('Socket.IO pubClient error', { error: err }));
@@ -144,6 +147,9 @@ export function createSocketServer(httpServer: HTTPServer): SocketIOServer {
 
     // Each socket joins a personal room for targeted emissions
     socket.join(`user:${userId}`);
+    if (role === 'admin') {
+      socket.join('admin');
+    }
 
     logger.info('Socket.IO: Client connected', { socketId: socket.id, userId, role });
 
@@ -173,13 +179,20 @@ export function createSocketServer(httpServer: HTTPServer): SocketIOServer {
       }
     }, HEARTBEAT_INTERVAL_MS + 5_000); // check 5 s after expected ping
 
-    // ── Reconnection — replay missed events ──────────────────────────────────
+    // ── Reconnection — replay missed events + process offline queue ──────────
     socket.on('reconnect', () => {
       logger.info('Socket.IO: Client reconnected, replaying missed events', {
         socketId: socket.id,
         userId,
       });
       SocketService.replayMissedEvents(userId);
+
+      // Process any pending offline actions queued while the client was offline
+      import('../services/offline-sync.service')
+        .then(({ OfflineSyncService }) => OfflineSyncService.onSocketReconnect(userId))
+        .catch((err) =>
+          logger.error('Socket.IO: offline sync on reconnect failed', { userId, error: err }),
+        );
     });
 
     // ── Disconnect ───────────────────────────────────────────────────────────

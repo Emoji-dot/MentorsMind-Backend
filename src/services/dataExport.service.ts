@@ -44,6 +44,7 @@ export const DataExportService = {
     await exportQueue.add("process-data-export", {
       userId,
       requestId: request.id,
+      jobId: `export-${request.id}`,
     });
 
     // 4. Audit log

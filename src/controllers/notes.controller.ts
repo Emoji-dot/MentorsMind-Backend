@@ -14,7 +14,7 @@ export const NotesController = {
      * Create a note for a session
      */
     createNote: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-        const sessionId = req.params.id;
+        const sessionId = req.params.id as string;
         const learnerId = req.user!.id;
         const { content } = req.body;
 
@@ -37,7 +37,7 @@ export const NotesController = {
      * Get all notes for a session
      */
     getNotesBySession: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-        const sessionId = req.params.id;
+        const sessionId = req.params.id as string;
         const learnerId = req.user!.id;
 
         const notes = await NotesService.getNotesBySession(sessionId, learnerId);
@@ -49,7 +49,7 @@ export const NotesController = {
      * Update an existing note
      */
     updateNote: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-        const noteId = req.params.id;
+        const noteId = req.params.id as string;
         const learnerId = req.user!.id;
         const { content } = req.body;
 
@@ -72,7 +72,7 @@ export const NotesController = {
      * Delete a note
      */
     deleteNote: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-        const noteId = req.params.id;
+        const noteId = req.params.id as string;
         const learnerId = req.user!.id;
 
         try {

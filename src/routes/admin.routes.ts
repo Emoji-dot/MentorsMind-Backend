@@ -1,26 +1,70 @@
 import { Router } from "express";
+import backupRoutes from "./admin/backup.routes";
 import { AdminController } from "../controllers/admin.controller";
-import { AnalyticsController } from "../controllers/analytics.controller";
+import { AdvancedAnalyticsController } from "../controllers/advanced-analytics.controller";
 import { VerificationController } from "../controllers/verification.controller";
 import { RevenueReportController } from "../controllers/revenueReport.controller";
 import { JwksController } from "../controllers/jwks.controller";
+import { RecordingCleanupController } from "../controllers/recording-cleanup.controller";
+import { AnalyticsRefreshStatusController } from "../controllers/analytics-refresh-status.controller";
+import { ExportAdminController } from "../controllers/export-progress.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { requireAdmin } from "../middleware/admin-auth.middleware";
 import { validate } from "../middleware/validation.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
-import { adminAllowlistMiddleware } from "../middleware/ipFilter.middleware";
+import { adminAllowlistMiddleware as _adminAllowlistMiddleware } from "../middleware/ipFilter.middleware";
+import { auditLogMiddleware } from "../middleware/audit-log.middleware";
+import { AuditAction } from "../utils/log-formatter.utils";
 import {
   rejectVerificationSchema,
   requestMoreInfoSchema,
   listVerificationsSchema,
 } from "../validators/schemas/verification.schemas";
 import { ConsentController } from "../controllers/consent.controller";
+import { MentorQualityController } from "../controllers/mentor-quality.controller";
+import { TraceController } from "../controllers/trace.controller";
+import { EscrowController } from "../controllers/escrow.controller";
+import { BackgroundCheckController } from "../controllers/background-check.controller";
+import { getTraceSchema } from "../validators/schemas/trace.schemas";
+import {
+  listAdminUsersSchema,
+  updateUserStatusSchema,
+  updateUserTierSchema,
+  suspendUserSchema,
+  banUserSchema,
+  adminIdParamSchema,
+  listAdminTransactionsSchema,
+  listAdminSessionsSchema,
+  listAdminPaymentsSchema,
+  listAdminDisputesSchema,
+  resolveDisputeSchema,
+  getAdminLogsSchema,
+  updateConfigSchema,
+  getAuditLogSchema,
+  exportAuditLogSchema,
+  auditLogStatsSchema,
+  previewEmailTemplateSchema,
+  revenueSummarySchema,
+  dailyRevenueSchema,
+  transactionReportSchema,
+  exportReportSchema,
+  addBlocklistRuleSchema,
+  removeBlocklistRuleSchema,
+  addAllowlistRuleSchema,
+  approveVerificationSchema,
+  retryWebhookDeliverySchema,
+} from "../validators/schemas/admin.schemas";
 
 const router = Router();
 
 router.use(authenticate);
 router.use(requireAdmin);
-router.use(asyncHandler(adminAllowlistMiddleware));
+// adminAllowlistMiddleware is now applied globally in v1/index.ts for /admin/*
+
+router.post(
+  "/background-checks/webhook",
+  asyncHandler(BackgroundCheckController.handleWebhook),
+);
 
 /**
  * @swagger
@@ -50,6 +94,24 @@ router.use(asyncHandler(adminAllowlistMiddleware));
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.get("/stats", asyncHandler(AdminController.getStats));
+
+/** GET /admin/mentors/quality — paginated/sortable/filterable mentor quality scores */
+router.get("/mentors/quality", MentorQualityController.list);
+
+/**
+ * @swagger
+ * /admin/trace/{traceId}:
+ *   get:
+ *     summary: Query Jaeger for the full trace by traceId
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  "/trace/:traceId",
+  validate(getTraceSchema),
+  asyncHandler(TraceController.getTrace),
+);
 
 /**
  * @swagger
@@ -95,7 +157,7 @@ router.get("/stats", asyncHandler(AdminController.getStats));
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.get("/users", asyncHandler(AdminController.listUsers));
+router.get("/users", validate(listAdminUsersSchema), asyncHandler(AdminController.listUsers));
 
 /**
  * @swagger
@@ -134,7 +196,49 @@ router.get("/users", asyncHandler(AdminController.listUsers));
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.put("/users/:id/status", asyncHandler(AdminController.updateUserStatus));
+router.put(
+  "/users/:id/status",
+  validate(updateUserStatusSchema),
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
+  }),
+  asyncHandler(AdminController.updateUserStatus),
+);
+
+/**
+ * @swagger
+ * /admin/users/{id}/tier:
+ *   put:
+ *     summary: Update user tier
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - $ref: '#/components/schemas/UUIDParam'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               tier:
+ *                 type: string
+ *                 enum: [free, pro, enterprise]
+ *     responses:
+ *       200:
+ *         description: User tier updated
+ */
+router.put(
+  "/users/:id/tier",
+  validate(updateUserTierSchema),
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
+  }),
+  asyncHandler(AdminController.updateUserTier),
+);
 
 /**
  * @swagger
@@ -146,13 +250,80 @@ router.put("/users/:id/status", asyncHandler(AdminController.updateUserStatus));
  *       - bearerAuth: []
  *     parameters:
  *       - $ref: '#/components/schemas/UUIDParam'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Reason for the suspension
+ *                 example: "Repeated policy violations"
+ *               expiresAt:
+ *                 type: string
+ *                 format: date-time
+ *                 description: Optional expiry date (omit for indefinite suspension)
+ *                 example: "2026-06-30T00:00:00Z"
  *     responses:
  *       200:
  *         description: User suspended
+ *       400:
+ *         description: Reason is required
  *       404:
  *         description: User not found
  */
-router.put("/users/:id/suspend", asyncHandler(AdminController.suspendUser));
+router.put(
+  "/users/:id/suspend",
+  validate(suspendUserSchema),
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
+  }),
+  asyncHandler(AdminController.suspendUser),
+);
+
+/**
+ * @swagger
+ * /admin/users/{id}/ban:
+ *   put:
+ *     summary: Permanently ban a user account
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - $ref: '#/components/schemas/UUIDParam'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Reason for the permanent ban
+ *                 example: "Fraud and abuse of platform"
+ *     responses:
+ *       200:
+ *         description: User permanently banned
+ *       400:
+ *         description: Reason is required
+ *       404:
+ *         description: User not found
+ */
+router.put(
+  "/users/:id/ban",
+  validate(banUserSchema),
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
+  }),
+  asyncHandler(AdminController.banUser),
+);
 
 /**
  * @swagger
@@ -170,7 +341,15 @@ router.put("/users/:id/suspend", asyncHandler(AdminController.suspendUser));
  *       404:
  *         description: User not found
  */
-router.put("/users/:id/unsuspend", asyncHandler(AdminController.unsuspendUser));
+router.put(
+  "/users/:id/unsuspend",
+  validate(adminIdParamSchema),
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
+  }),
+  asyncHandler(AdminController.unsuspendUser),
+);
 
 /**
  * @swagger
@@ -188,7 +367,15 @@ router.put("/users/:id/unsuspend", asyncHandler(AdminController.unsuspendUser));
  *       404:
  *         description: User not found
  */
-router.post("/users/:id/unlock", asyncHandler(AdminController.unlockUser));
+router.post(
+  "/users/:id/unlock",
+  validate(adminIdParamSchema),
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
+  }),
+  asyncHandler(AdminController.unlockUser),
+);
 
 /**
  * @swagger
@@ -208,9 +395,28 @@ router.post("/users/:id/unlock", asyncHandler(AdminController.unlockUser));
  *       403:
  *         description: Admin role required
  */
-router.post("/auth/rotate-keys", asyncHandler(JwksController.rotateKeys));
+router.post(
+  "/auth/rotate-keys",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: () => ({ type: "AUTH", id: "JWKS" }),
+  }),
+  asyncHandler(JwksController.rotateKeys),
+);
+router.post(
+  "/jwks/rotate",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: () => ({ type: "AUTH", id: "JWKS" }),
+  }),
+  asyncHandler(JwksController.rotateKeys),
+);
 router.post(
   "/security/rotate-encryption-key",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: () => ({ type: "SECURITY", id: "ENCRYPTION" }),
+  }),
   asyncHandler(AdminController.rotateEncryptionKey),
 );
 router.get(
@@ -219,6 +425,10 @@ router.get(
 );
 router.post(
   "/deletion-requests/retry",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: () => ({ type: "SYSTEM", id: "DELETION_RETRY" }),
+  }),
   asyncHandler(AdminController.retryFailedDeletions),
 );
 
@@ -251,7 +461,7 @@ router.post(
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.get("/transactions", asyncHandler(AdminController.listTransactions));
+router.get("/transactions", validate(listAdminTransactionsSchema), asyncHandler(AdminController.listTransactions));
 
 /**
  * @swagger
@@ -275,7 +485,7 @@ router.get("/transactions", asyncHandler(AdminController.listTransactions));
  *       200:
  *         description: Paginated list of sessions
  */
-router.get("/sessions", asyncHandler(AdminController.listSessions));
+router.get("/sessions", validate(listAdminSessionsSchema), asyncHandler(AdminController.listSessions));
 
 /**
  * @swagger
@@ -302,7 +512,7 @@ router.get("/sessions", asyncHandler(AdminController.listSessions));
  *       200:
  *         description: Paginated list of payments
  */
-router.get("/payments", asyncHandler(AdminController.listPayments));
+router.get("/payments", validate(listAdminPaymentsSchema), asyncHandler(AdminController.listPayments));
 
 /**
  * @swagger
@@ -333,7 +543,21 @@ router.get("/payments", asyncHandler(AdminController.listPayments));
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.get("/disputes", asyncHandler(AdminController.listDisputes));
+router.get("/disputes", validate(listAdminDisputesSchema), asyncHandler(AdminController.listDisputes));
+
+/**
+ * @swagger
+ * /admin/escrow/pending-releases:
+ *   get:
+ *     summary: List pending escrow auto-releases
+ *     tags: [Admin, Escrow]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of pending auto-releases
+ */
+router.get("/escrow/pending-releases", asyncHandler(EscrowController.getPendingReleases));
 
 /**
  * @swagger
@@ -370,6 +594,11 @@ router.get("/disputes", asyncHandler(AdminController.listDisputes));
  */
 router.post(
   "/disputes/:id/resolve",
+  validate(resolveDisputeSchema),
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "DISPUTE", id: req.params.id as string }),
+  }),
   asyncHandler(AdminController.resolveDispute),
 );
 
@@ -437,7 +666,7 @@ router.get("/system-health", asyncHandler(AdminController.getSystemHealth));
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.get("/logs", asyncHandler(AdminController.getLogs));
+router.get("/logs", validate(getAdminLogsSchema), asyncHandler(AdminController.getLogs));
 
 /**
  * @swagger
@@ -470,7 +699,7 @@ router.get("/logs", asyncHandler(AdminController.getLogs));
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.post("/config", asyncHandler(AdminController.updateConfig));
+router.post("/config", validate(updateConfigSchema), asyncHandler(AdminController.updateConfig));
 
 // ── Audit Log Routes ─────────────────────────────────────────────────────────
 
@@ -515,7 +744,7 @@ router.post("/config", asyncHandler(AdminController.updateConfig));
  *             schema:
  *               $ref: '#/components/schemas/ApiResponse'
  */
-router.get("/audit-log", asyncHandler(AdminController.getAuditLogs));
+router.get("/audit-log", validate(getAuditLogSchema), asyncHandler(AdminController.getAuditLogs));
 
 /**
  * @swagger
@@ -549,7 +778,7 @@ router.get("/audit-log", asyncHandler(AdminController.getAuditLogs));
  *             schema:
  *               type: string
  */
-router.get("/audit-log/export", asyncHandler(AdminController.exportAuditLogs));
+router.get("/audit-log/export", validate(exportAuditLogSchema), asyncHandler(AdminController.exportAuditLogs));
 
 /**
  * @swagger
@@ -587,7 +816,28 @@ router.get(
  *       200:
  *         description: Audit log statistics
  */
-router.get("/audit-log/stats", asyncHandler(AdminController.getAuditLogStats));
+router.get("/audit-log/stats", validate(auditLogStatsSchema), asyncHandler(AdminController.getAuditLogStats));
+
+/**
+ * @swagger
+ * /admin/audit-log/archives:
+ *   get:
+ *     summary: List S3-archived audit log batches with presigned download links
+ *     tags: [Admin, Audit]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: page
+ *         in: query
+ *         schema: { type: integer, default: 1 }
+ *       - name: limit
+ *         in: query
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200:
+ *         description: Paginated audit log archives
+ */
+router.get("/audit-log/archives", asyncHandler(AdminController.getAuditLogArchives));
 
 // ── Email Template Routes ──────────────────────────────────────────────────────
 
@@ -642,53 +892,9 @@ router.get("/audit-log/stats", asyncHandler(AdminController.getAuditLogStats));
  */
 router.post(
   "/email/preview/:template",
+  validate(previewEmailTemplateSchema),
   asyncHandler(AdminController.previewEmailTemplate),
 );
-
-// ── Audit Log Routes ─────────────────────────────────────────────────────────
-
-/**
- * @swagger
- * /admin/audit-log:
- *   get:
- *     summary: Query audit logs with filtering and pagination
- *     tags: [Admin, Audit]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - name: page
- *         in: query
- *         schema: { type: integer, default: 1 }
- *       - name: limit
- *         in: query
- *         schema: { type: integer, default: 50 }
- *       - name: userId
- *         in: query
- *         schema: { type: string, format: uuid }
- *         description: Filter by user ID
- *       - name: action
- *         in: query
- *         schema: { type: string }
- *         description: Filter by action type
- *       - name: resourceType
- *         in: query
- *         schema: { type: string }
- *         description: Filter by resource type
- *       - name: startDate
- *         in: query
- *         schema: { type: string, format: date-time }
- *       - name: endDate
- *         in: query
- *         schema: { type: string, format: date-time }
- *     responses:
- *       200:
- *         description: Paginated audit logs
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ApiResponse'
- */
-router.get("/audit-log", asyncHandler(AdminController.getAuditLogs));
 
 // ── Analytics Routes ─────────────────────────────────────────────────────────
 
@@ -711,7 +917,7 @@ router.get("/audit-log", asyncHandler(AdminController.getAuditLogs));
  *       200:
  *         description: Revenue analytics data
  */
-router.get("/analytics/revenue", asyncHandler(AnalyticsController.getRevenue));
+router.get("/analytics/revenue", AdvancedAnalyticsController.getRevenue);
 
 /**
  * @swagger
@@ -732,7 +938,7 @@ router.get("/analytics/revenue", asyncHandler(AnalyticsController.getRevenue));
  *       200:
  *         description: User growth analytics data
  */
-router.get("/analytics/users", asyncHandler(AnalyticsController.getUserGrowth));
+router.get("/analytics/users", AdvancedAnalyticsController.getUsers);
 
 /**
  * @swagger
@@ -753,10 +959,7 @@ router.get("/analytics/users", asyncHandler(AnalyticsController.getUserGrowth));
  *       200:
  *         description: Session analytics data
  */
-router.get(
-  "/analytics/sessions",
-  asyncHandler(AnalyticsController.getSessions),
-);
+router.get("/analytics/sessions", AdvancedAnalyticsController.getSessions);
 
 /**
  * @swagger
@@ -777,10 +980,10 @@ router.get(
  *       200:
  *         description: Top mentors data
  */
-router.get(
-  "/analytics/top-mentors",
-  asyncHandler(AnalyticsController.getTopMentors),
-);
+// router.get(
+//   "/analytics/top-mentors",
+//   asyncHandler(AnalyticsController.getTopMentors),
+// );
 
 /**
  * @swagger
@@ -798,10 +1001,10 @@ router.get(
  *       200:
  *         description: Asset distribution data
  */
-router.get(
-  "/analytics/asset-distribution",
-  asyncHandler(AnalyticsController.getAssetDistribution),
-);
+// router.get(
+//   "/analytics/asset-distribution",
+//   asyncHandler(AnalyticsController.getAssetDistribution),
+// );
 
 /**
  * @swagger
@@ -815,9 +1018,65 @@ router.get(
  *       200:
  *         description: Views refreshed successfully
  */
-router.post(
-  "/analytics/refresh",
-  asyncHandler(AnalyticsController.refreshViews),
+router.post("/analytics/refresh", AdvancedAnalyticsController.refreshAnalytics);
+
+/**
+ * @swagger
+ * /admin/analytics/refresh-status:
+ *   get:
+ *     summary: Per-view analytics refresh health and last-run times
+ *     description: >
+ *       Shows the current state of each PostgreSQL materialized view managed
+ *       by the analytics refresh coordinator — last refreshed timestamp,
+ *       current lock holder, whether the view is stale, and BullMQ queue depth.
+ *     tags: [Admin, Analytics]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Refresh status per view
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         views:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               viewName: { type: string }
+ *                               status: { type: string, enum: [idle, refreshing, failed, unknown] }
+ *                               lastRefreshedAt: { type: string, format: date-time, nullable: true }
+ *                               secondsSinceRefresh: { type: integer, nullable: true }
+ *                               isStale: { type: boolean }
+ *                               lastDurationMs: { type: integer, nullable: true }
+ *                         queue:
+ *                           type: object
+ *                           properties:
+ *                             waiting: { type: integer }
+ *                             active: { type: integer }
+ *                             delayed: { type: integer }
+ *                             failed: { type: integer }
+ *                         summary:
+ *                           type: object
+ *                           properties:
+ *                             total: { type: integer }
+ *                             idle: { type: integer }
+ *                             refreshing: { type: integer }
+ *                             failed: { type: integer }
+ *                             stale: { type: integer }
+ *       403:
+ *         description: Admin role required
+ */
+router.get(
+  "/analytics/refresh-status",
+  asyncHandler(AnalyticsRefreshStatusController.getRefreshStatus),
 );
 
 /**
@@ -838,6 +1097,7 @@ router.post(
  */
 router.get(
   "/reports/revenue",
+  validate(revenueSummarySchema),
   asyncHandler(RevenueReportController.getRevenueSummary),
 );
 
@@ -864,6 +1124,7 @@ router.get(
  */
 router.get(
   "/reports/revenue/daily",
+  validate(dailyRevenueSchema),
   asyncHandler(RevenueReportController.getDailyRevenue),
 );
 
@@ -893,6 +1154,7 @@ router.get(
  */
 router.get(
   "/reports/transactions",
+  validate(transactionReportSchema),
   asyncHandler(RevenueReportController.getTransactions),
 );
 
@@ -924,7 +1186,7 @@ router.get(
  *       200:
  *         description: CSV export generated
  */
-router.get("/reports/export", asyncHandler(AdminController.exportAuditLogs));
+router.get("/reports/export", validate(exportReportSchema), asyncHandler(AdminController.exportAuditLogs));
 
 // ── Security Management Routes ───────────────────────────────────────────────
 
@@ -963,6 +1225,7 @@ router.get(
 );
 router.post(
   "/security/blocklist",
+  validate(addBlocklistRuleSchema),
   asyncHandler(AdminController.addBlocklistRule),
 );
 
@@ -985,6 +1248,7 @@ router.post(
  */
 router.delete(
   "/security/blocklist/:id",
+  validate(removeBlocklistRuleSchema),
   asyncHandler(AdminController.removeBlocklistRule),
 );
 
@@ -1011,6 +1275,7 @@ router.delete(
  */
 router.post(
   "/security/allowlist",
+  validate(addAllowlistRuleSchema),
   asyncHandler(AdminController.addAdminAllowlistRule),
 );
 
@@ -1039,6 +1304,11 @@ router.post(
  *         description: Paginated list of verifications
  */
 router.get(
+  "/verifications/expiring-soon",
+  asyncHandler(VerificationController.listExpiringSoon),
+);
+
+router.get(
   "/verifications",
   validate(listVerificationsSchema),
   asyncHandler(VerificationController.listVerifications),
@@ -1063,6 +1333,7 @@ router.get(
  */
 router.put(
   "/verifications/:id/approve",
+  validate(approveVerificationSchema),
   asyncHandler(VerificationController.approve),
 );
 
@@ -1132,6 +1403,40 @@ router.put(
 
 /**
  * @swagger
+ * /admin/webhooks/:deliveryId/retry:
+ *   post:
+ *     summary: Manually retry a failed webhook delivery
+ *     tags: [Admin, Webhooks]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: deliveryId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Retry scheduled successfully
+ *       400:
+ *         description: Cannot retry (already succeeded, max retries exceeded, etc.)
+ *       404:
+ *         description: Delivery not found
+ */
+router.post(
+  "/webhooks/:deliveryId/retry",
+  validate(retryWebhookDeliverySchema),
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({
+      type: "WEBHOOK_DELIVERY",
+      id: req.params.deliveryId as string,
+    }),
+  }),
+  asyncHandler(AdminController.retryWebhookDelivery),
+);
+
+/**
+ * @swagger
  * /api/v1/admin/consent/stats:
  *   get:
  *     summary: Aggregate consent rates by type (Admin only)
@@ -1151,6 +1456,224 @@ router.get(
   authenticate,
   requireAdmin,
   asyncHandler(ConsentController.getConsentStats),
+);
+
+router.use("/backup", backupRoutes);
+
+// ── Recording Cleanup Routes ─────────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /admin/recordings/cleanup-report:
+ *   get:
+ *     summary: Latest S3 recording cleanup stats
+ *     description: >
+ *       Returns the most recent cleanup job run report — orphans found,
+ *       bytes reclaimed, estimated monthly cost savings, and multipart
+ *       uploads aborted. Pass ?limit=N (max 20) to see the last N runs.
+ *     tags: [Admin, Recordings]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: limit
+ *         in: query
+ *         schema: { type: integer, default: 1, maximum: 20 }
+ *         description: Number of job runs to return (default 1 = latest only)
+ *     responses:
+ *       200:
+ *         description: Cleanup report
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         jobRunId: { type: string, format: uuid }
+ *                         ranAt: { type: string, format: date-time }
+ *                         orphansFound: { type: integer }
+ *                         pendingDeletion: { type: integer }
+ *                         hardDeleted: { type: integer }
+ *                         recovered: { type: integer }
+ *                         multipartUploadsAborted: { type: integer }
+ *                         bytesReclaimed: { type: integer }
+ *                         bytesPendingReclaim: { type: integer }
+ *                         estimatedMonthlySavingsUsd: { type: number }
+ *       403:
+ *         description: Admin role required
+ */
+router.get(
+  "/recordings/cleanup-report",
+  asyncHandler(RecordingCleanupController.getCleanupReport),
+);
+
+/**
+ * @swagger
+ * /admin/recordings/cleanup-run:
+ *   post:
+ *     summary: Trigger an immediate recording cleanup run
+ *     description: Enqueues a high-priority cleanup job without waiting for the Saturday cron.
+ *     tags: [Admin, Recordings]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       202:
+ *         description: Job queued
+ *       403:
+ *         description: Admin role required
+ */
+router.post(
+  "/recordings/cleanup-run",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: () => ({ type: "RECORDING_CLEANUP", id: "manual-trigger" }),
+  }),
+  asyncHandler(RecordingCleanupController.triggerCleanupRun),
+);
+
+/**
+ * @swagger
+ * /admin/recordings/cleanup-recover:
+ *   post:
+ *     summary: Recover a recording object pending deletion
+ *     description: >
+ *       Marks a pending-deletion log entry as recovered within the 7-day
+ *       soft-delete window, preventing the object from being hard-deleted.
+ *     tags: [Admin, Recordings]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [logId]
+ *             properties:
+ *               logId:
+ *                 type: string
+ *                 format: uuid
+ *                 description: The recording_cleanup_log row ID
+ *     responses:
+ *       200:
+ *         description: Object recovered
+ *       400:
+ *         description: logId is required
+ *       404:
+ *         description: Log entry not found or not in pending_deletion state
+ *       403:
+ *         description: Admin role required
+ */
+router.post(
+  "/recordings/cleanup-recover",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({
+      type: "RECORDING_CLEANUP",
+      id: req.body.logId as string,
+    }),
+  }),
+  asyncHandler(RecordingCleanupController.recoverPendingDeletion),
+);
+
+// ── Export Admin Routes ──────────────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /admin/exports/pending-approvals:
+ *   get:
+ *     summary: List data export requests awaiting admin approval (>1 GB)
+ *     tags: [Admin, Export]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of export jobs pending approval
+ */
+router.get(
+  "/exports/pending-approvals",
+  asyncHandler(ExportAdminController.listPendingApprovals),
+);
+
+/**
+ * @swagger
+ * /admin/exports/{jobId}/approve:
+ *   post:
+ *     summary: Approve a large export request and re-queue it
+ *     tags: [Admin, Export]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: jobId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Export approved and queued
+ *       400:
+ *         description: Export is not awaiting approval
+ *       404:
+ *         description: Export job not found
+ */
+router.post(
+  "/exports/:jobId/approve",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "EXPORT_JOB", id: req.params.jobId as string }),
+  }),
+  asyncHandler(ExportAdminController.approveExport),
+);
+
+/**
+ * @swagger
+ * /admin/exports/{jobId}/reject:
+ *   post:
+ *     summary: Reject a large export request
+ *     tags: [Admin, Export]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: jobId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason: { type: string }
+ *     responses:
+ *       200:
+ *         description: Export rejected
+ */
+router.post(
+  "/exports/:jobId/reject",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "EXPORT_JOB", id: req.params.jobId as string }),
+  }),
+  asyncHandler(ExportAdminController.rejectExport),
+);
+
+/**
+ * @swagger
+ * /admin/stellar/stuck-transactions:
+ *   get:
+ *     summary: Retrieve stuck stellar transactions
+ *     tags: [Admin, Stellar]
+ *     responses:
+ *       200:
+ *         description: Stuck transactions retrieved
+ */
+router.get(
+  "/stellar/stuck-transactions",
+  asyncHandler(AdminController.getStuckStellarTransactions),
 );
 
 export default router;

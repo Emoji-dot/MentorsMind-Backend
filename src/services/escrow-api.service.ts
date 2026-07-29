@@ -166,10 +166,9 @@ export class EscrowApiService {
    */
   static async resolveDispute(
     escrowId: string,
-    resolution: 'release_to_mentor' | 'refund_to_mentee',
+    mentorPct: number,
     notes?: string,
     stellarTxHash?: string,
-    splitPercentage?: number,
   ): Promise<EscrowRecord> {
     const escrow = await EscrowModel.findById(escrowId);
     
@@ -185,15 +184,13 @@ export class EscrowApiService {
       throw new Error('No dispute found for this escrow');
     }
 
-    logger.info('Resolving dispute', { escrowId, resolution, disputeId: escrow.dispute_id });
+    logger.info('Resolving dispute', { escrowId, mentorPct, disputeId: escrow.dispute_id });
 
     let txHashFromChain: string | null = null;
     if (SorobanEscrowService.isConfigured()) {
-      const resolvedSplit =
-        splitPercentage ?? (resolution === 'release_to_mentor' ? 100 : 0);
       const chainResult = await SorobanEscrowService.resolveDispute({
         escrowId,
-        splitPercentage: resolvedSplit,
+        splitPercentage: mentorPct,
         resolvedBy: 'admin',
       });
       txHashFromChain = chainResult.txHash;
@@ -202,25 +199,18 @@ export class EscrowApiService {
     // Update dispute status
     await DisputeModel.updateStatus(escrow.dispute_id, 'resolved', notes);
 
-    // Update escrow based on resolution
-    const newStatus: EscrowStatus = resolution === 'release_to_mentor' ? 'released' : 'refunded';
+    // Update escrow to resolved status
     const additionalFields: any = {
       stellar_tx_hash: stellarTxHash || txHashFromChain || escrow.stellar_tx_hash,
     };
 
-    if (resolution === 'release_to_mentor') {
-      additionalFields.released_at = new Date();
-    } else {
-      additionalFields.refunded_at = new Date();
-    }
-
-    const updated = await EscrowModel.updateStatus(escrowId, newStatus, additionalFields);
+    const updated = await EscrowModel.updateStatus(escrowId, 'resolved', additionalFields);
 
     if (!updated) {
       throw new Error('Failed to update escrow status');
     }
 
-    logger.info('Dispute resolved', { escrowId, resolution });
+    logger.info('Dispute resolved', { escrowId, mentorPct });
     return updated;
   }
 

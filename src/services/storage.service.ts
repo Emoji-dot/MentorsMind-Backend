@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../config/env";
@@ -38,6 +39,7 @@ export const StorageService = {
       Body: body,
       ContentType: contentType,
       Metadata: metadata,
+      ServerSideEncryption: "AES256",
     });
 
     await s3Client.send(command);
@@ -75,9 +77,73 @@ export const StorageService = {
   },
 
   /**
+   * Delete multiple objects from S3 in a single batch request (max 1000 keys)
+   */
+  async deleteFiles(keys: string[]): Promise<void> {
+    if (keys.length === 0) return;
+    const command = new DeleteObjectsCommand({
+      Bucket: BUCKET,
+      Delete: { Objects: keys.map((Key) => ({ Key })) },
+    });
+    await s3Client.send(command);
+  },
+
+  /**
+   * Upload a file buffer to S3 under Object Lock (WORM) — the object cannot
+   * be deleted or overwritten until `retainUntilDate`, even by an account
+   * with delete permissions. Requires the bucket to have Object Lock enabled.
+   * Used for compliance archives (e.g. audit log archival, issue #772).
+   */
+  async uploadFileWithRetention(
+    key: string,
+    body: Buffer,
+    contentType: string,
+    retainUntilDate: Date,
+    metadata?: Record<string, string>,
+  ): Promise<S3UploadResult> {
+    const command = new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+      Metadata: metadata,
+      ServerSideEncryption: "AES256",
+      ObjectLockMode: "COMPLIANCE",
+      ObjectLockRetainUntilDate: retainUntilDate,
+    });
+
+    await s3Client.send(command);
+
+    return { key, url: `s3://${BUCKET}/${key}` };
+  },
+
+  /**
    * Build an S3 object key for export files
    */
   buildExportKey(userId: string, jobId: string, timestamp: number): string {
     return `exports/${userId}/${jobId}/export_${userId}_${timestamp}.zip`;
+  },
+
+  /**
+   * Build an S3 object key for session recordings
+   */
+  buildRecordingKey(sessionId: string, recordingId: string, extension: string = 'mp4'): string {
+    return `recordings/${sessionId}/${recordingId}.${extension}`;
+  },
+
+  /**
+   * Generate a presigned URL for video playback
+   */
+  async generatePlaybackUrl(
+    key: string,
+    expiresIn: number = 3600,
+  ): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      ResponseContentType: 'video/mp4',
+    });
+
+    return await getSignedUrl(s3Client, command, { expiresIn });
   },
 };
