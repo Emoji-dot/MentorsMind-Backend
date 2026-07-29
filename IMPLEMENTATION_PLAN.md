@@ -8,11 +8,12 @@
 
 ## Overview
 
-This epic addresses four critical areas:
+This epic addresses five critical areas:
 1. **Admin MFA Enforcement & Step-Up Authentication** - Mandatory 2FA for admins with fresh TOTP verification for high-value operations
 2. **Stellar Payment Monitoring Resilience** - Persist stream cursor, handle outages gracefully, recover missed payments
 3. **Learning Path Prerequisite Validation** - DAG implementation with cycle detection and topological sorting
 4. **Mentor Availability Management** - Enable mentors to declare working hours with timezone support
+5. **Transcription Pipeline & AI Summary Integration** - Auto-submit recordings to AWS Transcribe, store transcripts, feed to AI summary engine
 
 ---
 
@@ -643,6 +644,425 @@ slots.forEach(slot => {
 
 ---
 
+## Epic 5: Transcription Pipeline & AI Summary Integration
+
+### Problem
+- Transcription pipeline non-functional: no end-to-end flow
+- S3 recordings not submitted to AWS Transcribe
+- Webhooks for transcription completion not handled
+- Transcripts not stored in `recording_transcriptions` table
+- AI summaries fall back to notes only, drastically reducing quality
+
+### Solution
+- Auto-submit S3 recordings to AWS Transcribe after upload
+- Poll for completion with exponential backoff (max 30 min)
+- Store transcripts with metadata (word count, confidence, S3 key)
+- Index in Elasticsearch for search
+- Feed transcripts to AI summary service
+- Expose transcript endpoint for session participants
+
+### Technical Components
+
+#### 5.1 Database Schema
+
+**File**: `database/migrations/XXX_transcription_pipeline.sql`
+- Ensure `recording_transcriptions` table has:
+```sql
+CREATE TABLE recording_transcriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  recording_id UUID REFERENCES session_recordings(id) ON DELETE SET NULL,
+  transcript_text TEXT NOT NULL,
+  transcript_json JSONB,  -- Full AWS Transcribe output
+  word_count INTEGER,
+  confidence NUMERIC(3, 2),  -- Average confidence (0.0-1.0)
+  s3_key VARCHAR(500),  -- S3 path to original JSON
+  transcription_job_id VARCHAR(255),  -- AWS Transcribe JobName
+  transcription_status VARCHAR(50),  -- QUEUED, IN_PROGRESS, COMPLETED, FAILED
+  transcription_error TEXT,
+  started_at TIMESTAMP WITH TIME ZONE,
+  completed_at TIMESTAMP WITH TIME ZONE,
+  language_code VARCHAR(10) DEFAULT 'en-US',
+  indexed_at TIMESTAMP WITH TIME ZONE,  -- When indexed in ES
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+```
+- Indexes: `(booking_id)`, `(transcription_job_id)`, `(transcription_status, created_at DESC)`
+- Trigger to update session_recordings.transcription_status on insert
+
+#### 5.2 AWS Transcribe Service
+
+**File**: `src/services/transcribe.service.ts` (new)
+```typescript
+export const TranscribeService = {
+  
+  async startTranscriptionJob(
+    s3Key: string,
+    bookingId: string,
+    mediaFormat: 'mp4' | 'wav' | 'mp3' = 'mp4'
+  ): Promise<{ jobName: string; jobId: string }> {
+    // Submit recording to AWS Transcribe
+    // jobName format: `mentorsmind-{bookingId}-{timestamp}`
+    // Set output S3 bucket
+    // Return jobName for polling
+  },
+
+  async pollTranscriptionStatus(
+    jobName: string
+  ): Promise<{ status: string; transcript?: string; error?: string }> {
+    // Poll GetTranscriptionJob until COMPLETED or FAILED
+    // Exponential backoff: 2s, 4s, 8s, max 30 minutes
+    // Return status, transcript JSON, or error
+  },
+
+  async getTranscriptionOutput(jobName: string): Promise<{
+    transcriptText: string;
+    wordCount: number;
+    averageConfidence: number;
+    items: any[];  // Word-level confidence data
+  }> {
+    // Download JSON from S3 (set by AWS Transcribe)
+    // Parse transcript text
+    // Calculate word count and average confidence
+  },
+
+  async handleTranscriptionFailure(
+    jobName: string,
+    attemptNumber: number
+  ): Promise<void> {
+    // Get original S3 key from Redis cache
+    // Retry with different media format
+    // Max 3 attempts total
+  }
+};
+```
+
+#### 5.3 Transcription Worker Rewrite
+
+**File**: `src/workers/transcription.worker.ts` (rewrite)
+```typescript
+// BullMQ worker for TRANSCRIPTION queue
+// Job structure:
+// {
+//   bookingId: UUID,
+//   recordingId: UUID,
+//   s3Key: string,
+//   attemptNumber: number (1-3)
+// }
+
+export async function handleTranscriptionJob(job: Job) {
+  const { bookingId, recordingId, s3Key, attemptNumber = 1 } = job.data;
+  
+  // 1. Start AWS Transcribe job
+  const { jobName } = await TranscribeService.startTranscriptionJob(s3Key);
+  
+  // 2. Store job reference in Redis for polling
+  // 3. Schedule polling job
+  
+  // 4. Poll for completion (exponential backoff, max 30 min)
+  const result = await TranscribeService.pollTranscriptionStatus(jobName);
+  
+  // 5. On completion:
+  if (result.status === 'COMPLETED') {
+    // - Download transcript from S3
+    const transcript = await TranscribeService.getTranscriptionOutput(jobName);
+    
+    // - Store in recording_transcriptions
+    await RecordingTranscriptionsModel.create({
+      booking_id: bookingId,
+      recording_id: recordingId,
+      transcript_text: transcript.transcriptText,
+      transcript_json: result.fullJson,
+      word_count: transcript.wordCount,
+      confidence: transcript.averageConfidence,
+      s3_key: s3Key,
+      transcription_job_id: jobName,
+      transcription_status: 'COMPLETED',
+      completed_at: new Date(),
+    });
+    
+    // - Index in Elasticsearch
+    await ElasticsearchService.indexTranscript({
+      bookingId,
+      transcriptText: transcript.transcriptText,
+    });
+    
+    // - Trigger AI summary generation
+    await SessionSummaryModel.generateAndStore(bookingId, {
+      transcriptText: transcript.transcriptText,
+    });
+    
+    // - Emit WebSocket event
+    SocketService.emitToSession(bookingId, 'transcript:available', {
+      transcriptId: transcriptId,
+      wordCount: transcript.wordCount,
+    });
+  } else if (result.status === 'FAILED') {
+    // On failure: retry up to 3 times with different format
+    if (attemptNumber < 3) {
+      await enqueueTranscriptionJob({
+        ...job.data,
+        attemptNumber: attemptNumber + 1,
+      });
+    } else {
+      // Max retries exceeded
+      await RecordingTranscriptionsModel.updateStatus(
+        bookingId,
+        'FAILED',
+        result.error
+      );
+    }
+  }
+}
+```
+
+#### 5.4 Transcription Queue Setup
+
+**File**: `src/queues/transcription.queue.ts` (update or create)
+```typescript
+export async function enqueueTranscriptionJob(
+  bookingId: string,
+  recordingId: string,
+  s3Key: string
+): Promise<void> {
+  await transcriptionQueue.add(
+    'transcribe',
+    {
+      bookingId,
+      recordingId,
+      s3Key,
+      attemptNumber: 1,
+    },
+    {
+      attempts: 1,  // No automatic retry (manual retry with format change)
+      backoff: {
+        type: 'exponential',
+        delay: 2000,
+      },
+      removeOnComplete: true,
+      removeOnFail: false,  // Keep failed jobs for investigation
+    }
+  );
+}
+```
+
+#### 5.5 Session Recording Service Integration
+
+**File**: `src/services/session-recording.service.ts` (update)
+- On S3 upload complete (after virus scan):
+```typescript
+// Call enqueueTranscriptionJob after upload success
+await enqueueTranscriptionJob(bookingId, recordingId, s3Key);
+```
+
+#### 5.6 Elasticsearch Integration
+
+**File**: `src/services/elasticsearch-index.service.ts` (update)
+- Add `indexTranscript()` method:
+```typescript
+async indexTranscript(data: {
+  bookingId: string;
+  transcriptText: string;
+  bookingDate: Date;
+  mentorId: string;
+  studentId: string;
+}): Promise<void> {
+  // Index in Elasticsearch with type=transcript
+  // Searchable via messageSearch.service.ts
+  // TTL: 7 years (retention period)
+}
+```
+
+#### 5.7 Session Summary Service Integration
+
+**File**: `src/services/session-summary.service.ts` or `src/services/ai-summary.service.ts` (update)
+- Update `generateAndStore()` to accept transcript:
+```typescript
+async generateAndStore(
+  bookingId: string,
+  context: { transcriptText?: string; notes?: string }
+): Promise<SessionSummary> {
+  // Primary input: transcriptText
+  // Fallback input: notes
+  // Use OpenAI API to generate summary
+  // Store in session_summaries table
+}
+```
+
+#### 5.8 Transcript Endpoint
+
+**File**: `src/routes/sessions.routes.ts` (update)
+- Add new endpoint:
+```typescript
+GET /api/v1/sessions/:id/transcript
+
+// Query params:
+// - format: 'text' | 'json' (default: 'text')
+// - include_metadata: boolean (default: false)
+
+// Authorization:
+// - Session participants only (mentor, student)
+// - Admin users
+
+// Response:
+{
+  success: true,
+  data: {
+    transcriptText: string,
+    wordCount: number,
+    confidence: number,
+    completedAt: string,
+    format: 'text'
+  }
+}
+
+// Error cases:
+// - 404: No transcript for session
+// - 403: Not a session participant
+// - 202: Transcription in progress
+```
+
+**File**: `src/controllers/session-transcription.controller.ts` (update or create)
+```typescript
+export const SessionTranscriptionController = {
+  async getTranscript(req, res) {
+    const { sessionId } = req.params;
+    const { format = 'text' } = req.query;
+    
+    // Verify user is session participant or admin
+    const session = await BookingsModel.findById(sessionId);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    
+    const isParticipant = 
+      req.user.id === session.mentor_id || 
+      req.user.id === session.student_id ||
+      req.user.role === 'admin';
+    
+    if (!isParticipant) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    // Get transcript
+    const transcript = await RecordingTranscriptionsModel.findByBookingId(sessionId);
+    if (!transcript) return res.status(404).json({ error: 'No transcript available' });
+    
+    if (transcript.transcription_status === 'IN_PROGRESS') {
+      return res.status(202).json({ message: 'Transcription in progress' });
+    }
+    
+    if (transcript.transcription_status === 'FAILED') {
+      return res.status(503).json({ error: 'Transcription failed' });
+    }
+    
+    // Return requested format
+    const data = format === 'json' 
+      ? transcript.transcript_json 
+      : { transcriptText: transcript.transcript_text };
+    
+    res.json({ success: true, data });
+  }
+};
+```
+
+#### 5.9 Error Handling & Retries
+
+**File**: `src/services/transcribe.service.ts` (add retry logic)
+- Retry triggers:
+  - UnsupportedMediaFormat → convert to WAV and retry
+  - ServiceUnavailable → exponential backoff
+  - MaxAttemptsExceeded → fail and alert admin
+- Store attempt metadata in Redis for debugging
+
+#### 5.10 Monitoring & Metrics
+
+**File**: `src/metrics/transcription-metrics.ts` (new)
+```typescript
+// Prometheus metrics
+Counter: transcription_jobs_total (labels: status, format)
+Counter: transcription_retries_total (labels: reason)
+Histogram: transcription_duration_seconds
+Gauge: transcription_queue_depth
+Counter: transcription_errors_total (labels: error_type)
+```
+
+#### 5.11 Health Endpoint Enhancement
+
+**File**: `src/controllers/health.controller.ts` (update)
+- Add to GET `/health/detailed`:
+```json
+{
+  "transcription_service": {
+    "status": "healthy|degraded|offline",
+    "queue_depth": 12,
+    "recent_errors": [],
+    "aws_transcribe_available": true
+  }
+}
+```
+
+#### 5.12 Environment Configuration
+
+**File**: `.env.example` (update)
+```
+# AWS Transcribe
+AWS_TRANSCRIBE_REGION=us-east-1
+AWS_TRANSCRIBE_OUTPUT_S3_BUCKET=mentorsmind-transcripts
+AWS_TRANSCRIBE_ROLE_ARN=arn:aws:iam::ACCOUNT:role/TranscribeRole
+AWS_TRANSCRIBE_LANGUAGE_CODE=en-US
+AWS_TRANSCRIBE_TIMEOUT_MINUTES=30
+AWS_TRANSCRIBE_MAX_RETRIES=3
+
+# Elasticsearch Transcripts
+ELASTICSEARCH_TRANSCRIPT_INDEX=transcripts
+ELASTICSEARCH_TRANSCRIPT_TTL_DAYS=2555  # ~7 years
+```
+
+#### 5.13 Testing & Documentation
+
+**File**: `tests/unit/transcribe.service.test.ts` (new)
+- Mock AWS Transcribe SDK
+- Test job submission, polling, output parsing
+- Test error handling and retries
+- Test confidence calculation
+
+**File**: `tests/e2e/transcription-pipeline.e2e.test.ts` (new)
+- Full flow: recording upload → transcription job → completion → summary
+- Verify storage in recording_transcriptions
+- Verify Elasticsearch indexing
+- Verify transcript endpoint access control
+
+**File**: `docs/TRANSCRIPTION_PIPELINE.md` (new)
+- Architecture diagram: S3 → AWS Transcribe → Polling → Storage → Summary
+- Cost estimates (AWS Transcribe pricing per minute)
+- Recovery procedures (job failure, orphaned jobs)
+- Tuning parameters (polling interval, timeout)
+
+### Acceptance Criteria
+- ✅ Recording upload → TranscriptionJob queued automatically
+- ✅ AWS Transcribe job started with S3 output configured
+- ✅ Polling with exponential backoff (2s, 4s, 8s, max 30 min)
+- ✅ Transcript stored in recording_transcriptions with metadata
+- ✅ Word count & average confidence calculated correctly
+- ✅ Transcript indexed in Elasticsearch
+- ✅ AI summary triggered on completion
+- ✅ GET `/api/v1/sessions/:id/transcript` restricted to participants
+- ✅ Failed jobs retry up to 3 times with format change
+- ✅ Health endpoint reports transcription service status
+
+### Deliverables
+- 1 new service (transcribe.service.ts)
+- 2 worker/queue files (transcription.worker.ts, transcription.queue.ts)
+- 1 controller update (session-transcription.controller.ts)
+- 3 service updates (session-recording.service.ts, elasticsearch, ai-summary)
+- 1 route update (sessions.routes.ts)
+- 1 migration (recording_transcriptions schema)
+- 2 e2e + unit tests
+- 1 comprehensive documentation file
+- Prometheus metrics
+
+---
+
 ## Implementation Order
 
 ### Phase 1: Foundation (Week 1-2)
@@ -650,24 +1070,28 @@ slots.forEach(slot => {
 2. **Epic 2.1-2.2**: Create cursor utilities and stellar service updates
 3. **Epic 3.1-3.2**: Create DAG utilities and prerequisite validator rewrite
 4. **Epic 4.1-4.2**: Create availability types and database schema
+5. **Epic 5.1**: Create recording_transcriptions schema + AWS SDK setup
 
 ### Phase 2: Core Logic (Week 3-4)
 1. **Epic 1.3-1.5**: JWT updates, admin service, admin routes
 2. **Epic 2.3-2.5**: Stellar stream service rewrite, polling job, monitor job
 3. **Epic 3.3-3.4**: Prerequisite validator endpoints, learning path service
 4. **Epic 4.3-4.5**: Availability service, routes, booking integration
+5. **Epic 5.2-5.8**: Transcribe service, worker rewrite, queue, elasticsearch, summary integration
 
 ### Phase 3: Testing & Monitoring (Week 5)
 1. **Epic 1.7**: MFA documentation, test middleware behavior
 2. **Epic 2.6-2.8**: Prometheus metrics, health endpoint, e2e tests
 3. **Epic 3.5-3.7**: Cache invalidation, complexity docs, unit tests
 4. **Epic 4.9**: API docs, availability tests, timezone edge cases
+5. **Epic 5.10-5.13**: Transcription metrics, health endpoint, tests, documentation
 
 ### Phase 4: Integration & Frontend (Week 6)
 1. **Epic 1**: Security audit, rate limiting verification
 2. **Epic 2**: Chaos testing (kill Redis, verify recovery)
 3. **Epic 3**: Learning path integration tests
 4. **Epic 4**: Frontend component development (separate repo)
+5. **Epic 5**: End-to-end transcription flow testing, production readiness
 
 ---
 
@@ -704,6 +1128,7 @@ slots.forEach(slot => {
 | Stellar Monitoring | Backend Engineer B | DevOps Lead | TODO |
 | Learning Paths | Backend Engineer C | Architect | TODO |
 | Mentor Availability | Backend Engineer D + Frontend | Product PM | TODO |
+| Transcription Pipeline | Backend Engineer E | QA Lead | TODO |
 
 ---
 
@@ -713,6 +1138,7 @@ slots.forEach(slot => {
 - GitHub Issue: "Payment events lost on server restart"
 - GitHub Issue: "Circular learning path dependencies cause crashes"
 - GitHub Issue: "Add mentor availability scheduling"
+- GitHub Issue: "Transcription pipeline non-functional, AI summaries low quality"
 
 ---
 
@@ -726,37 +1152,51 @@ src/utils/stellar-cursor.utils.ts
 src/utils/dag.utils.ts
 src/types/availability.types.ts
 src/services/availability.service.ts
+src/services/transcribe.service.ts
 src/jobs/stellar-polling.job.ts
 src/metrics/stellar-metrics.ts
+src/metrics/transcription-metrics.ts
+src/controllers/session-transcription.controller.ts
 database/migrations/XXX_admin_mfa_enforcement.sql
 database/migrations/XXX_learning_path_prerequisites_dag.sql
 database/migrations/XXX_mentor_availability.sql
+database/migrations/XXX_transcription_pipeline.sql
 docs/ADMIN_MFA.md
 docs/STELLAR_RESILIENCE.md
 docs/LEARNING_PATH_DAG.md
 docs/MENTOR_AVAILABILITY.md
+docs/TRANSCRIPTION_PIPELINE.md
 tests/e2e/stellar-resilience.e2e.test.ts
+tests/e2e/transcription-pipeline.e2e.test.ts
 tests/unit/prerequisite-validator.test.ts
 tests/unit/availability.service.test.ts
+tests/unit/transcribe.service.test.ts
 ```
 
 ### Updated Files
 ```
 src/utils/jwt.utils.ts
+src/utils/timezone.utils.ts
+src/utils/cache-key.utils.ts
 src/services/admin.service.ts
 src/services/learning-path.service.ts
 src/services/prerequisite-validator.service.ts
 src/services/stellar.service.ts
 src/services/stellar-stream.service.ts
 src/services/bookings.service.ts
+src/services/session-recording.service.ts
+src/services/elasticsearch-index.service.ts
+src/services/session-summary.service.ts (or ai-summary.service.ts)
 src/controllers/health.controller.ts
 src/controllers/users.controller.ts
 src/routes/admin.routes.ts
 src/routes/learning-path.routes.ts
 src/routes/mentors.routes.ts
-src/utils/timezone.utils.ts
-src/utils/cache-key.utils.ts
+src/routes/sessions.routes.ts
+src/workers/transcription.worker.ts
+src/queues/transcription.queue.ts
 src/types/api.types.ts (AuthenticatedRequest update)
+.env.example
 ```
 
 ---
