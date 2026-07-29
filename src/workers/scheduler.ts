@@ -7,13 +7,20 @@ import { recordingCleanupQueue } from "../queues/recordingCleanup.queue";
 import { analyticsRefreshQueue } from "../queues/analyticsRefresh.queue";
 import { qualityScoreQueue } from "../queues/quality-score.queue";
 import { VerificationService } from "../services/verification.service";
+import { BackgroundCheckService } from "../services/background-check.service";
+import { EnrollmentService } from "../services/enrollment.service";
 import { accountDeletionJob } from "../jobs/accountDeletion.job";
+import databaseMaintenanceJob from "../jobs/database-maintenance.job";
+import staleDataCleanupJob from "../jobs/stale-data-cleanup.job";
+import deprecationMaintenanceJob from "../jobs/deprecation-maintenance.job";
 import { logger } from "../utils/logger.utils";
 import config from "../config";
 import { AuditLogModel } from "../models/audit-log.model";
 import { PaymentModel } from "../models/payment.model";
 import SessionModel from "../models/session.model";
 import { Queue, JobsOptions } from "bullmq";
+
+let backgroundCheckPollingTimer: NodeJS.Timeout | null = null;
 
 /**
  * Add a repeatable job only if it doesn't already exist.
@@ -170,13 +177,40 @@ export async function startScheduler(): Promise<void> {
       jobId: "audit-log-archival-recurring",
     },
   );
+  databaseMaintenanceJob.initialize();
+  staleDataCleanupJob.initialize();
+  deprecationMaintenanceJob.initialize();
+
+  // JWT Key Rotation — monthly on the 1st at 00:00 UTC (issue #778)
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "key-rotation-scheduled",
+    { jobType: "key-rotation" },
+    {
+      repeat: { pattern: "0 0 1 * *" }, // cron: 1st of every month at midnight
+      jobId: "key-rotation-recurring",
+    },
+  );
 
   logger.info(
-    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, and audit log archival registered",
+    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, audit log archival, and key rotation registered",
   );
+
+  if (!backgroundCheckPollingTimer) {
+    backgroundCheckPollingTimer = setInterval(() => {
+      BackgroundCheckService.pollPendingChecks().catch((error) => {
+        logger.error("Background check polling failed", { error });
+      });
+    }, 6 * 60 * 60 * 1000);
+    backgroundCheckPollingTimer.unref?.();
+  }
 }
 
 export async function stopScheduler(): Promise<void> {
+  if (backgroundCheckPollingTimer) {
+    clearInterval(backgroundCheckPollingTimer);
+    backgroundCheckPollingTimer = null;
+  }
   logger.info("Job scheduler stopped");
 }
 
@@ -188,6 +222,13 @@ export async function runMaintenanceTasks(): Promise<void> {
   if (expired > 0) {
     logger.info("Maintenance: expired verifications flagged", {
       count: expired,
+    });
+  }
+
+  const expiredTrials = await EnrollmentService.expireTrials();
+  if (expiredTrials > 0) {
+    logger.info("Maintenance: expired learning path trials paused", {
+      count: expiredTrials,
     });
   }
 
@@ -228,5 +269,20 @@ export async function runMaintenanceTasks(): Promise<void> {
     }
   } catch (error) {
     logger.error("Maintenance: error cleaning up expired exports", { error });
+  }
+
+  try {
+    const cleanupResult = await staleDataCleanupJob.triggerCleanup();
+    logger.info("Maintenance: stale data cleanup completed", {
+      dryRun: cleanupResult.dryRun,
+      durationMs: cleanupResult.durationMs,
+      operations: cleanupResult.operations.map((operation) => ({
+        table: operation.table,
+        rowsDeleted: operation.rowsDeleted,
+        status: operation.status,
+      })),
+    });
+  } catch (error) {
+    logger.error("Maintenance: error running stale data cleanup", { error });
   }
 }

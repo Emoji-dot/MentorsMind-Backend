@@ -49,6 +49,16 @@ export const VerificationController = {
     },
 
     /**
+     * GET /admin/verifications/expiring-soon
+     * Admin list of verifications expiring within X days
+     */
+    async listExpiringSoon(req: AuthenticatedRequest, res: Response): Promise<void> {
+        const days = parseInt(req.query.days as string) || 60;
+        const result = await VerificationService.getExpiringSoon(days);
+        ResponseUtil.success(res, result, 'Expiring verifications retrieved successfully');
+    },
+
+    /**
      * PUT /admin/verifications/:id/approve
      */
     async approve(req: AuthenticatedRequest, res: Response): Promise<void> {

@@ -1,5 +1,9 @@
 import axios from "axios";
+import { randomUUID } from "crypto";
+import pool from "../config/database";
+import { chatbotMessagesTotal } from "../config/metrics";
 import { logger } from "../utils/logger.utils";
+import { CacheService } from "./cache.service";
 
 export interface Message {
   role: "user" | "assistant" | "system";
@@ -50,15 +54,15 @@ const INTENT_PATTERNS: Record<string, RegExp[]> = {
 
 export class ChatbotService {
   private readonly openaiApiKey = process.env.OPENAI_API_KEY;
-  private readonly contexts = new Map<string, ChatbotContext>();
-  private readonly messageLog: ChatbotMessage[] = [];
+  private readonly contextTtlSeconds = 30 * 60;
+  private readonly historyLimit = 100;
 
   async chat(
     userId: string,
     message: string,
     userProfile: UserProfile,
   ): Promise<ChatbotMessage> {
-    const context = this.getOrCreateContext(userId, userProfile);
+    const context = await this.getOrCreateContext(userId, userProfile);
     const { intent, confidence } = this.classifyIntent(message);
 
     context.currentIntent = intent;
@@ -80,7 +84,7 @@ export class ChatbotService {
     });
 
     const record: ChatbotMessage = {
-      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      id: randomUUID(),
       userId,
       message,
       response,
@@ -90,7 +94,13 @@ export class ChatbotService {
       timestamp: new Date(),
     };
 
-    this.messageLog.push(record);
+    await this.saveContext(context);
+    await this.storeMessage(record);
+    chatbotMessagesTotal.inc({
+      intent,
+      escalated: String(escalated),
+    });
+
     logger.info(
       `Chatbot: user=${userId} intent=${intent} confidence=${confidence} escalated=${escalated}`,
     );
@@ -174,49 +184,134 @@ Be concise and helpful.`,
     return responses[intent] ?? responses.general;
   }
 
-  private getOrCreateContext(
+  private contextKey(userId: string): string {
+    return `chatbot:context:${userId}`;
+  }
+
+  private historyKey(userId: string): string {
+    return `chatbot:history:${userId}`;
+  }
+
+  private async getOrCreateContext(
     userId: string,
     userProfile: UserProfile,
-  ): ChatbotContext {
-    if (!this.contexts.has(userId)) {
-      this.contexts.set(userId, {
-        userId,
-        conversationHistory: [],
+  ): Promise<ChatbotContext> {
+    const cached = await CacheService.get<ChatbotContext>(this.contextKey(userId));
+    if (cached) {
+      return {
+        ...cached,
         userProfile,
-        currentIntent: "general",
-        entities: {},
-      });
+        conversationHistory: cached.conversationHistory.map((message) => ({
+          ...message,
+          timestamp: new Date(message.timestamp),
+        })),
+      };
     }
-    return this.contexts.get(userId)!;
-  }
-
-  clearHistory(userId: string): void {
-    const context = this.contexts.get(userId);
-    if (context) {
-      context.conversationHistory = [];
-      context.currentIntent = "general";
-    }
-  }
-
-  getAnalytics(): ChatbotAnalytics {
-    const topIntents: Record<string, number> = {};
-    let totalConfidence = 0;
-    let escalatedCount = 0;
-
-    this.messageLog.forEach((m) => {
-      topIntents[m.intent] = (topIntents[m.intent] ?? 0) + 1;
-      totalConfidence += m.confidence;
-      if (m.escalated) escalatedCount++;
-    });
 
     return {
-      totalMessages: this.messageLog.length,
-      escalatedCount,
+      userId,
+      conversationHistory: [],
+      userProfile,
+      currentIntent: "general",
+      entities: {},
+    };
+  }
+
+  private async saveContext(context: ChatbotContext): Promise<void> {
+    await CacheService.set(this.contextKey(context.userId), context, this.contextTtlSeconds);
+  }
+
+  private async storeMessage(record: ChatbotMessage): Promise<void> {
+    await CacheService.lpushTrim(this.historyKey(record.userId), record, this.historyLimit, this.contextTtlSeconds);
+    await pool.query(
+      `INSERT INTO chatbot_messages (
+         id, user_id, message, response, intent, confidence, escalated, created_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        record.id,
+        record.userId,
+        record.message,
+        record.response,
+        record.intent,
+        record.confidence,
+        record.escalated,
+        record.timestamp,
+      ],
+    );
+  }
+
+  async clearHistory(userId: string): Promise<void> {
+    await CacheService.del(this.contextKey(userId));
+    await CacheService.del(this.historyKey(userId));
+    await pool.query(
+      `UPDATE chatbot_messages
+       SET cleared_at = CURRENT_TIMESTAMP
+       WHERE user_id = $1
+         AND cleared_at IS NULL`,
+      [userId],
+    );
+  }
+
+  async getHistory(userId: string, limit = this.historyLimit): Promise<ChatbotMessage[]> {
+    const cached = await CacheService.lrange<ChatbotMessage>(this.historyKey(userId), 0, limit - 1);
+    if (cached.length > 0) {
+      return cached.map((message) => ({
+        ...message,
+        timestamp: new Date(message.timestamp),
+      }));
+    }
+
+    const { rows } = await pool.query(
+      `SELECT id, user_id, message, response, intent, confidence, escalated, created_at
+       FROM chatbot_messages
+       WHERE user_id = $1
+         AND cleared_at IS NULL
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [userId, limit],
+    );
+
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      message: row.message,
+      response: row.response,
+      intent: row.intent,
+      confidence: Number(row.confidence),
+      escalated: row.escalated,
+      timestamp: row.created_at,
+    }));
+  }
+
+  async getAnalytics(): Promise<ChatbotAnalytics> {
+    const { rows } = await pool.query(
+      `SELECT
+         COUNT(*)::INTEGER AS total_messages,
+         COUNT(*) FILTER (WHERE escalated = true)::INTEGER AS escalated_count,
+         COALESCE(AVG(confidence), 0)::FLOAT AS avg_confidence
+       FROM chatbot_messages
+       WHERE cleared_at IS NULL`,
+    );
+
+    const intents = await pool.query(
+      `SELECT intent, COUNT(*)::INTEGER AS count
+       FROM chatbot_messages
+       WHERE cleared_at IS NULL
+       GROUP BY intent
+       ORDER BY count DESC`,
+    );
+
+    const topIntents = intents.rows.reduce<Record<string, number>>((acc, row) => {
+      acc[row.intent] = Number(row.count);
+      return acc;
+    }, {});
+
+    return {
+      totalMessages: Number(rows[0]?.total_messages ?? 0),
+      escalatedCount: Number(rows[0]?.escalated_count ?? 0),
       topIntents,
-      avgConfidence:
-        this.messageLog.length > 0
-          ? totalConfidence / this.messageLog.length
-          : 0,
+      avgConfidence: Number(rows[0]?.avg_confidence ?? 0),
     };
   }
 }

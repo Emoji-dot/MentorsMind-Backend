@@ -49,8 +49,10 @@ export interface LearningPath {
   estimatedDurationHours: number;
   difficultyLevel: z.infer<typeof DifficultyLevelSchema>;
   totalPrice?: number;
+  price?: number;
   pricingModel: z.infer<typeof PricingModelSchema>;
   currency: string;
+  isFree?: boolean;
   isPublished: boolean;
   isTemplate: boolean;
   templateId?: string;
@@ -256,8 +258,10 @@ export interface LearningPathRecord {
   estimated_duration_hours: number;
   difficulty_level: string;
   total_price?: number;
+  price?: number;
   pricing_model: string;
   currency: string;
+  is_free?: boolean;
   is_published: boolean;
   is_template: boolean;
   template_id?: string;
@@ -382,6 +386,15 @@ export const UpdateLearningPathSchema = CreateLearningPathSchema.partial();
 export const CreateEnrollmentSchema = z.object({
   paymentMethod: z.string().optional(),
   promoCode: z.string().optional(),
+  paymentData: z
+    .object({
+      paymentIntentId: z.string().optional(),
+      stellarTxHash: z.string().optional(),
+      paymentId: z.string().uuid().optional(),
+      transactionId: z.string().uuid().optional(),
+    })
+    .passthrough()
+    .optional(),
 });
 
 export const UpdateEnrollmentStatusSchema = z.object({

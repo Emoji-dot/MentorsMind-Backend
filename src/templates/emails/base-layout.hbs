@@ -152,9 +152,10 @@
                             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                                 <tr>
                                     <td style="text-align: center;">
-                                        <!-- Logo -->
+                                        <!-- Logo — CDN-resolved absolute URL via EmailCDNService.getTemplateVariables() -->
                                         <img src="{{logoUrl}}" alt="MentorMinds" width="180" height="auto"
-                                            style="display: block; margin: 0 auto;">
+                                            style="display: block; margin: 0 auto;"
+                                            data-cdn-asset="logo">
                                     </td>
                                 </tr>
                             </table>
@@ -195,7 +196,8 @@
                                                 <td style="padding: 0 10px;">
                                                     <a href="{{twitterUrl}}"
                                                         style="color: #4A90E2; text-decoration: none;">
-                                                        <img src="https://cdn-icons-png.flaticon.com/512/733/733579.png"
+                                                        <!-- CDN-hosted icon — resolves via EmailCDNService, replaces third-party Flaticon URL -->
+                                                        <img src="{{twitterIconUrl}}"
                                                             alt="Twitter" width="24" height="24"
                                                             style="display: block;">
                                                     </a>
@@ -203,7 +205,8 @@
                                                 <td style="padding: 0 10px;">
                                                     <a href="{{linkedinUrl}}"
                                                         style="color: #4A90E2; text-decoration: none;">
-                                                        <img src="https://cdn-icons-png.flaticon.com/512/733/733561.png"
+                                                        <!-- CDN-hosted icon — resolves via EmailCDNService, replaces third-party Flaticon URL -->
+                                                        <img src="{{linkedinIconUrl}}"
                                                             alt="LinkedIn" width="24" height="24"
                                                             style="display: block;">
                                                     </a>
@@ -211,7 +214,8 @@
                                                 <td style="padding: 0 10px;">
                                                     <a href="{{facebookUrl}}"
                                                         style="color: #4A90E2; text-decoration: none;">
-                                                        <img src="https://cdn-icons-png.flaticon.com/512/733/733547.png"
+                                                        <!-- CDN-hosted icon — resolves via EmailCDNService, replaces third-party Flaticon URL -->
+                                                        <img src="{{facebookIconUrl}}"
                                                             alt="Facebook" width="24" height="24"
                                                             style="display: block;">
                                                     </a>

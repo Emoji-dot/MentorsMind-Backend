@@ -6,6 +6,10 @@ import {
   InitiateBackgroundCheckData
 } from "../models/certification.model";
 import { CertificationService } from "./certification.service";
+import { AuditLogModel } from "../models/audit-log.model";
+import { BackgroundCheckAdapter } from "./background-checks/background-check.adapter";
+import { CheckrBackgroundCheckAdapter } from "./background-checks/checkr.adapter";
+import { MockBackgroundCheckAdapter } from "./background-checks/mock.adapter";
 
 /**
  * Background Check Service
@@ -39,13 +43,15 @@ export const BackgroundCheckService = {
         throw createError("Background check already in progress", 409);
       }
 
+      const provider = data.provider || this.getProviderName();
+
       // Create background check record
       const { rows } = await pool.query(
         `INSERT INTO background_checks 
          (mentor_id, certification_id, provider, check_type, status)
          VALUES ($1, $2, $3, $4, 'pending')
          RETURNING *`,
-        [data.mentorId, data.certificationId || null, data.provider, data.checkType]
+        [data.mentorId, data.certificationId || null, provider, data.checkType]
       );
 
       const check = this.transformBackgroundCheck(rows[0]);
@@ -54,13 +60,11 @@ export const BackgroundCheckService = {
         checkId: check.id,
         mentorId: data.mentorId,
         checkType: data.checkType,
-        provider: data.provider
+        provider
       });
 
-      // In production, this would integrate with actual background check providers
-      // For now, we'll simulate the process
-      this.simulateBackgroundCheck(check.id).catch(err => {
-        logger.error("Background check simulation failed", { error: err });
+      this.initiateProviderCheck(check.id).catch(err => {
+        logger.error("Background check provider initiation failed", { error: err });
       });
 
       return check;
@@ -181,6 +185,8 @@ export const BackgroundCheckService = {
         result
       });
 
+      await this.auditTransition(check, status, result, resultData);
+
       return this.transformBackgroundCheck(rows[0]);
     } catch (error) {
       logger.error("Failed to update background check", {
@@ -197,6 +203,10 @@ export const BackgroundCheckService = {
    * In production, this would integrate with actual providers
    */
   async simulateBackgroundCheck(checkId: string): Promise<void> {
+    if (process.env.NODE_ENV === "production") {
+      throw createError("Simulated background checks are disabled in production", 500);
+    }
+
     try {
       // Simulate processing time
       await new Promise(resolve => setTimeout(resolve, 5000));
@@ -227,6 +237,156 @@ export const BackgroundCheckService = {
         error: error instanceof Error ? error.message : error
       });
     }
+  },
+
+  getProviderName(): string {
+    const configured = (process.env.BACKGROUND_CHECK_PROVIDER || "").toLowerCase();
+    if (configured) return configured;
+    return process.env.NODE_ENV === "production" ? "checkr" : "mock";
+  },
+
+  getAdapter(provider = this.getProviderName()): BackgroundCheckAdapter {
+    if (provider.toLowerCase() === "checkr") {
+      return new CheckrBackgroundCheckAdapter();
+    }
+    return new MockBackgroundCheckAdapter();
+  },
+
+  async initiateProviderCheck(checkId: string): Promise<BackgroundCheck> {
+    const check = await this.getBackgroundCheck(checkId);
+    if (!check) {
+      throw createError("Background check not found", 404);
+    }
+
+    const adapter = this.getAdapter(check.provider);
+    const initiated = await adapter.initiateCheck(check.mentorId, check.checkType);
+
+    const { rows } = await pool.query(
+      `UPDATE background_checks
+       SET status = 'in_progress',
+           external_reference_id = $2,
+           result_data = COALESCE(result_data, '{}'::jsonb) || $3::jsonb
+       WHERE id = $1
+       RETURNING *`,
+      [
+        checkId,
+        initiated.externalReferenceId,
+        JSON.stringify({
+          initiatedAt: new Date().toISOString(),
+          provider: check.provider,
+          providerResponse: initiated.raw || {},
+        }),
+      ],
+    );
+
+    const updated = this.transformBackgroundCheck(rows[0]);
+    await this.auditTransition(check, "in_progress", undefined, initiated.raw);
+    return updated;
+  },
+
+  async handleProviderWebhook(payload: any): Promise<BackgroundCheck | null> {
+    const externalReferenceId =
+      payload?.invitation?.id ||
+      payload?.report?.id ||
+      payload?.id ||
+      payload?.data?.object?.id ||
+      payload?.object?.id;
+
+    if (!externalReferenceId) {
+      throw createError("Webhook payload missing provider reference", 400);
+    }
+
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM background_checks
+       WHERE external_reference_id = $1
+       LIMIT 1`,
+      [externalReferenceId],
+    );
+
+    if (!rows[0]) {
+      logger.warn("Background check webhook reference not found", { externalReferenceId });
+      return null;
+    }
+
+    const check = this.transformBackgroundCheck(rows[0]);
+    const adapter = this.getAdapter(check.provider);
+    const mapped = {
+      status: adapter instanceof CheckrBackgroundCheckAdapter
+        ? adapter.mapStatus(payload?.report?.status || payload?.status || payload?.data?.object?.status)
+        : "completed",
+      result: adapter instanceof CheckrBackgroundCheckAdapter
+        ? adapter.mapResult(payload?.report?.result || payload?.result || payload?.data?.object?.result)
+        : (process.env.BACKGROUND_CHECK_MOCK_RESULT || "clear"),
+    } as any;
+
+    return this.updateBackgroundCheckStatus(
+      check.id,
+      mapped.status,
+      mapped.result,
+      { webhookPayload: payload },
+    );
+  },
+
+  async pollPendingChecks(): Promise<number> {
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM background_checks
+       WHERE status IN ('pending', 'in_progress')
+         AND external_reference_id IS NOT NULL
+       ORDER BY requested_at ASC
+       LIMIT 100`,
+    );
+
+    let updatedCount = 0;
+    for (const row of rows) {
+      const check = this.transformBackgroundCheck(row);
+      try {
+        const result = await this.getAdapter(check.provider).getCheckResult(check.externalReferenceId!);
+        if (result.status !== check.status || result.result) {
+          await this.updateBackgroundCheckStatus(
+            check.id,
+            result.status as BackgroundCheck["status"],
+            result.result,
+            result.raw,
+          );
+          updatedCount++;
+        }
+      } catch (error) {
+        logger.error("Failed to poll background check provider", {
+          checkId: check.id,
+          provider: check.provider,
+          error: error instanceof Error ? error.message : error,
+        });
+      }
+    }
+
+    return updatedCount;
+  },
+
+  async auditTransition(
+    previous: BackgroundCheck,
+    status: BackgroundCheck["status"],
+    result?: BackgroundCheck["result"],
+    resultData?: Record<string, any>,
+  ): Promise<void> {
+    await AuditLogModel.create({
+      level: "info",
+      action: "background_check.transition",
+      message: "Background check status transitioned",
+      user_id: previous.mentorId,
+      entity_type: "background_check",
+      entity_id: previous.id,
+      metadata: {
+        previousStatus: previous.status,
+        status,
+        previousResult: previous.result,
+        result,
+        resultData,
+      },
+      ip_address: null,
+      user_agent: null,
+    });
   },
 
   transformBackgroundCheck(row: any): BackgroundCheck {

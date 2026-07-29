@@ -69,36 +69,19 @@ export const SocketService = {
   },
 
   /**
-   * Broadcast mentor availability changes to all connected clients so learners
-   * browsing mentor profiles can refresh the UI immediately.
+   * Emit an event to an arbitrary shared room (for example, the admin room).
    */
-  emitMentorAvailabilityChanged(
-    mentorId: string,
-    data: {
-      mentorId: string;
-      isAvailable: boolean;
-      availability: {
-        schedule: unknown;
-        isAvailable: boolean;
-      };
-    },
-  ): void {
+  emitToRoom(room: string, event: string, data: any): void {
     if (!io) {
       logger.warn("SocketService: Socket.IO not initialized");
       return;
     }
 
-    const payload = {
-      ...data,
-      mentorId,
-      timestamp: new Date().toISOString(),
-    };
-
-    io.emit("mentor:availability_changed", payload);
+    io.to(room).emit(event, data);
 
     logger.debug(
-      { mentorId, isAvailable: data.isAvailable },
-      "SocketService: Emitted mentor availability update",
+      { room, event, dataKeys: Object.keys(data || {}) },
+      "SocketService: Emitted event to room",
     );
   },
 

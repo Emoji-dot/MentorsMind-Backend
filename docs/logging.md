@@ -139,3 +139,88 @@ npx jest --testPathPattern="logger|correlation-id|request-logger" --verbose
 
 If you want, I can add optional sample Filebeat/Logstash config and an example Kibana dashboard template next.
 ```
+
+
+---
+
+## ELK Stack Integration (Issue #740)
+
+### Components
+
+| Component | File | Role |
+|-----------|------|------|
+| `ELKTransport` | `src/utils/elk-transport.ts` | Batches and ships Pino logs to Elasticsearch via `_bulk` API |
+| `elkLoggingMiddleware` | `src/middleware/elk-logging.middleware.ts` | Captures per-request HTTP logs in ECS format |
+| `elkErrorLoggingMiddleware` | `src/middleware/elk-logging.middleware.ts` | Forwards unhandled errors to Elasticsearch |
+| `setup-elk-index-template.ts` | `scripts/setup-elk-index-template.ts` | One-time setup of ILM policy + index template |
+| `filebeat.yml` | `docs/logging-examples/filebeat.yml` | Filebeat config for container stdout shipping |
+| `logstash-pipeline.conf` | `docs/logging-examples/logstash-pipeline.conf` | Logstash pipeline for field normalisation |
+| `kibana-dashboard.json` | `docs/logging-examples/kibana-dashboard.json` | Importable Kibana dashboard |
+
+### Environment variables
+
+```bash
+ELASTICSEARCH_ENABLED=true
+ELASTICSEARCH_URL=http://localhost:9200
+ELASTICSEARCH_USERNAME=elastic
+ELASTICSEARCH_PASSWORD=changeme
+ELASTICSEARCH_API_KEY=          # alternative to username/password
+ELASTICSEARCH_INDEX_PREFIX=mentorminds
+
+# Batch transport tuning
+ELK_BATCH_SIZE=100              # Documents per Elasticsearch _bulk request
+ELK_FLUSH_INTERVAL_MS=5000      # Auto-flush every 5 seconds
+ELK_MAX_RETRIES=3               # Retry on transient 5xx from Elasticsearch
+```
+
+### Setup (one-time)
+
+```bash
+# 1. Create ILM policy, index template, and initial write index
+npm run elk:setup
+
+# 2. Import the Kibana dashboard
+# Kibana → Management → Saved Objects → Import → kibana-dashboard.json
+
+# 3. (Optional) Start Filebeat to ship container stdout
+filebeat -c docs/logging-examples/filebeat.yml -e
+```
+
+### Mounting middleware
+
+```typescript
+// src/app.ts
+import { elkLoggingMiddleware, elkErrorLoggingMiddleware } from './middleware/elk-logging.middleware';
+
+// After tracing + auth middleware:
+app.use(elkLoggingMiddleware());
+
+// After error handler:
+app.use(errorHandler);
+app.use(elkErrorLoggingMiddleware());
+```
+
+### Index naming
+
+Logs are indexed to `mentorminds-logs-YYYY.MM.DD` daily rolling indices,
+managed by the `mentorminds-logs-ilm-policy` ILM policy (hot→warm→cold→delete at 90 days).
+
+### Log schema (ECS)
+
+Every log document includes ECS core fields:
+
+| Field | Type | Example |
+|-------|------|---------|
+| `@timestamp` | date | `2026-07-29T05:00:00.000Z` |
+| `log.level` | keyword | `info`, `warn`, `error` |
+| `message` | text | `GET /api/v1/mentors 200 45ms` |
+| `service.name` | keyword | `mentorminds-backend` |
+| `service.environment` | keyword | `production` |
+| `http.request.method` | keyword | `GET` |
+| `http.response.status_code` | short | `200` |
+| `durationMs` | long | `45` |
+| `requestId` | keyword | `req-uuid` |
+| `correlationId` | keyword | `corr-uuid` |
+| `trace.id` | keyword | `otel-trace-id` |
+| `userId` | keyword | `user-uuid` |
+| `client.ip` | ip | `1.2.3.4` |

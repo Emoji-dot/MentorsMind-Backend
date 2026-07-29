@@ -129,6 +129,13 @@ export const dbCircuitBreakerOpenTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
+export const dbTableSizeBytes = new Gauge<string>({
+  name: "db_table_size_bytes",
+  help: "Current total relation size in bytes for each tracked table",
+  labelNames: ["table_name"],
+  registers: [metricsRegistry],
+});
+
 // ─── Redis ────────────────────────────────────────────────────────────────────
 
 export const redisCallDurationSeconds = new Histogram<string>({
@@ -136,6 +143,15 @@ export const redisCallDurationSeconds = new Histogram<string>({
   help: "Redis command duration in seconds",
   labelNames: ["command"],
   buckets: [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25],
+  registers: [metricsRegistry],
+});
+
+// ─── Chatbot ─────────────────────────────────────────────────────────────────
+
+export const chatbotMessagesTotal = new Counter<string>({
+  name: "chatbot_messages_total",
+  help: "Total chatbot messages, partitioned by intent and escalation status",
+  labelNames: ["intent", "escalated"],
   registers: [metricsRegistry],
 });
 
@@ -170,6 +186,13 @@ export const stellarApiCallsTotal = new Counter<string>({
   name: "stellar_api_calls_total",
   help: "Total Stellar Horizon API calls, partitioned by operation, network, and status",
   labelNames: ["operation", "network", "status"],
+  registers: [metricsRegistry],
+});
+
+export const escrowSyncMismatchesTotal = new Counter<string>({
+  name: "escrow_sync_mismatches_total",
+  help: "Total number of Soroban escrow state mismatches corrected by the check worker",
+  labelNames: ["type"],
   registers: [metricsRegistry],
 });
 

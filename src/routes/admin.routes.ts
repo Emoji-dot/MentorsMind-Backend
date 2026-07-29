@@ -24,6 +24,7 @@ import { ConsentController } from "../controllers/consent.controller";
 import { MentorQualityController } from "../controllers/mentor-quality.controller";
 import { TraceController } from "../controllers/trace.controller";
 import { EscrowController } from "../controllers/escrow.controller";
+import { BackgroundCheckController } from "../controllers/background-check.controller";
 import { getTraceSchema } from "../validators/schemas/trace.schemas";
 import {
   listAdminUsersSchema,
@@ -59,6 +60,11 @@ const router = Router();
 router.use(authenticate);
 router.use(requireAdmin);
 // adminAllowlistMiddleware is now applied globally in v1/index.ts for /admin/*
+
+router.post(
+  "/background-checks/webhook",
+  asyncHandler(BackgroundCheckController.handleWebhook),
+);
 
 /**
  * @swagger
@@ -391,6 +397,14 @@ router.post(
  */
 router.post(
   "/auth/rotate-keys",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: () => ({ type: "AUTH", id: "JWKS" }),
+  }),
+  asyncHandler(JwksController.rotateKeys),
+);
+router.post(
+  "/jwks/rotate",
   auditLogMiddleware({
     action: AuditAction.ADMIN_ACTION,
     getEntityDetails: () => ({ type: "AUTH", id: "JWKS" }),
@@ -1290,6 +1304,11 @@ router.post(
  *         description: Paginated list of verifications
  */
 router.get(
+  "/verifications/expiring-soon",
+  asyncHandler(VerificationController.listExpiringSoon),
+);
+
+router.get(
   "/verifications",
   validate(listVerificationsSchema),
   asyncHandler(VerificationController.listVerifications),
@@ -1640,6 +1659,21 @@ router.post(
     getEntityDetails: (req) => ({ type: "EXPORT_JOB", id: req.params.jobId as string }),
   }),
   asyncHandler(ExportAdminController.rejectExport),
+);
+
+/**
+ * @swagger
+ * /admin/stellar/stuck-transactions:
+ *   get:
+ *     summary: Retrieve stuck stellar transactions
+ *     tags: [Admin, Stellar]
+ *     responses:
+ *       200:
+ *         description: Stuck transactions retrieved
+ */
+router.get(
+  "/stellar/stuck-transactions",
+  asyncHandler(AdminController.getStuckStellarTransactions),
 );
 
 export default router;
