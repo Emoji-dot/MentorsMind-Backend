@@ -4,6 +4,10 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
+  CopyObjectCommand,
+  HeadObjectCommand,
+  PutBucketLifecycleConfigurationCommand,
+  StorageClass,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../config/env";
@@ -145,5 +149,78 @@ export const StorageService = {
     });
 
     return await getSignedUrl(s3Client, command, { expiresIn });
+  },
+
+  /**
+   * Transition an S3 object to a different storage class in-place using a server-side copy.
+   * Supported targets: STANDARD_IA, GLACIER, DEEP_ARCHIVE.
+   */
+  async transitionStorageClass(
+    key: string,
+    storageClass: 'STANDARD_IA' | 'GLACIER' | 'DEEP_ARCHIVE',
+  ): Promise<void> {
+    const command = new CopyObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      CopySource: `${BUCKET}/${key}`,
+      StorageClass: storageClass as StorageClass,
+      MetadataDirective: 'COPY',
+    });
+
+    await s3Client.send(command);
+  },
+
+  /**
+   * Retrieve the current storage class of an S3 object via a HEAD request.
+   * Returns undefined if the object does not exist or storage class is not set.
+   */
+  async getObjectStorageClass(key: string): Promise<string | undefined> {
+    const command = new HeadObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+    });
+
+    const response = await s3Client.send(command);
+    return response.StorageClass;
+  },
+
+  /**
+   * Apply S3 bucket lifecycle rules for the recordings/ prefix:
+   *  - Transition to STANDARD_IA after 30 days
+   *  - Transition to GLACIER after 90 days
+   *  - Expire (delete) objects after RECORDING_RETENTION_DAYS (default 365)
+   */
+  async applyLifecycleRules(bucket: string): Promise<void> {
+    const retentionDays = parseInt(env.RECORDING_RETENTION_DAYS ?? '365', 10);
+
+    const command = new PutBucketLifecycleConfigurationCommand({
+      Bucket: bucket,
+      LifecycleConfiguration: {
+        Rules: [
+          {
+            ID: 'recordings-storage-tiering',
+            Status: 'Enabled',
+            Filter: {
+              Prefix: 'recordings/',
+            },
+            Transitions: [
+              {
+                Days: 30,
+                StorageClass: 'STANDARD_IA' as StorageClass,
+              },
+              {
+                Days: 90,
+                StorageClass: 'GLACIER' as StorageClass,
+              },
+            ],
+            Expiration: {
+              Days: retentionDays,
+            },
+          },
+        ],
+      },
+    });
+
+    await s3Client.send(command);
   },
 };
