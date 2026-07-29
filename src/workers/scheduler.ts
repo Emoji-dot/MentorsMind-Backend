@@ -2,6 +2,7 @@ import { reportQueue } from "../queues/report.queue";
 import { sessionReminderQueue } from "../queues/sessionReminder.queue";
 import { escrowCheckQueue } from "../queues/escrow-check.queue";
 import { notificationCleanupQueue } from "../queues/notificationCleanup.queue";
+import { pushTokenCleanupQueue } from "../queues/pushTokenCleanup.queue";
 import { maintenanceQueue } from "../queues/maintenance.queue";
 import { recordingCleanupQueue } from "../queues/recordingCleanup.queue";
 import { analyticsRefreshQueue } from "../queues/analyticsRefresh.queue";
@@ -34,10 +35,10 @@ async function addRepeatableJobIfNotExists(
 ): Promise<void> {
   const existingJobs = await queue.getRepeatableJobs();
   const jobId = options.jobId;
-  
+
   // Check if job already exists by jobId
-  const exists = existingJobs.find(job => job.id === jobId);
-  
+  const exists = existingJobs.find((job) => job.id === jobId);
+
   if (!exists) {
     await queue.add(jobName, data, options);
     logger.info(`Added repeatable job: ${jobName} (${jobId})`);
