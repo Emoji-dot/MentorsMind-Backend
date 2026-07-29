@@ -50,6 +50,7 @@ import chatbotRoutes from "../chatbot.routes";
 import featureFlagRoutes from "../feature-flag.routes";
 import offlineRoutes from "../offline.routes";
 import syncRoutes from "../sync.routes";
+import searchRoutes from "../search.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -137,5 +138,8 @@ router.use("/offline", offlineRoutes);
 
 // Offline sync v2 — vector-clock batch sync endpoints (issue #689)
 router.use("/sync", syncRoutes);
+
+// Unified global search across mentors, sessions, and messages (issue #738)
+router.use("/search", searchRoutes);
 
 export default router;
