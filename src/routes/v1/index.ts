@@ -46,9 +46,11 @@ import sandboxRoutes from "../sandbox.routes";
 import tenantRoutes from "../tenant.routes";
 import dynamicPricingRoutes from "../dynamic-pricing.routes";
 import mentorOnboardingRoutes from "../mentor-onboarding.routes";
+import chatbotRoutes from "../chatbot.routes";
 import featureFlagRoutes from "../feature-flag.routes";
 import offlineRoutes from "../offline.routes";
 import syncRoutes from "../sync.routes";
+import searchRoutes from "../search.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -93,6 +95,7 @@ router.use("/webhooks", webhookRoutes);
 router.use("/dl", deepLinkRoutes);
 router.use("/notifications", notificationsRoutes);
 router.use("/", notesRoutes);
+router.use("/tenant/email-templates", tenantEmailTemplatesRoutes);
 
 // Learning Path Builder routes
 router.use("/learning-paths", learningPathRoutes);
@@ -125,6 +128,7 @@ router.use("/pricing", dynamicPricingRoutes);
 
 // Mentor Onboarding Automation (issue #562)
 router.use("/onboarding", mentorOnboardingRoutes);
+router.use("/chatbot", chatbotRoutes);
 
 // Feature Flags (issue #688) — real-time rollout/targeting evaluation + admin CRUD
 router.use("/", featureFlagRoutes);
@@ -134,5 +138,8 @@ router.use("/offline", offlineRoutes);
 
 // Offline sync v2 — vector-clock batch sync endpoints (issue #689)
 router.use("/sync", syncRoutes);
+
+// Unified global search across mentors, sessions, and messages (issue #738)
+router.use("/search", searchRoutes);
 
 export default router;

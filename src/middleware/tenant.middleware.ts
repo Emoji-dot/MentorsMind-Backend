@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { TenantModel } from '../models/tenant.model';
 import { TenantRecord } from '../types/tenant.types';
+import { TenantContext, ADMIN_BYPASS_TENANT_ID } from '../utils/tenant-context.utils';
 
 export interface TenantRequest extends Request {
   tenant?: TenantRecord;
@@ -8,7 +9,11 @@ export interface TenantRequest extends Request {
 
 /**
  * Resolves the tenant from the request hostname.
+ *
  * Attaches `req.tenant` if a matching active tenant is found.
+ * Also populates the AsyncLocalStorage TenantContext so that all downstream
+ * database queries automatically receive the correct tenant filter.
+ *
  * Continues without error if no tenant matches (single-tenant fallback).
  */
 export const tenantMiddleware = async (
@@ -22,12 +27,17 @@ export const tenantMiddleware = async (
       const tenant = await TenantModel.findByDomain(hostname);
       if (tenant) {
         req.tenant = tenant;
+        // Populate AsyncLocalStorage so all DB queries in this request
+        // context automatically carry the tenant ID.
+        TenantContext.run(tenant.id, () => next());
+        return;
       }
     }
   } catch {
     // Non-fatal: tenant resolution failure should not block requests
   }
-  next();
+  // No tenant resolved — run without a tenant context (null = no filter).
+  TenantContext.run(null, () => next());
 };
 
 /**
@@ -44,4 +54,18 @@ export const requireTenant = (
     return;
   }
   next();
+};
+
+/**
+ * Middleware that runs the rest of the request chain in an admin bypass
+ * context, allowing cross-tenant queries.
+ *
+ * Usage: apply AFTER authenticate + requireAdmin to admin-only routes.
+ */
+export const adminBypassTenantMiddleware = (
+  _req: TenantRequest,
+  _res: Response,
+  next: NextFunction,
+): void => {
+  TenantContext.run(ADMIN_BYPASS_TENANT_ID, () => next());
 };

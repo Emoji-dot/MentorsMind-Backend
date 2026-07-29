@@ -1,7 +1,19 @@
+/**
+ * Analytics Pipeline Worker
+ *
+ * Processes domain events (INSERT/UPDATE/DELETE on core tables) forwarded from
+ * PostgreSQL LISTEN/NOTIFY. Responsibilities:
+ *  - Update Redis counters / invalidate view-scoped cache keys
+ *  - Track processing metrics
+ *
+ * This worker does NOT refresh materialized views directly.
+ * View refreshes are handled exclusively by analyticsRefresh.worker.ts via
+ * the analyticsRefreshQueue, coordinated by refreshAnalytics.job.ts.
+ */
+
 import { Worker, Job } from 'bullmq';
 import { queueConnection } from '../queues/queue.config';
 import { logger } from '../utils/logger';
-import { AdvancedAnalyticsService } from '../services/advanced-analytics.service';
 import { CacheService } from '../services/cache.service';
 import pool from '../config/database';
 
@@ -182,73 +194,6 @@ async function updateProcessingMetrics(table: string, operation: string): Promis
     logger.warn('Failed to update processing metrics', { error, table, operation });
   }
 }
-
-// Scheduled jobs for analytics maintenance
-export const AnalyticsScheduledJobs = {
-  // Refresh materialized views every 15 minutes
-  refreshViews: {
-    schedule: '*/15 * * * *',
-    handler: async () => {
-      try {
-        logger.info('Starting scheduled analytics views refresh');
-        await AdvancedAnalyticsService.refreshAnalytics();
-        await CacheInvalidationService.onViewsRefreshed();
-        logger.info('Scheduled analytics views refresh completed');
-      } catch (error) {
-        logger.error('Scheduled analytics views refresh failed', { error });
-        throw error;
-      }
-    }
-  },
-  
-  // Clean up old analytics data daily at 2 AM
-  cleanupOldData: {
-    schedule: '0 2 * * *',
-    handler: async () => {
-      try {
-        logger.info('Starting analytics data cleanup');
-        
-        // Clean up old insights (older than 90 days)
-        await pool.query(`
-          DELETE FROM analytics_insights 
-          WHERE created_at < CURRENT_DATE - INTERVAL '90 days'
-        `);
-        
-        // Clean up old predictions (older than 30 days)
-        await pool.query(`
-          DELETE FROM analytics_predictions 
-          WHERE created_at < CURRENT_DATE - INTERVAL '30 days'
-        `);
-        
-        logger.info('Analytics data cleanup completed');
-      } catch (error) {
-        logger.error('Analytics data cleanup failed', { error });
-        throw error;
-      }
-    }
-  },
-  
-  // Update processing health metrics every 5 minutes
-  updateHealthMetrics: {
-    schedule: '*/5 * * * *',
-    handler: async () => {
-      try {
-        // Check pipeline health
-        const healthMetrics = await getAnalyticsPipelineHealth();
-        await CacheService.set('analytics:health', healthMetrics, 300); // 5 minutes TTL
-        
-        // Alert if processing is behind
-        if (healthMetrics.processingLag > 300) { // 5 minutes
-          logger.warn('Analytics pipeline processing lag detected', { 
-            lag: healthMetrics.processingLag 
-          });
-        }
-      } catch (error) {
-        logger.error('Failed to update analytics health metrics', { error });
-      }
-    }
-  }
-};
 
 // Get analytics pipeline health metrics
 async function getAnalyticsPipelineHealth(): Promise<any> {

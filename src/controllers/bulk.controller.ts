@@ -23,6 +23,21 @@ export const BulkController = {
     ResponseUtil.success(res, { jobId }, "Bulk user import queued", 202);
   },
 
+  async importMentors(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file?.buffer) {
+      ResponseUtil.error(res, "CSV file is required", 400);
+      return;
+    }
+
+    const csvContent = file.buffer.toString("utf-8");
+    const jobId = await BulkService.requestMentorImport(
+      getUserId(req),
+      csvContent,
+    );
+    ResponseUtil.success(res, { jobId }, "Bulk mentor import queued", 202);
+  },
+
   async processPayments(
     req: AuthenticatedRequest,
     res: Response,

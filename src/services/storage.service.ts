@@ -93,6 +93,35 @@ export const StorageService = {
   },
 
   /**
+   * Upload a file buffer to S3 under Object Lock (WORM) — the object cannot
+   * be deleted or overwritten until `retainUntilDate`, even by an account
+   * with delete permissions. Requires the bucket to have Object Lock enabled.
+   * Used for compliance archives (e.g. audit log archival, issue #772).
+   */
+  async uploadFileWithRetention(
+    key: string,
+    body: Buffer,
+    contentType: string,
+    retainUntilDate: Date,
+    metadata?: Record<string, string>,
+  ): Promise<S3UploadResult> {
+    const command = new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+      Metadata: metadata,
+      ServerSideEncryption: "AES256",
+      ObjectLockMode: "COMPLIANCE",
+      ObjectLockRetainUntilDate: retainUntilDate,
+    });
+
+    await s3Client.send(command);
+
+    return { key, url: `s3://${BUCKET}/${key}` };
+  },
+
+  /**
    * Build an S3 object key for export files
    */
   buildExportKey(userId: string, jobId: string, timestamp: number): string {

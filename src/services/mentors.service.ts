@@ -7,6 +7,7 @@ import { CacheService } from "./cache.service";
 import { CacheKeys, CacheTTL } from "../utils/cache-key.utils";
 import { logger } from "../utils/logger.utils";
 import { PaginationUtil } from "../utils/pagination.utils";
+import { SocketService } from "./socket.service";
 import {
   CreateMentorProfileInput,
   UpdateMentorProfileInput,
@@ -374,7 +375,19 @@ export const MentorsService = {
 
     // Invalidate mentor profile cache
     if (rows[0]) {
+      const updatedSchedule = payload.schedule ?? rows[0].availability_schedule;
+      const updatedIsAvailable =
+        payload.isAvailable !== undefined ? payload.isAvailable : rows[0].is_available;
+
       await CacheService.del(CacheKeys.mentorProfile(id));
+      SocketService.emitMentorAvailabilityChanged(id, {
+        mentorId: id,
+        isAvailable: updatedIsAvailable,
+        availability: {
+          schedule: updatedSchedule,
+          isAvailable: updatedIsAvailable,
+        },
+      });
       logger.debug("Mentor profile cache invalidated on availability update", {
         mentorId: id,
       });

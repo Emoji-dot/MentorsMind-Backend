@@ -1,4 +1,5 @@
 import pool from "../config/database";
+import { redis } from "../config/redis";
 import { EncryptionUtil } from "../utils/encryption.utils";
 import { logger } from "../utils/logger.utils";
 import { JwksService } from "../services/jwks.service";
@@ -35,33 +36,47 @@ class KeyRotationJob {
   private jobs: Map<string, any> = new Map();
 
   initialize(): void {
-    this.startJwtRotation();
     this.startPiiRotation();
     logger.info("Key rotation jobs initialized", { jobCount: this.jobs.size });
   }
 
-  /** JWT key auto-rotation — runs every 30 days at midnight UTC */
-  private startJwtRotation(): void {
-    try {
-      const { CronJob } = require("cron");
-      const job = new CronJob("0 0 */30 * *", async () => {
-        logger.info("Running scheduled JWT key rotation");
-        try {
-          await JwksService.autoRotateIfNeeded();
-        } catch (error) {
-          const err = error as Error;
-          logger.error("JWT key rotation failed", { error: err.message, stack: err.stack });
-          Sentry.captureException(err);
-        }
-      });
+  /** JWT key rotation execution */
+  async runJwtRotation(): Promise<void> {
+    logger.info("Running scheduled JWT key rotation");
+    
+    const now = new Date();
+    const monthYear = `${now.getUTCMonth() + 1}-${now.getUTCFullYear()}`;
+    const lockKey = `jwks:rotation:lock:${monthYear}`;
+    const replicaId = process.env.RAILWAY_REPLICA_ID || "local-instance";
 
-      job.start();
-      this.jobs.set("jwt-rotation", job);
-      logger.info("JWT key rotation job started (every 30 days)");
+    try {
+      // Attempt to acquire lock (SET NX EX 3600)
+      const acquired = await redis.set(lockKey, replicaId, "NX", "EX", 3600);
+      if (!acquired) {
+        logger.info("JWT key rotation skipped: lock acquired by another instance");
+        return;
+      }
+
+      logger.info("JWT key rotation lock acquired", { lockKey, replicaId });
+
+      // Implement lock heartbeat: the owning instance refreshes the lock TTL every 10 minutes during rotation
+      const heartbeatInterval = setInterval(async () => {
+        try {
+          await redis.expire(lockKey, 3600);
+        } catch (err) {
+          logger.warn("Failed to refresh JWT rotation lock heartbeat", { error: err });
+        }
+      }, 10 * 60 * 1000);
+
+      try {
+        await JwksService.rotateKeys(true);
+      } finally {
+        clearInterval(heartbeatInterval);
+      }
     } catch (error) {
-      logger.warn("Failed to start JWT key rotation job", {
-        error: (error as Error).message,
-      });
+      const err = error as Error;
+      logger.error("JWT key rotation failed", { error: err.message, stack: err.stack });
+      Sentry.captureException(err);
     }
   }
 

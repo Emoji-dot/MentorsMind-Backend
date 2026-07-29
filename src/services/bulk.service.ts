@@ -10,6 +10,7 @@ import { z } from "zod";
 import { QUEUE_PRIORITIES } from "../config/queue";
 import { redis } from "../config/redis";
 import { SocketService } from "./socket.service";
+import { logger } from "../utils/logger.utils";
 
 export interface BulkRowResult {
   index: number;
@@ -41,6 +42,23 @@ const paymentRowSchema = z.object({
 
 export type BulkImportUserRow = z.infer<typeof importUserRowSchema>;
 export type BulkPaymentRow = z.infer<typeof paymentRowSchema>;
+
+// ---------------------------------------------------------------------------
+// Mentor import schema
+// ---------------------------------------------------------------------------
+const importMentorRowSchema = z.object({
+  email: emailSchema,
+  firstName: z.string().min(2).max(50),
+  lastName: z.string().min(2).max(50),
+  bio: z.string().min(10).max(2000).optional(),
+  expertise: z.string().min(2).max(500).optional(), // comma-separated tags
+  hourlyRate: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
+  currency: z.string().min(2).max(10).optional().default("USD"),
+  timezone: z.string().optional(),
+  linkedinUrl: z.string().url().optional().or(z.literal("")),
+  yearsExperience: z.string().regex(/^\d+$/).optional(),
+});
+export type BulkImportMentorRow = z.infer<typeof importMentorRowSchema>;
 
 export function parseUsersCsv(csvContent: string): {
   header: string[];
@@ -138,6 +156,105 @@ export function validatePaymentRows(
   return { valid: errors.length === 0, records: validRecords, errors };
 }
 
+// ---------------------------------------------------------------------------
+// Mentor CSV helpers
+// ---------------------------------------------------------------------------
+
+export function parseMentorsCsv(csvContent: string): {
+  header: string[];
+  rows: string[][];
+} {
+  const lines = csvContent
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    throw createError(
+      "CSV must include a header row and at least one data row",
+      400,
+    );
+  }
+
+  const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
+  const required = ["email", "firstname", "lastname"];
+  for (const col of required) {
+    if (!header.includes(col)) {
+      throw createError(`CSV missing required column: ${col}`, 400);
+    }
+  }
+
+  const rows = lines
+    .slice(1)
+    .map((line) => line.split(",").map((cell) => cell.trim()));
+  return { header, rows };
+}
+
+export function mapCsvRowsToMentors(
+  header: string[],
+  rows: string[][],
+): BulkImportMentorRow[] {
+  const indexOf = (name: string) => header.indexOf(name);
+  const emailIdx = indexOf("email");
+  const firstIdx = indexOf("firstname");
+  const lastIdx = indexOf("lastname");
+  const bioIdx = indexOf("bio");
+  const expertiseIdx = indexOf("expertise");
+  const hourlyRateIdx = indexOf("hourlyrate");
+  const currencyIdx = indexOf("currency");
+  const timezoneIdx = indexOf("timezone");
+  const linkedinUrlIdx = indexOf("linkedinurl");
+  const yearsExperienceIdx = indexOf("yearsexperience");
+
+  return rows.map((cells) => ({
+    email: cells[emailIdx] ?? "",
+    firstName: cells[firstIdx] ?? "",
+    lastName: cells[lastIdx] ?? "",
+    ...(bioIdx !== -1 && cells[bioIdx] ? { bio: cells[bioIdx] } : {}),
+    ...(expertiseIdx !== -1 && cells[expertiseIdx]
+      ? { expertise: cells[expertiseIdx] }
+      : {}),
+    ...(hourlyRateIdx !== -1 && cells[hourlyRateIdx]
+      ? { hourlyRate: cells[hourlyRateIdx] }
+      : {}),
+    ...(currencyIdx !== -1 && cells[currencyIdx]
+      ? { currency: cells[currencyIdx] }
+      : {}),
+    ...(timezoneIdx !== -1 && cells[timezoneIdx]
+      ? { timezone: cells[timezoneIdx] }
+      : {}),
+    ...(linkedinUrlIdx !== -1 && cells[linkedinUrlIdx] !== undefined
+      ? { linkedinUrl: cells[linkedinUrlIdx] }
+      : {}),
+    ...(yearsExperienceIdx !== -1 && cells[yearsExperienceIdx]
+      ? { yearsExperience: cells[yearsExperienceIdx] }
+      : {}),
+  }));
+}
+
+export function validateMentorImportRows(
+  records: BulkImportMentorRow[],
+): BulkValidationResult<BulkImportMentorRow> {
+  const errors: BulkRowResult[] = [];
+  const validRecords: BulkImportMentorRow[] = [];
+
+  records.forEach((record, index) => {
+    const parsed = importMentorRowSchema.safeParse(record);
+    if (!parsed.success) {
+      errors.push({
+        index,
+        success: false,
+        identifier: record.email,
+        error: parsed.error.issues.map((i) => i.message).join("; "),
+      });
+      return;
+    }
+    validRecords.push(parsed.data);
+  });
+
+  return { valid: errors.length === 0, records: validRecords, errors };
+}
+
 export const BulkService = {
   async requestUserImport(
     requestedBy: string,
@@ -194,6 +311,41 @@ export const BulkService = {
     return job.id;
   },
 
+  async requestMentorImport(
+    requestedBy: string,
+    csvContent: string,
+  ): Promise<string> {
+    const { header, rows } = parseMentorsCsv(csvContent);
+    const mapped = mapCsvRowsToMentors(header, rows);
+    const validation = validateMentorImportRows(mapped);
+
+    if (!validation.valid) {
+      const err = createError("Mentor CSV validation failed", 400);
+      (err as any).details = { errors: validation.errors };
+      throw err;
+    }
+
+    const job = await BulkJobModel.create(
+      "mentors_import",
+      requestedBy,
+      mapped.length,
+    );
+    await bulkQueue.add("process-bulk", {
+      jobId: job.id,
+      jobType: "mentors_import",
+      requestedBy,
+      payload: { mentors: mapped },
+    }, { priority: QUEUE_PRIORITIES.BULK });
+
+    logger.info("[BulkService] Mentor import job queued", {
+      jobId: job.id,
+      totalRecords: mapped.length,
+      requestedBy,
+    });
+
+    return job.id;
+  },
+
   async getJob(
     jobId: string,
     requestedBy: string,
@@ -205,8 +357,8 @@ export const BulkService = {
 
   async processJob(
     jobId: string,
-    jobType: "users_import" | "payments_process",
-    payload: { users?: BulkImportUserRow[]; payments?: BulkPaymentRow[] },
+    jobType: "users_import" | "payments_process" | "mentors_import",
+    payload: { users?: BulkImportUserRow[]; payments?: BulkPaymentRow[]; mentors?: BulkImportMentorRow[] },
     requestedBy?: string
   ): Promise<void> {
     await BulkJobModel.updateStatus(jobId, "processing");
@@ -218,7 +370,11 @@ export const BulkService = {
     let successCount = 0;
     let failureCount = 0;
 
-    const totalItems = (jobType === "users_import" ? payload.users?.length : payload.payments?.length) || 0;
+    const totalItems = (
+      jobType === "users_import" ? payload.users?.length :
+      jobType === "payments_process" ? payload.payments?.length :
+      payload.mentors?.length
+    ) || 0;
 
     const trackProgress = async (currentIdx: number) => {
       if (totalItems === 0) return;
@@ -302,6 +458,73 @@ export const BulkService = {
               index,
               success: false,
               identifier: payment.bookingId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          await trackProgress(index);
+        }
+      }
+
+      if (jobType === "mentors_import" && payload.mentors) {
+        for (const [index, mentor] of payload.mentors.entries()) {
+          try {
+            // Check for existing account
+            const existing = await pool.query(
+              "SELECT id FROM users WHERE email = $1",
+              [mentor.email],
+            );
+            if (existing.rows.length > 0) {
+              throw new Error("Email is already registered");
+            }
+
+            // Generate a temporary password — mentor will reset via onboarding email
+            const tempPassword = crypto.randomBytes(16).toString("hex");
+            const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+            // Parse comma-separated expertise into a PostgreSQL text array
+            const expertiseArray = mentor.expertise
+              ? mentor.expertise.split(",").map((e) => e.trim()).filter(Boolean)
+              : null;
+
+            await pool.query(
+              `INSERT INTO users (
+                 email, password_hash, first_name, last_name, role,
+                 bio, expertise, hourly_rate, timezone, years_of_experience,
+                 status, metadata
+               ) VALUES ($1, $2, $3, $4, 'mentor', $5, $6, $7, $8, $9,
+                 'pending_verification', $10)`,
+              [
+                mentor.email,
+                passwordHash,
+                mentor.firstName,
+                mentor.lastName,
+                mentor.bio ?? null,
+                expertiseArray,
+                mentor.hourlyRate ? parseFloat(mentor.hourlyRate) : null,
+                mentor.timezone ?? null,
+                mentor.yearsExperience ? parseInt(mentor.yearsExperience, 10) : null,
+                JSON.stringify({
+                  bulkImported: true,
+                  importedAt: new Date().toISOString(),
+                  ...(mentor.linkedinUrl ? { linkedinUrl: mentor.linkedinUrl } : {}),
+                  ...(mentor.currency ? { currency: mentor.currency } : {}),
+                }),
+              ],
+            );
+
+            successCount++;
+            results.push({ index, success: true, identifier: mentor.email });
+            logger.debug("[BulkService] Mentor account created", { email: mentor.email });
+          } catch (error) {
+            failureCount++;
+            results.push({
+              index,
+              success: false,
+              identifier: mentor.email,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            logger.warn("[BulkService] Failed to create mentor account", {
+              email: mentor.email,
               error: error instanceof Error ? error.message : String(error),
             });
           }

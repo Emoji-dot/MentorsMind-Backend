@@ -50,6 +50,7 @@ const REQUIRED_TABLES = [
   'conversations',
   'messages',
   'message_attachments',
+  'chatbot_messages',
   'notification_templates',
   'notification_delivery_tracking',
   'notification_analytics',
@@ -81,6 +82,10 @@ const REQUIRED_TABLES = [
   'conversations',
   'messages',
   'message_attachments',
+  'learning_path_purchases',
+  'analytics_predictions',
+  'mv_revenue_time_series',
+  'mv_hourly_session_demand',
 ];
 
 /**
@@ -98,7 +103,7 @@ export async function validateRequiredTables(): Promise<ValidationSummary> {
       SELECT table_name
       FROM information_schema.tables
       WHERE table_schema = 'public'
-        AND table_type = 'BASE TABLE'
+        AND table_type IN ('BASE TABLE', 'MATERIALIZED VIEW')
         AND table_name = ANY($1)
     `;
     
