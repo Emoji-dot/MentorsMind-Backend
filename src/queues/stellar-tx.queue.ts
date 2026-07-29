@@ -11,7 +11,7 @@ export interface StellarTxJobData {
   /** Free-form metadata stored against the job for audit/debug. */
   metadata?: Record<string, unknown>;
   /** Transaction type for building XDR if not provided. */
-  type?: 'payment' | 'refund';
+  type?: 'payment' | 'refund' | 'verification';
   /** Amount for refund transactions. */
   amount?: string;
   /** Currency for refund transactions. */

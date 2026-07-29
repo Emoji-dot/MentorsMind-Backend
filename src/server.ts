@@ -34,6 +34,9 @@ import { initializeSocketService } from "./services/socket.service";
 import { initializeGraphQL } from "./graphql/server";
 import { stellarMonitorJob } from "./jobs/stellarMonitor.job";
 import backupJob from "./jobs/backup.job";
+import { goalReminderJob } from "./jobs/goalReminder.job";
+import keyRotationJob from "./jobs/keyRotation.job";
+import { runReEncryptionJob } from "./jobs/re-encrypt-pii.job";
 import {
   emailWorker,
   paymentWorker,
@@ -49,11 +52,14 @@ import {
   transcriptionWorker,
   startScheduler,
   stopScheduler,
+  startRetentionEnforcementWorker,
+  stopRetentionEnforcementWorker,
 } from "./workers";
 import { initializeEmailTemplates } from "./services/template-initializer.service";
 import { logger } from "./utils/logger.utils";
 import { validateRequiredTables } from "./utils/table-validator.utils";
 import { startPoolMonitor, stopPoolMonitor } from "./utils/pool-monitor.utils";
+import { JwksService } from "./services/jwks.service";
 
 // Import queues for side effects
 import "./queues/bulk.queue";
@@ -89,13 +95,25 @@ initializeEmailTemplates().catch((err) => {
 
 // Initialize JWKS key store (generates RSA key pair if none exists)
 import("./services/jwks.service").then(({ JwksService }) =>
-  JwksService.initialize().catch((err) =>
+  JwksService.initialize().then(async () => {
+    // Check if rotation is needed on startup
+    await JwksService.autoRotateIfNeeded().catch((err) =>
+      logger.warn("Auto-rotate on startup failed", { error: err }),
+    );
+  }).catch((err) =>
     logger.error("Failed to initialize JWKS key store", { error: err }),
   ),
 );
 
+// Initialize key rotation jobs
+keyRotationJob.initialize();
+runReEncryptionJob().catch(err => {
+  logger.error("Failed to run Google Calendar re-encryption job", { error: err });
+});
+
 // Log effective retry configuration for each active queue
 import { defaultJobOptions, QUEUE_NAMES } from "./config/queue";
+import { subscribeToFeatureFlagUpdates } from "./services/feature-flag.service";
 const queueRetryOverrides: Record<
   string,
   { attempts: number; backoff: unknown }
@@ -116,6 +134,13 @@ Object.values(QUEUE_NAMES).forEach((name) => {
 // Start background job workers and scheduler
 startScheduler().catch((err) => {
   logger.error("Failed to start job scheduler", { error: err });
+});
+startRetentionEnforcementWorker();
+
+// Subscribe to feature-flag update events so this instance's in-memory
+// flag cache invalidates within ~2s of any instance changing a flag
+subscribeToFeatureFlagUpdates().catch((err) => {
+  logger.error("Failed to subscribe to feature flag updates", { error: err });
 });
 
 // Initialize collaboration sockets
@@ -140,6 +165,7 @@ stellarMonitorJob.start().catch((err) => {
 
 // Start scheduled database backup jobs (daily full, hourly WAL, retention)
 backupJob.initialize();
+goalReminderJob.initialize();
 
 // Start background exchange rate refresh
 import("./services/assetExchange.service")
@@ -167,6 +193,8 @@ async function shutdown(signal: string) {
   logger.info({ signal }, "Signal received: closing HTTP server");
   stellarMonitorJob.stop();
   backupJob.stop();
+  goalReminderJob.stop();
+  keyRotationJob.stop();
   await Promise.all([
     emailWorker.close(),
     paymentWorker.close(),
@@ -181,6 +209,7 @@ async function shutdown(signal: string) {
     webhookDeliveryWorker.close(),
     transcriptionWorker.close(),
     stopScheduler(),
+    stopRetentionEnforcementWorker(),
     Promise.resolve(stopPoolMonitor()),
   ]);
   server.close(() => {

@@ -3,6 +3,7 @@ import { authenticate } from "../middleware/auth.middleware";
 import { requireRole } from "../middleware/rbac.middleware";
 import { softIdempotency as idempotency } from "../middleware/idempotency.middleware";
 import { EscrowController } from "../controllers/escrow.controller";
+import { validate } from "../middleware/validation.middleware";
 import {
   createEscrowSchema,
   releaseEscrowSchema,

@@ -11,6 +11,7 @@ import { SocketService } from "./socket.service";
 import { db } from "../config/database";
 import { CalendarService } from "./calendar.service";
 import { SorobanEscrowService } from "./sorobanEscrow.service";
+import { AssetExchangeService } from "./assetExchange.service";
 import { QueueService } from "./queue.service";
 import {
   NotificationService,
@@ -293,6 +294,8 @@ export const BookingsService = {
       throw createError("Payment must be completed before confirmation", 400);
     }
 
+    // Soroban escrow creation is a network call — keep it OUTSIDE the DB
+    // transaction to avoid blocking a connection while waiting on the chain.
     let onChainEscrow: {
       contractAddress: string;
       escrowId: string;
@@ -309,87 +312,56 @@ export const BookingsService = {
       });
     }
 
-    const updated = await BookingModel.update(bookingId, {
-      status: "confirmed",
-    });
+    // Atomic DB writes: booking status update + booking.confirmed outbox
+    // event. If the process crashes after COMMIT, the outbox worker will
+    // re-dispatch the notification fan-out reliably.
+    const updated = await DatabaseService.withTransaction(async (client) => {
+      const result = await BookingModel.updateWithClient(client, bookingId, {
+        status: "confirmed",
+      });
+      if (!result) {
+        throw createError("Failed to confirm booking", 500);
+      }
 
-    if (!updated) {
-      throw createError("Failed to confirm booking", 500);
-    }
+      if (onChainEscrow) {
+        await client.query(
+          `UPDATE bookings
+           SET escrow_contract_address = $2,
+               escrow_id = $3,
+               stellar_tx_hash = COALESCE($4, stellar_tx_hash),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [
+            bookingId,
+            onChainEscrow.contractAddress,
+            onChainEscrow.escrowId,
+            onChainEscrow.txHash,
+          ],
+        );
+      }
 
-    // Invalidate session list cache for both users
-    await CacheService.del(CacheKeys.sessionList(booking.mentee_id));
-    await CacheService.del(CacheKeys.sessionList(booking.mentor_id));
-    logger.debug("Booking cache invalidated on confirmation", { bookingId });
-
-    if (onChainEscrow) {
-      await setBookingEscrowMetadata(
-        bookingId,
-        onChainEscrow.contractAddress,
-        onChainEscrow.escrowId,
-        onChainEscrow.txHash,
-      );
-    }
-
-    // Emit session:updated event to both mentor and mentee
-    SocketService.emitToUser(booking.mentor_id, "session:updated", {
-      bookingId,
-      status: "confirmed",
-      updatedAt: updated.updated_at,
-    });
-    SocketService.emitToUser(booking.mentee_id, "session:updated", {
-      bookingId,
-      status: "confirmed",
-      updatedAt: updated.updated_at,
-    });
-
-    // Send multi-channel notifications to both mentor and mentee
-    try {
-      const notificationPayload = {
-        type: NotificationType.BOOKING_CONFIRMED,
-        channels: [
-          NotificationChannel.EMAIL,
-          NotificationChannel.IN_APP,
-          NotificationChannel.PUSH,
-        ],
-        priority: NotificationPriority.HIGH,
-        data: {
+      await emitBookingConfirmed(
+        {
           bookingId,
-          scheduledAt: booking.scheduled_at,
+          mentorId: booking.mentor_id,
+          menteeId: booking.mentee_id,
+          scheduledAt: new Date(booking.scheduled_at).toISOString(),
           durationMinutes: booking.duration_minutes,
           topic: booking.topic,
           amount: booking.amount,
           currency: booking.currency,
-          mentorId: booking.mentor_id,
-          menteeId: booking.mentee_id,
+          status: "confirmed",
         },
-      };
+        { client, userId: userId },
+      );
 
-      await Promise.all([
-        NotificationService.sendNotification({
-          userId: booking.mentor_id,
-          ...notificationPayload,
-        }),
-        NotificationService.sendNotification({
-          userId: booking.mentee_id,
-          ...notificationPayload,
-        }),
-      ]);
+      return result;
+    });
 
-      logger.info("Booking confirmation notifications sent", {
-        bookingId,
-        mentorId: booking.mentor_id,
-        menteeId: booking.mentee_id,
-      });
-    } catch (notificationError) {
-      logger.error("Failed to send booking confirmation notifications", {
-        bookingId,
-        error:
-          notificationError instanceof Error
-            ? notificationError.message
-            : notificationError,
-      });
-    }
+    // Invalidate session list cache for both users (best-effort)
+    await CacheService.del(CacheKeys.sessionList(booking.mentee_id));
+    await CacheService.del(CacheKeys.sessionList(booking.mentor_id));
+    logger.debug("Booking cache invalidated on confirmation", { bookingId });
 
     CalendarService.createGoogleCalendarEvent(bookingId).catch((err) =>
       logger.error("Calendar create failed", { bookingId, error: err }),
@@ -452,17 +424,28 @@ export const BookingsService = {
       throw createError("Cannot complete booking before session ends", 400);
     }
 
-    if (userId === booking.mentee_id && SorobanEscrowService.isConfigured()) {
+    if (SorobanEscrowService.isConfigured()) {
       const metadata = await getBookingEscrowMetadata(bookingId);
       if (metadata.escrow_id) {
-        await SorobanEscrowService.releaseFunds({
-          escrowId: metadata.escrow_id,
-          releasedBy: userId,
-          contractAddress: metadata.escrow_contract_address || undefined,
-        });
+        if (userId === booking.mentee_id) {
+          await SorobanEscrowService.releaseFunds({
+            escrowId: metadata.escrow_id,
+            releasedBy: userId,
+            contractAddress: metadata.escrow_contract_address || undefined,
+          });
+        } else {
+          // Mentor is completing the booking -> Schedule auto-release
+          const { scheduleEscrowRelease } = await import("../queues/escrow-release.queue");
+          await scheduleEscrowRelease({
+            escrowId: metadata.escrow_id,
+            mentorId: booking.mentor_id,
+            learnerId: booking.mentee_id,
+            sessionCompletedAt: new Date(),
+          });
+        }
       } else {
         logger.warn(
-          "Skipping Soroban release_funds: no escrow metadata on booking",
+          "Skipping Soroban release/schedule: no escrow metadata on booking",
           {
             bookingId,
           },
@@ -572,6 +555,10 @@ export const BookingsService = {
           bookingId,
           txHash: refundResult.txHash,
         });
+        
+        // Cancel any pending auto-release
+        const { cancelEscrowRelease } = await import("../queues/escrow-release.queue");
+        await cancelEscrowRelease(metadata.escrow_id);
       } else {
         logger.warn("Skipping Soroban refund: no escrow metadata on booking", {
           bookingId,

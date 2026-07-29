@@ -5,6 +5,11 @@ import { ResponseUtil } from '../utils/response.utils';
 import { AuditLogService, extractIpAddress } from '../services/auditLog.service';
 import { accountDeletionService } from '../services/accountDeletion.service';
 import { LoyaltyService } from '../services/loyalty.service';
+import {
+  UploadService,
+  UnsupportedMediaTypeError,
+  FileTooLargeError,
+} from '../services/upload.service';
 
 function getAuthenticatedUserId(req: AuthenticatedRequest): string {
   return (req.user as any)?.id ?? (req.user as any)?.userId;
@@ -173,16 +178,61 @@ export const UsersController = {
     ResponseUtil.success(res, updated, 'Profile updated successfully');
   },
 
-  /** POST /users/avatar */
+  /** POST /users/avatar — multipart/form-data; field name: "avatar" */
   async uploadAvatar(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const { avatarBase64 } = req.body;
-    // Derive a stable key for storage (e.g. future S3 integration uses this as the object key)
-    const avatarUrl = avatarBase64; // placeholder: replace with URL after uploading to storage
-    const updated = await UsersService.updateAvatar(getAuthenticatedUserId(req), avatarUrl);
+    // multer populates req.file when the multipart field is present
+    if (!req.file) {
+      ResponseUtil.error(res, 'No avatar file provided. Send a multipart/form-data request with field "avatar".', 400);
+      return;
+    }
+
+    const userId = getAuthenticatedUserId(req);
+
+    // Fetch current avatar_url so we can delete the old S3 object after upload
+    const currentUser = await UsersService.findById(userId);
+    if (!currentUser) {
+      ResponseUtil.notFound(res, 'User not found');
+      return;
+    }
+
+    let avatarUrl: string;
+    try {
+      avatarUrl = await UploadService.uploadAvatar(
+        userId,
+        req.file.buffer,
+        req.file.mimetype,
+        req.file.size,
+        currentUser.avatar_url,
+      );
+    } catch (err) {
+      if (err instanceof UnsupportedMediaTypeError) {
+        ResponseUtil.error(res, err.message, 415);
+        return;
+      }
+      if (err instanceof FileTooLargeError) {
+        ResponseUtil.error(res, err.message, 413);
+        return;
+      }
+      throw err; // re-throw unexpected errors for the global error handler
+    }
+
+    const updated = await UsersService.updateAvatar(userId, avatarUrl);
     if (!updated) {
       ResponseUtil.notFound(res, 'User not found');
       return;
     }
+
+    // Audit log
+    await AuditLogService.log({
+      userId,
+      action: 'AVATAR_UPDATED',
+      resourceType: 'user',
+      resourceId: userId,
+      newValue: { avatar_url: updated.avatar_url },
+      ipAddress: extractIpAddress(req),
+      userAgent: req.headers['user-agent'] || null,
+    });
+
     ResponseUtil.success(res, { avatarUrl: updated.avatar_url }, 'Avatar updated successfully');
   },
 

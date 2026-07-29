@@ -52,10 +52,20 @@ export const QUEUE_NAMES = {
   TRANSCRIPTION: "transcription-queue",
   BULK: "bulk-queue",
   DOMAIN_EVENTS: "domain-events-queue",
-  VESTING_SYNC: "vesting-sync-queue",
+  RECORDING_CLEANUP: "recording-cleanup-queue",
+  ANALYTICS_REFRESH: "analytics-refresh-queue",
+  QUALITY_SCORE: "quality-score-queue",
+  CDN_INVALIDATION: "cdn-invalidation-queue",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
+
+export const QUEUE_PRIORITIES = {
+  CRITICAL: 1,
+  HIGH: 5,
+  NORMAL: 10,
+  BULK: 100,
+} as const;
 
 export enum JobType {
   EMAIL = "email",
@@ -101,5 +111,6 @@ export const CONCURRENCY = {
   SESSION_NO_SHOW: 3,
   MAINTENANCE: 1,
   TRANSCRIPTION: 5,
-  VESTING_SYNC: 1,
+  QUALITY_SCORE: 1,
+  CDN_INVALIDATION: 5,
 } as const;

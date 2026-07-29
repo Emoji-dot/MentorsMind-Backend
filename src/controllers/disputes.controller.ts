@@ -9,7 +9,9 @@ export class DisputesController {
   static async openDispute(req: Request, res: Response): Promise<void> {
     try {
       const { session_id, type, reason } = req.body;
-      const filed_by_id = (req as any).user?.id || "temp_user_id"; // Placeholder for auth
+      const filed_by_id = (req as any).user!.userId || (req as any).user!.id;
+      const ipAddress = req.ip || "unknown";
+      const userAgent = req.headers["user-agent"] || "unknown";
 
       if (!session_id || !type || !reason) {
         res
@@ -23,6 +25,8 @@ export class DisputesController {
         filed_by_id,
         type,
         reason,
+        ipAddress,
+        userAgent
       );
       res.status(201).json({ data: dispute });
     } catch (error: any) {
@@ -51,16 +55,26 @@ export class DisputesController {
     try {
       const id = routeParam(req.params.id);
       const { text_content, file_url } = req.body;
-      const limitId = (req as any).user?.id || "temp_user_id";
+      const submitterId = (req as any).user!.userId || (req as any).user!.id;
+      const ipAddress = req.ip || "unknown";
+      const userAgent = req.headers["user-agent"] || "unknown";
+      const userRole = (req as any).user!.role;
 
       const evidence = await DisputeService.uploadEvidence(
         id,
-        limitId,
+        submitterId,
+        userRole,
         text_content,
         file_url,
+        ipAddress,
+        userAgent
       );
       res.status(201).json({ data: evidence });
     } catch (error: any) {
+      if (error.message.includes("Unauthorized")) {
+        res.status(403).json({ error: error.message });
+        return;
+      }
       res.status(500).json({ error: error.message });
     }
   }
@@ -69,7 +83,9 @@ export class DisputesController {
     try {
       const id = routeParam(req.params.id);
       const { mentor_pct, notes } = req.body;
-      const adminId = (req as any).user?.id || "temp_admin_id";
+      const adminId = (req as any).user!.userId || (req as any).user!.id;
+      const ipAddress = req.ip || "unknown";
+      const userAgent = req.headers["user-agent"] || "unknown";
 
       if (mentor_pct === undefined || mentor_pct < 0 || mentor_pct > 100) {
         res.status(400).json({ error: "Valid mentor_pct (0-100) is required" });
@@ -81,6 +97,8 @@ export class DisputesController {
         adminId,
         mentor_pct,
         notes,
+        ipAddress,
+        userAgent
       );
       res.status(200).json({ data: dispute });
     } catch (error: any) {
@@ -99,9 +117,11 @@ export class DisputesController {
     try {
       const id = routeParam(req.params.id);
       const { notes } = req.body;
-      const adminId = (req as any).user?.id || "temp_admin_id";
+      const adminId = (req as any).user!.userId || (req as any).user!.id;
+      const ipAddress = req.ip || "unknown";
+      const userAgent = req.headers["user-agent"] || "unknown";
 
-      const dispute = await DisputeService.mediateDispute(id, adminId, notes);
+      const dispute = await DisputeService.mediateDispute(id, adminId, notes, ipAddress, userAgent);
       res.status(200).json({ data: dispute });
     } catch (error: any) {
       if (
@@ -124,14 +144,14 @@ export class DisputesController {
 
   static async listDisputes(req: Request, res: Response): Promise<void> {
     try {
-      const userId = (req as any).user?.id;
-      const isAdmin = (req as any).user?.role === "admin";
+      const userId = (req as any).user!.userId || (req as any).user!.id;
+      const isAdmin = (req as any).user!.role === "admin";
 
       let disputes;
       if (isAdmin) {
         disputes = await DisputeModel.findAll();
       } else {
-        disputes = await DisputeModel.findByUserId(userId || "temp_user_id");
+        disputes = await DisputeModel.findByUserId(userId);
       }
 
       res.status(200).json({ data: disputes });

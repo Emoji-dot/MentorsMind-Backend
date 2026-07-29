@@ -36,12 +36,15 @@ async function startWorkers() {
     maintenanceWorker,
     webhookDeliveryWorker,
     transcriptionWorker,
-    vestingSyncWorker,
+    qualityScoreWorker,
     startScheduler,
     stopScheduler,
+    startOutboxWorker,
+    stopOutboxWorker,
   } = await import("./workers");
 
   await startScheduler();
+  await startOutboxWorker();
 
   logger.info("[WorkerProcess] All workers and scheduler started", {
     workers: [
@@ -57,7 +60,7 @@ async function startWorkers() {
       "maintenance",
       "webhookDelivery",
       "transcription",
-      "vestingSync",
+      "qualityScore",
     ],
   });
 
@@ -78,7 +81,7 @@ async function startWorkers() {
       maintenanceWorker.close(),
       webhookDeliveryWorker.close(),
       transcriptionWorker.close(),
-      vestingSyncWorker.close(),
+      qualityScoreWorker.close(),
       stopScheduler(),
     ]);
 

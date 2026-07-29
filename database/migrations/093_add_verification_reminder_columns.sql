@@ -1,0 +1,13 @@
+-- Up
+ALTER TABLE mentor_verifications
+  ADD COLUMN IF NOT EXISTS reminder_sent_60d BOOLEAN DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS reminder_sent_30d BOOLEAN DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS reminder_sent_14d BOOLEAN DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS reminder_sent_7d BOOLEAN DEFAULT FALSE;
+
+-- Down
+ALTER TABLE mentor_verifications
+  DROP COLUMN IF EXISTS reminder_sent_60d,
+  DROP COLUMN IF EXISTS reminder_sent_30d,
+  DROP COLUMN IF EXISTS reminder_sent_14d,
+  DROP COLUMN IF EXISTS reminder_sent_7d;

@@ -9,6 +9,7 @@ import mentorMatchingV2Routes from "./mentor-matching-v2.routes";
 import usersRoutes from "./users.routes";
 import exportRoutes from "./export.routes";
 import adminRoutes from "./admin.routes";
+import adminBulkRoutes from "./admin-bulk.routes";
 import moderationRoutes from "./moderation.routes";
 import userModerationRoutes from "./user-moderation.routes";
 import bookingsRoutes from "./bookings.routes";
@@ -41,11 +42,13 @@ import sessionFeedbackRoutes from "./session-feedback.routes";
 import sessionSummaryRoutes from "./session-summary.routes";
 import featureFlagRoutes from "./feature-flag.routes";
 import calendarSyncRoutes from "./calendar-sync.routes";
+import calendarRoutes from "./calendar.routes";
 import developerRoutes from "./developer.routes";
 import { logger } from "../utils/logger.utils";
 import { JwksController } from "../controllers/jwks.controller";
 import { metricsRegistry } from "../config/metrics";
 import { monitoringConfig } from "../config/monitoring.config";
+import adminAuditRoutes from "./admin/audit-logs.routes";
 
 const router = Router();
 
@@ -70,6 +73,7 @@ router.use("/auth", authRoutes);
 router.use("/cdn", cdnRoutes);
 router.use("/users", usersRoutes);
 router.use("/admin", adminRoutes);
+router.use("/admin/bulk", adminBulkRoutes);
 router.use("/admin/moderation", moderationRoutes);
 router.use("/bookings", smartSchedulingRoutes);
 router.use("/user/moderation", userModerationRoutes);
@@ -91,11 +95,12 @@ router.use("/summaries", sessionSummaryRoutes);
 router.use("/feedback", sessionFeedbackRoutes);
 router.use("/feature-flags", featureFlagRoutes);
 router.use("/calendar/sync", calendarSyncRoutes);
+router.use("/calendar", calendarRoutes);
 router.use("/developer", developerRoutes);
 router.use("/subscriptions", subscriptionRoutes);
 router.use("/tax", taxRoutes);
 router.use("/oracle", oracleRoutes);
-router.use("/", vestingRoutes);
+router.use("/admin/audit-logs", adminAuditRoutes);
 router.use("/", exportRoutes);
 
 // JWKS public endpoint — no auth required

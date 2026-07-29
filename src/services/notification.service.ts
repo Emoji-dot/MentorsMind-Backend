@@ -290,6 +290,34 @@ export const NotificationService = {
   },
 
   /**
+   * Send a push notification directly through the push service.
+   */
+  async sendPush(
+    userId: string,
+    title: string,
+    body: string,
+    data: Record<string, any> = {},
+    clickAction?: string,
+  ): Promise<boolean> {
+    try {
+      const result = await PushService.sendToUser(
+        userId,
+        title,
+        body,
+        Object.fromEntries(
+          Object.entries(data).map(([key, value]) => [key, String(value)]),
+        ),
+        clickAction,
+      );
+
+      return result.success;
+    } catch (error) {
+      logger.error({ err: error, userId }, "Failed to send push notification");
+      return false;
+    }
+  },
+
+  /**
    * Send meeting URL notification to both mentor and mentee
    */
   async sendMeetingUrlNotification(
@@ -422,6 +450,16 @@ The MentorMinds Team
         push: true,
         in_app: true,
       },
+      [NotificationType.GOAL_DEADLINE_REMINDER]: {
+        email: true,
+        push: true,
+        in_app: true,
+      },
+      [NotificationType.GOAL_OVERDUE]: {
+        email: true,
+        push: true,
+        in_app: true,
+      },
       [NotificationType.DISPUTE_CREATED]: {
         email: true,
         push: true,
@@ -489,6 +527,8 @@ The MentorMinds Team
       [NotificationType.BOOKING_CONFIRMED]: "Booking Confirmed",
       [NotificationType.PAYMENT_PROCESSED]: "Payment Processed",
       [NotificationType.SESSION_REMINDER]: "Session Reminder",
+      [NotificationType.GOAL_DEADLINE_REMINDER]: "Goal Deadline Reminder",
+      [NotificationType.GOAL_OVERDUE]: "Goal Overdue",
       [NotificationType.DISPUTE_CREATED]: "Dispute Created",
       [NotificationType.SYSTEM_ALERT]: "System Alert",
       [NotificationType.MEETING_CONFIRMED]: "Meeting Confirmed",
@@ -509,6 +549,10 @@ The MentorMinds Team
       [NotificationType.PAYMENT_PROCESSED]:
         "Your payment has been processed successfully.",
       [NotificationType.SESSION_REMINDER]: "You have an upcoming session.",
+      [NotificationType.GOAL_DEADLINE_REMINDER]:
+        "One of your learning goals is approaching its deadline.",
+      [NotificationType.GOAL_OVERDUE]:
+        "One of your learning goals is overdue.",
       [NotificationType.DISPUTE_CREATED]: "A dispute has been created.",
       [NotificationType.SYSTEM_ALERT]: "System notification.",
       [NotificationType.MEETING_CONFIRMED]: "Your meeting has been confirmed.",

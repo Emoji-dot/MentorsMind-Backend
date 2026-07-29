@@ -27,18 +27,37 @@ function deriveKey(rawKey: string): Buffer {
 }
 
 function parseEncryptedValue(value: string): EncryptedValue {
-  const parsed = JSON.parse(value) as Partial<EncryptedValue>;
-  if (
-    parsed.alg !== ALGORITHM ||
-    !parsed.version ||
-    !parsed.iv ||
-    !parsed.tag ||
-    !parsed.ciphertext
-  ) {
-    throw new Error("Invalid encrypted payload");
+  if (value.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(value) as Partial<EncryptedValue>;
+      if (
+        parsed.alg !== ALGORITHM ||
+        !parsed.version ||
+        !parsed.iv ||
+        !parsed.tag ||
+        !parsed.ciphertext
+      ) {
+        throw new Error("Invalid encrypted payload (JSON)");
+      }
+      return parsed as EncryptedValue;
+    } catch {
+      throw new Error("Invalid encrypted payload (JSON)");
+    }
   }
 
-  return parsed as EncryptedValue;
+  const parts = value.split(":");
+  if (parts.length === 4) {
+    const [version, iv, tag, ciphertext] = parts;
+    return {
+      alg: ALGORITHM,
+      version,
+      iv,
+      tag,
+      ciphertext,
+    };
+  }
+
+  throw new Error("Invalid encrypted payload (format mismatch)");
 }
 
 async function defaultKeyResolver(): Promise<EncryptionKeyset> {
@@ -94,14 +113,12 @@ async function encryptWithVersion(
     cipher.update(plaintext, "utf8"),
     cipher.final(),
   ]);
-  const payload: EncryptedValue = {
-    alg: "aes-256-gcm",
-    version,
-    iv: iv.toString("base64"),
-    tag: cipher.getAuthTag().toString("base64"),
-    ciphertext: ciphertext.toString("base64"),
-  };
-  return JSON.stringify(payload);
+
+  const ivB64 = iv.toString("base64");
+  const tagB64 = cipher.getAuthTag().toString("base64");
+  const ciphertextB64 = ciphertext.toString("base64");
+
+  return `${version}:${ivB64}:${tagB64}:${ciphertextB64}`;
 }
 
 export const EncryptionUtil = {
@@ -175,5 +192,27 @@ export const EncryptionUtil = {
       return null;
     }
     return parseEncryptedValue(value).version;
+  },
+
+  async reEncrypt(
+    value: string,
+    oldKey: string,
+    newKey: string,
+    newVersion: string,
+  ): Promise<string> {
+    const payload = parseEncryptedValue(value);
+    const decipher = crypto.createDecipheriv(
+      ALGORITHM,
+      deriveKey(oldKey),
+      Buffer.from(payload.iv, "base64"),
+      { authTagLength: AUTH_TAG_LENGTH_BYTES },
+    );
+    decipher.setAuthTag(Buffer.from(payload.tag, "base64"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(payload.ciphertext, "base64")),
+      decipher.final(),
+    ]);
+
+    return encryptWithVersion(plaintext.toString("utf8"), newVersion, newKey);
   },
 };

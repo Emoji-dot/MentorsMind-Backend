@@ -1,4 +1,7 @@
 #![no_std]
+#[cfg(test)]
+mod test;
+
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol, Vec, IntoVal, BytesN};
 
 #[contracttype]
@@ -376,10 +379,22 @@ impl EscrowContract {
     fn _fetch_mnt_usdc_price(env: &Env) -> i128 {
         let pool_address: Option<Address> = env.storage().instance().get(&LIQUIDITY_POOL);
         
-        if let Some(_pool) = pool_address {
-            // TODO: Implement actual pool contract integration
-            // Placeholder: return $0.75 (7,500,000) for testing
-            return 7_500_000;
+        if let Some(pool) = pool_address {
+            let get_price_sym = Symbol::new(env, "get_price");
+            let result: Result<Result<(i128, u64), _>, _> = env.try_invoke_contract(
+                &pool,
+                &get_price_sym,
+                soroban_sdk::Vec::new(env).into_val(env),
+            );
+
+            if let Ok(Ok((price, updated_at))) = result {
+                let max_age: u64 = env.storage().persistent().get(&ORACLE_MAX_AGE).unwrap_or(300);
+                let now = env.ledger().timestamp();
+                
+                if now.saturating_sub(updated_at) <= max_age && price > 0 {
+                    return price;
+                }
+            }
         }
         
         0

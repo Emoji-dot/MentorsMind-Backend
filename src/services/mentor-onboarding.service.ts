@@ -3,6 +3,11 @@ import { CacheService } from "./cache.service";
 import { logger } from "../utils/logger.utils";
 import { createError } from "../middleware/errorHandler";
 import { MentorOnboarding } from "../models/certification.model";
+import { RateLimiterService } from "./rate-limiter.service";
+import { VerificationService } from "./verification.service";
+import { BackgroundCheckService } from "./background-check.service";
+import { WalletModel } from "../models/wallet.model";
+import { SocketService } from "./socket.service";
 
 export interface WizardStep {
   id: string;
@@ -50,18 +55,33 @@ export interface OnboardingAnalytics {
   occurredAt: Date;
 }
 
+interface StepDependencyFailure {
+  dependency: string;
+  reason: string;
+}
+
+const STEP_ALIAS_TO_WIZARD_KEY: Record<string, string> = {
+  profile_setup: "profile_basics",
+  first_session: "practice_session",
+};
+
+const WIZARD_KEY_TO_STEP_ALIAS: Record<string, string> = {
+  profile_basics: "profile_setup",
+  practice_session: "first_session",
+};
+
 export const MentorOnboardingService = {
   ONBOARDING_STEPS: [
-    { id: 'profile_setup', title: 'Complete Profile', description: 'Add your bio, expertise, and photo' },
-    { id: 'identity_verification', title: 'Verify Identity', description: 'Upload government-issued ID' },
-    { id: 'background_check', title: 'Background Check', description: 'Complete background screening' },
-    { id: 'platform_orientation', title: 'Platform Training', description: 'Learn how to use MentorsMind' },
-    { id: 'skill_assessment', title: 'Skill Assessment', description: 'Demonstrate your expertise' },
-    { id: 'pricing_setup', title: 'Set Your Rates', description: 'Configure your pricing and availability' },
-    { id: 'payment_setup', title: 'Payment Setup', description: 'Connect your Stellar wallet' },
-    { id: 'first_session', title: 'Practice Session', description: 'Complete a practice mentoring session' },
-    { id: 'policies_agreement', title: 'Review Policies', description: 'Accept platform terms and policies' },
-    { id: 'profile_review', title: 'Profile Review', description: 'Admin review and approval' },
+    { id: 'profile_setup', title: 'Complete Profile', description: 'Add your bio, expertise, and photo', dependsOn: [] as string[] },
+    { id: 'identity_verification', title: 'Verify Identity', description: 'Upload government-issued ID', dependsOn: ['profile_setup'] },
+    { id: 'background_check', title: 'Background Check', description: 'Complete background screening', dependsOn: ['identity_verification'] },
+    { id: 'platform_orientation', title: 'Platform Training', description: 'Learn how to use MentorsMind', dependsOn: ['background_check'] },
+    { id: 'skill_assessment', title: 'Skill Assessment', description: 'Demonstrate your expertise', dependsOn: ['platform_orientation'] },
+    { id: 'pricing_setup', title: 'Set Your Rates', description: 'Configure your pricing and availability', dependsOn: ['skill_assessment'] },
+    { id: 'payment_setup', title: 'Payment Setup', description: 'Connect your Stellar wallet', dependsOn: ['pricing_setup'] },
+    { id: 'first_session', title: 'Practice Session', description: 'Complete a practice mentoring session', dependsOn: ['payment_setup'] },
+    { id: 'policies_agreement', title: 'Review Policies', description: 'Accept platform terms and policies', dependsOn: ['first_session'] },
+    { id: 'profile_review', title: 'Profile Review', description: 'Admin review and approval', dependsOn: ['policies_agreement'] },
   ],
 
   async initializeOnboarding(mentorId: string): Promise<MentorOnboarding> {
@@ -114,6 +134,29 @@ export const MentorOnboardingService = {
       if (!step) throw createError("Invalid step ID", 400);
       if (onboarding.stepsCompleted.includes(stepId)) throw createError("Step already completed", 400);
 
+      const rateLimit = await RateLimiterService.check(
+        `mentor-onboarding:complete-step:${mentorId}`,
+        60 * 60 * 1000,
+        10,
+      );
+      if (!rateLimit.allowed) {
+        throw createError("Too many onboarding completion attempts. Please try again later.", 429, {
+          limit: rateLimit.limit,
+          resetTime: rateLimit.resetTime.toISOString(),
+        });
+      }
+
+      const unmetDependencies = await this.getUnmetDependencies(
+        mentorId,
+        stepId,
+        onboarding.stepsCompleted,
+      );
+      if (unmetDependencies.length > 0) {
+        throw createError("Step prerequisites not met", 422, {
+          unmetDependencies,
+        });
+      }
+
       const stepsCompleted = [...onboarding.stepsCompleted, stepId];
       const currentStep = stepsCompleted.length + 1;
       const isComplete = stepsCompleted.length === this.ONBOARDING_STEPS.length;
@@ -128,6 +171,13 @@ export const MentorOnboardingService = {
       logger.info("Onboarding step completed", { mentorId, stepId, isComplete });
       await CacheService.del(`onboarding:${mentorId}`);
       await this.trackAnalytics(mentorId, 'step_complete', stepId);
+      SocketService.emitToRoom('admin', 'mentor:onboarding_step_completed', {
+        mentorId,
+        stepId,
+        completedAt: new Date().toISOString(),
+        isComplete,
+        stepsCompletedCount: stepsCompleted.length,
+      });
 
       if (isComplete) {
         await this.trackAnalytics(mentorId, 'wizard_complete', null);
@@ -551,6 +601,84 @@ export const MentorOnboardingService = {
     } catch (error) {
       logger.error("Failed to get admin analytics", { error: error instanceof Error ? error.message : error });
       throw error;
+    }
+  },
+
+  async getUnmetDependencies(
+    mentorId: string,
+    stepId: string,
+    stepsCompleted: string[],
+  ): Promise<StepDependencyFailure[]> {
+    const unmetDependencies: StepDependencyFailure[] = [];
+    const requiredDependencies = await this.getStepDependencies(stepId);
+
+    for (const dependency of requiredDependencies) {
+      if (!stepsCompleted.includes(dependency)) {
+        unmetDependencies.push({
+          dependency,
+          reason: `Complete ${dependency} before marking ${stepId} as done.`,
+        });
+      }
+    }
+
+    if (stepId === 'identity_verification') {
+      const verification = await VerificationService.getStatusByMentorId(mentorId);
+      if (!verification || verification.status !== 'approved') {
+        unmetDependencies.push({
+          dependency: 'identity_verification',
+          reason: 'An approved mentor_verifications record is required.',
+        });
+      }
+    }
+
+    if (stepId === 'background_check') {
+      const backgroundChecks = await BackgroundCheckService.getMentorBackgroundChecks(mentorId);
+      const hasClearBackgroundCheck = backgroundChecks.some(
+        (check) => check.status === 'completed' && check.result === 'clear',
+      );
+      if (!hasClearBackgroundCheck) {
+        unmetDependencies.push({
+          dependency: 'background_check',
+          reason: 'A completed background check with result "clear" is required.',
+        });
+      }
+    }
+
+    if (stepId === 'payment_setup') {
+      const wallet = await WalletModel.findByUserId(mentorId);
+      if (!wallet || wallet.status !== 'active') {
+        unmetDependencies.push({
+          dependency: 'payment_setup',
+          reason: 'An active wallet record is required before payment setup can be completed.',
+        });
+      }
+    }
+
+    return unmetDependencies;
+  },
+
+  async getStepDependencies(stepId: string): Promise<string[]> {
+    const staticStep = this.ONBOARDING_STEPS.find((step) => step.id === stepId);
+    const staticDependencies = staticStep?.dependsOn ?? [];
+    const knownStepIds = new Set(this.ONBOARDING_STEPS.map((step) => step.id));
+    const wizardStepKey = STEP_ALIAS_TO_WIZARD_KEY[stepId] ?? stepId;
+
+    try {
+      const wizardSteps = await this.getWizardSteps();
+      const wizardStep = wizardSteps.find((step) => step.stepKey === wizardStepKey);
+      if (!wizardStep) return staticDependencies;
+
+      const mappedWizardDependencies = wizardStep.dependsOn
+        .map((dependency) => WIZARD_KEY_TO_STEP_ALIAS[dependency] ?? dependency)
+        .filter((dependency) => knownStepIds.has(dependency));
+
+      return Array.from(new Set([...staticDependencies, ...mappedWizardDependencies]));
+    } catch (error) {
+      logger.warn("Falling back to static onboarding dependencies", {
+        stepId,
+        error: error instanceof Error ? error.message : error,
+      });
+      return staticDependencies;
     }
   },
 
