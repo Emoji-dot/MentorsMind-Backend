@@ -4,6 +4,7 @@ import { AdvancedAnalyticsService } from "../services/advanced-analytics.service
 import { ResponseUtil } from "../utils/response.utils";
 import { asyncHandler } from "../utils/asyncHandler.utils";
 import { logger } from "../utils/logger";
+import { analyticsRefreshQueue } from "../queues/analyticsRefresh.queue";
 
 export const AdvancedAnalyticsController = {
   /**
@@ -216,7 +217,8 @@ export const AdvancedAnalyticsController = {
 
   /**
    * POST /api/v1/analytics/refresh
-   * Refresh analytics data
+   * Refresh analytics data — enqueues a dispatch job rather than calling the DB directly.
+   * The worker acquires per-view distributed locks before issuing REFRESH MATERIALIZED VIEW.
    */
   refreshAnalytics: asyncHandler(async (req: AuthenticatedRequest, res: Response): Promise<void> => {
     try {
@@ -226,11 +228,26 @@ export const AdvancedAnalyticsController = {
         return;
       }
 
-      await AdvancedAnalyticsService.refreshAnalytics();
-      ResponseUtil.success(res, null, "Analytics data refreshed successfully");
+      // Enqueue a high-priority dispatch job rather than refreshing inline.
+      // This prevents concurrent refreshes when the endpoint is hit from
+      // multiple Railway instances simultaneously.
+      const job = await analyticsRefreshQueue.add(
+        'analytics-refresh-manual',
+        { jobType: 'analytics-refresh' }, // no viewName → dispatch mode
+        { priority: 1 },
+      );
+
+      logger.info('[AdvancedAnalyticsController] Manual refresh enqueued', { jobId: job.id });
+
+      ResponseUtil.success(
+        res,
+        { jobId: job.id, status: 'queued' },
+        'Analytics refresh job queued successfully',
+        202,
+      );
     } catch (error) {
-      logger.error('Failed to refresh analytics', { error });
-      ResponseUtil.error(res, "Failed to refresh analytics data", 500);
+      logger.error('Failed to enqueue analytics refresh', { error });
+      ResponseUtil.error(res, "Failed to queue analytics refresh", 500);
     }
   }),
 

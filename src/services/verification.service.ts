@@ -5,8 +5,15 @@
 
 import pool from '../config/database';
 import { enqueueEmail } from '../queues/email.queue';
+import { enqueueStellarTx } from '../queues/stellar-tx.queue';
 import { logger } from '../utils/logger.utils';
+import { AuditLoggerService } from './audit-logger.service';
+import { LogLevel, AuditAction } from '../utils/log-formatter.utils';
 import * as StellarSdk from '@stellar/stellar-sdk';
+
+/** Consecutive retry failures after which the retry interval escalates to 24h. */
+const RETRY_BACKOFF_THRESHOLD = 3;
+const RETRY_BACKOFF_HOURS = 24;
 
 const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 const VERIFICATION_CONTRACT_ADDRESS = process.env.VERIFICATION_CONTRACT_ADDRESS;
@@ -43,6 +50,8 @@ export interface VerificationRecord {
     rejection_reason: string | null;
     additional_info_request: string | null;
     on_chain_tx_hash: string | null;
+    retry_count?: number;
+    last_retry_at?: Date | null;
     expires_at: Date | null;
     created_at: Date;
     updated_at: Date;
@@ -161,6 +170,22 @@ export const VerificationService = {
             limit,
             totalPages: Math.ceil(total / limit),
         };
+    },
+
+    /** Admin: get list of verifications expiring within X days */
+    async getExpiringSoon(days: number = 60): Promise<any[]> {
+        const { rows } = await pool.query(
+            `SELECT mv.id, mv.mentor_id, u.first_name, u.last_name, u.email, mv.expires_at, 
+                    mv.reminder_sent_60d, mv.reminder_sent_30d, mv.reminder_sent_14d, mv.reminder_sent_7d
+             FROM mentor_verifications mv
+             JOIN users u ON mv.mentor_id = u.id
+             WHERE mv.status = 'approved'
+               AND mv.expires_at IS NOT NULL
+               AND mv.expires_at <= NOW() + INTERVAL '${days} days'
+               AND mv.expires_at > NOW()
+             ORDER BY mv.expires_at ASC`
+        );
+        return rows;
     },
 
     /** GET /mentors/:id/verification-status */
@@ -291,6 +316,58 @@ export const VerificationService = {
         return rows[0];
     },
 
+    /** Background Job: Send proactive reminders before verification expires */
+    async sendExpiryReminders(): Promise<number> {
+        let totalSent = 0;
+        
+        // Ensure queue prioritizes these emails over standard marketing
+        const emailOpts = { priority: 2 };
+        
+        const thresholds = [
+            { days: 60, col: 'reminder_sent_60d' },
+            { days: 30, col: 'reminder_sent_30d' },
+            { days: 14, col: 'reminder_sent_14d' },
+            { days: 7, col: 'reminder_sent_7d' }
+        ];
+
+        for (const t of thresholds) {
+            const { rows } = await pool.query(`
+                UPDATE mentor_verifications mv
+                SET ${t.col} = TRUE
+                FROM users u
+                WHERE mv.mentor_id = u.id
+                  AND mv.status = 'approved'
+                  AND mv.expires_at IS NOT NULL
+                  AND mv.expires_at <= NOW() + INTERVAL '${t.days} days'
+                  AND mv.expires_at > NOW() + INTERVAL '${t.days - 1} days'
+                  AND mv.${t.col} = FALSE
+                RETURNING u.email, u.first_name, mv.expires_at, u.phone_number
+            `);
+
+            for (const row of rows) {
+                if (row.email) {
+                    await enqueueEmail({
+                        to: [row.email],
+                        subject: `[MentorsMind] Action Required: Mentor Verification Expires in ${t.days} Days`,
+                        html: `<p>Hi ${row.first_name || 'Mentor'},</p><p>Your verification expires on ${new Date(row.expires_at).toLocaleDateString()}. Please renew it to keep your mentor status active.</p>`
+                    }, emailOpts as any);
+                }
+                
+                // Placeholder for push/SMS notifications
+                // if (row.phone_number) {
+                //    await NotificationService.sendSms(row.phone_number, `Your MentorsMind verification expires in ${t.days} days. Renew now.`);
+                // }
+                totalSent++;
+            }
+        }
+        
+        if (totalSent > 0) {
+            logger.info('[VerificationService] Sent verification expiry reminders', { count: totalSent });
+        }
+        
+        return totalSent;
+    },
+
     /** Cron: flag verifications past their expiry date */
     async flagExpiredVerifications(): Promise<number> {
         const client = await pool.connect();
@@ -326,36 +403,130 @@ export const VerificationService = {
         }
     },
 
-    /** Background Job: Retry pending on-chain verifications */
+    /** Background Job: Retry pending on-chain verifications (runs every 2h, see workers/scheduler.ts) */
     async retryPendingOnChainVerifications(): Promise<number> {
-        const { rows } = await pool.query<VerificationRecord>(
-            `SELECT * FROM mentor_verifications WHERE on_chain_pending = TRUE`
-        );
+        const { rows } = await pool.query<
+            VerificationRecord & { retry_count: number; last_retry_at: Date | null }
+        >(`SELECT * FROM mentor_verifications WHERE on_chain_pending = TRUE`);
 
         let successCount = 0;
         for (const verification of rows) {
+            const retryCount = verification.retry_count ?? 0;
+
+            // After RETRY_BACKOFF_THRESHOLD consecutive failures, only retry once
+            // per RETRY_BACKOFF_HOURS instead of every 2h.
+            if (retryCount >= RETRY_BACKOFF_THRESHOLD && verification.last_retry_at) {
+                const hoursSinceLastRetry =
+                    (Date.now() - new Date(verification.last_retry_at).getTime()) / (1000 * 60 * 60);
+                if (hoursSinceLastRetry < RETRY_BACKOFF_HOURS) {
+                    continue;
+                }
+            }
+
             try {
                 const txHash = await this.triggerOnChainVerification(verification.mentor_id);
                 if (txHash) {
                     await pool.query(
-                        `UPDATE mentor_verifications SET on_chain_tx_hash = $1, on_chain_pending = FALSE, updated_at = NOW() WHERE id = $2`,
-                        [txHash, verification.id]
+                        `UPDATE mentor_verifications
+             SET on_chain_tx_hash = $1, on_chain_pending = FALSE, retry_count = 0,
+                 last_retry_at = NOW(), updated_at = NOW()
+             WHERE id = $2`,
+                        [txHash, verification.id],
                     );
                     successCount++;
+
+                    await AuditLoggerService.logEvent({
+                        level: LogLevel.INFO,
+                        action: AuditAction.VERIFICATION_RETRY,
+                        message: `On-chain verification retry succeeded for mentor ${verification.mentor_id}`,
+                        entityType: 'mentor_verification',
+                        entityId: verification.id,
+                        metadata: { txHash, retryCount },
+                    });
                 }
             } catch (err) {
+                const newRetryCount = retryCount + 1;
+                const errorMessage = err instanceof Error ? err.message : String(err);
+
+                await pool.query(
+                    `UPDATE mentor_verifications SET retry_count = $1, last_retry_at = NOW(), updated_at = NOW() WHERE id = $2`,
+                    [newRetryCount, verification.id],
+                );
+
+                await AuditLoggerService.logEvent({
+                    level: LogLevel.WARN,
+                    action: AuditAction.VERIFICATION_RETRY,
+                    message: `On-chain verification retry failed for mentor ${verification.mentor_id}`,
+                    entityType: 'mentor_verification',
+                    entityId: verification.id,
+                    metadata: { error: errorMessage, retryCount: newRetryCount },
+                });
+
                 logger.warn('[VerificationService] Retry on-chain verification failed', {
                     verificationId: verification.id,
-                    error: err instanceof Error ? err.message : String(err)
+                    retryCount: newRetryCount,
+                    error: errorMessage,
                 });
+
+                if (newRetryCount === RETRY_BACKOFF_THRESHOLD) {
+                    await this.alertAdminsOfVerificationFailure(verification.mentor_id, verification.id);
+                }
+
+                // Route the failure through the STELLAR_TX queue as a more reliable,
+                // independently-retried delivery path between the 2-hourly sweeps of
+                // this job (issue #768).
+                try {
+                    await enqueueStellarTx(
+                        {
+                            userId: verification.mentor_id,
+                            type: 'verification',
+                            metadata: { verificationId: verification.id },
+                        },
+                        `verification-retry:${verification.id}`,
+                    );
+                } catch (enqueueErr) {
+                    logger.warn(
+                        '[VerificationService] Failed to enqueue verification retry to STELLAR_TX queue',
+                        {
+                            verificationId: verification.id,
+                            error: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr),
+                        },
+                    );
+                }
             }
         }
-        
+
         if (successCount > 0) {
             logger.info('[VerificationService] Retried pending on-chain verifications', { successCount });
         }
-        
+
         return successCount;
+    },
+
+    /**
+     * Fire-and-forget admin alert email once a verification's on-chain retry
+     * has failed RETRY_BACKOFF_THRESHOLD consecutive times and escalates to
+     * a 24h backoff window.
+     */
+    async alertAdminsOfVerificationFailure(mentorId: string, verificationId: string): Promise<void> {
+        const to = process.env.ADMIN_ALERT_EMAIL;
+        if (!to) return;
+        try {
+            const message = `On-chain verification for mentor ${mentorId} (verification ${verificationId}) has failed ${RETRY_BACKOFF_THRESHOLD} consecutive retry attempts and is now retried every ${RETRY_BACKOFF_HOURS}h instead of every 2h. Investigate SOROBAN_RPC_URL connectivity or the verification contract.`;
+            await enqueueEmail({
+                to: [to],
+                subject: '[MentorsMind] On-chain verification retry escalated to 24h backoff',
+                textContent: message,
+                htmlContent: `<p>${message}</p>`,
+                priority: 'high',
+            });
+        } catch (err) {
+            logger.warn('[VerificationService] Failed to send admin alert email', {
+                mentorId,
+                verificationId,
+                error: err instanceof Error ? err.message : String(err),
+            });
+        }
     },
 
     async sendStatusEmail(
@@ -420,6 +591,39 @@ export const VerificationService = {
         }
 
         const rpcServer = new SorobanRpc.Server(SOROBAN_RPC_URL);
+
+        // Idempotency check (issue #768): if a transaction was already submitted
+        // for this mentor and confirmed on-chain, return the existing hash rather
+        // than submitting a duplicate transaction (which would waste fees and
+        // create duplicate on-chain records).
+        const { rows: existingRows } = await pool.query<{ on_chain_tx_hash: string | null }>(
+            `SELECT on_chain_tx_hash FROM mentor_verifications
+       WHERE mentor_id = $1 AND on_chain_tx_hash IS NOT NULL
+       ORDER BY updated_at DESC LIMIT 1`,
+            [mentorId],
+        );
+        const existingTxHash = existingRows[0]?.on_chain_tx_hash;
+        if (existingTxHash) {
+            try {
+                const existingTx = await rpcServer.getTransaction(existingTxHash);
+                if (existingTx?.status === 'SUCCESS') {
+                    logger.info(
+                        '[VerificationService] On-chain verification already confirmed — skipping resubmission',
+                        { mentorId, txHash: existingTxHash },
+                    );
+                    return existingTxHash;
+                }
+            } catch (err) {
+                logger.warn(
+                    '[VerificationService] Failed to check existing on-chain tx status, proceeding with new submission',
+                    {
+                        mentorId,
+                        txHash: existingTxHash,
+                        error: err instanceof Error ? err.message : String(err),
+                    },
+                );
+            }
+        }
 
         const platformKeypair = process.env.PLATFORM_SECRET_KEY
             ? sdkAny.Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY)

@@ -85,6 +85,29 @@ export const FeatureFlagController = {
     }
   },
 
+  // ── "me" endpoint (client-facing) ────────────────────────────────────────────
+
+  /** GET /me/feature-flags — all active flags for the authenticated user */
+  async getMyFlags(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = (req as Request & { user?: { userId: string; role?: string } }).user?.userId;
+      if (!userId) { res.status(401).json({ success: false, error: 'Authentication required' }); return; }
+
+      const role = (req as Request & { user?: { role?: string } }).user?.role;
+      const context = {
+        tenantId: (req.headers['x-tenant-id'] as string) || undefined,
+        segment: (req.headers['x-user-segment'] as string) || undefined,
+        userTier: (req.headers['x-user-tier'] as string) || undefined,
+        role,
+      };
+
+      const flags = await FeatureFlagService.getActiveFlagsForUser(userId, context);
+      res.json({ success: true, data: { flags } });
+    } catch (err) {
+      next(err);
+    }
+  },
+
   // ── Evaluation (client-facing) ───────────────────────────────────────────────
 
   async evaluate(req: Request, res: Response, next: NextFunction): Promise<void> {

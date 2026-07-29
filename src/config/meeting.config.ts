@@ -16,6 +16,12 @@ export interface MeetingConfig {
   baseUrl: string;
   roomExpiryMinutes: number;
   retryAttempts: number;
+  // SDK / token-generation credentials (separate from meeting-creation credentials)
+  zoomSdkKey?: string;
+  zoomSdkSecret?: string;
+  wherebyApiKey?: string;
+  jitsiJwtSecret?: string;
+  jitsiAppId?: string;
 }
 
 const getProviderBaseUrl = (provider: MeetingProvider): string => {
@@ -65,6 +71,12 @@ const validateMeetingConfig = (): MeetingConfig => {
     baseUrl: getProviderBaseUrl(provider),
     roomExpiryMinutes,
     retryAttempts,
+    // SDK credentials for token generation — optional, enables per-provider JWT/host token
+    zoomSdkKey: process.env.ZOOM_SDK_KEY,
+    zoomSdkSecret: process.env.ZOOM_SDK_SECRET,
+    wherebyApiKey: process.env.WHEREBY_API_KEY,
+    jitsiJwtSecret: process.env.JITSI_JWT_SECRET,
+    jitsiAppId: process.env.JITSI_APP_ID,
   };
 };
 

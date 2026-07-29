@@ -147,6 +147,9 @@ export function createSocketServer(httpServer: HTTPServer): SocketIOServer {
 
     // Each socket joins a personal room for targeted emissions
     socket.join(`user:${userId}`);
+    if (role === 'admin') {
+      socket.join('admin');
+    }
 
     logger.info('Socket.IO: Client connected', { socketId: socket.id, userId, role });
 

@@ -48,6 +48,9 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
+      - name: Dependency vulnerability scan (npm audit)
+        run: pnpm audit --audit-level=high
+
       - name: Validate migrations
         run: pnpm run migrate:validate
 
@@ -62,7 +65,112 @@ jobs:
           retention-days: 1
 
   # ───────────────────────────────────────────────────────────────────────────
-  # 2. E2E Tests — runs after build, blocks deployment if any suite fails
+  # 2. Security scan — OWASP ZAP baseline + security headers gate (issue #785)
+  #    Runs on every push and PR, in parallel with `ci`.
+  # ───────────────────────────────────────────────────────────────────────────
+  security-scan:
+    name: Security Scan (ZAP + headers)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mentorminds_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run database migrations (test database)
+        run: pnpm run migrate:up
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mentorminds_test
+
+      - name: Start server against the test environment
+        run: |
+          cp .env.test .env
+          nohup pnpm exec ts-node --transpile-only src/bootstrap.ts > server.log 2>&1 &
+          npx wait-on -t 60000 http://localhost:5001/health/ready
+        env:
+          NODE_ENV: test
+
+      - name: Obtain a JWT for authenticated ZAP scanning
+        id: auth
+        run: |
+          curl -s -X POST http://localhost:5001/api/v1/auth/register \
+            -H "Content-Type: application/json" \
+            -d '{"email":"zap-scan@mentorminds.test","password":"ZapScan123!","firstName":"Zap","lastName":"Scan"}' || true
+          TOKEN=$(curl -s -X POST http://localhost:5001/api/v1/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"email":"zap-scan@mentorminds.test","password":"ZapScan123!"}' | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).data.accessToken" 2>/dev/null || echo "")
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: OWASP ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: "http://localhost:5001/api/v1"
+          rules_file_name: ".zap/rules.tsv"
+          cmd_options: "-n /zap/wrk/.zap/context.xml"
+          fail_action: true
+          artifact_name: "zap-baseline-report"
+        env:
+          ZAP_AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Rename ZAP report for retention
+        if: always()
+        run: |
+          mkdir -p reports
+          cp report_html.html reports/security-scan-report.html 2>/dev/null || true
+
+      - name: Security headers check
+        run: pnpm run security:headers-check
+        env:
+          SECURITY_CHECK_BASE_URL: "http://localhost:5001/api/v1"
+
+      - name: Upload security scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-report
+          path: reports/security-scan-report.html
+          retention-days: 90
+          if-no-files-found: warn
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 3. E2E Tests — runs after build, blocks deployment if any suite fails
   #
   # Uses testcontainers (Docker-in-Docker via the ubuntu runner's Docker daemon).
   # Each suite gets a fresh PostgreSQL + Redis container managed by Jest's
@@ -150,13 +258,13 @@ jobs:
           retention-days: 7
 
   # ───────────────────────────────────────────────────────────────────────────
-  # 3. Deploy API service to Railway (only on push to main, after E2E passes)
+  # 4. Deploy API service to Railway (only on push to main, after CI + E2E + security scan pass)
   # ───────────────────────────────────────────────────────────────────────────
   deploy-api:
     name: Deploy API → Railway
     runs-on: ubuntu-latest
-    # ⚠️  E2E must pass before we deploy — this blocks deployment on E2E failure
-    needs: [ci, e2e]
+    # ⚠️  Security scan and E2E must both pass before we deploy
+    needs: [ci, security-scan, e2e]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
 
@@ -173,7 +281,7 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
   # ───────────────────────────────────────────────────────────────────────────
-  # 4. Deploy Worker service to Railway (runs after API deploy)
+  # 5. Deploy Worker service to Railway (runs after API deploy)
   # ───────────────────────────────────────────────────────────────────────────
   deploy-worker:
     name: Deploy Workers → Railway
