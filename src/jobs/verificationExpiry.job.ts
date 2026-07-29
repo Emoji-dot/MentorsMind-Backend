@@ -16,10 +16,12 @@ export async function runVerificationExpiryJob(): Promise<void> {
   try {
     logger.info('[VerificationExpiry] Starting verification expiry job');
 
+    const remindersSent = await VerificationService.sendExpiryReminders();
     const expiredCount = await VerificationService.flagExpiredVerifications();
 
     logger.info('[VerificationExpiry] Verification expiry job completed', {
       expiredCount,
+      remindersSent,
     });
   } catch (error) {
     logger.error('[VerificationExpiry] Verification expiry job failed', {

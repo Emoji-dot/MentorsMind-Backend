@@ -69,6 +69,7 @@ export interface JwksRotationStatus {
 let _memCurrent: KeyPair | null = null;
 let _memPrevious: KeyPair | null = null;
 let _lastRotated: number | null = null;
+let _redisSubscriber: any = null;
 
 // ─── Core helpers ─────────────────────────────────────────────────────────────
 
@@ -122,6 +123,20 @@ export const JwksService = {
       const pair = generateKeyPair();
       await this._saveKey(REDIS_KEY_CURRENT, 'current', pair);
       await this._setLastRotated(Date.now());
+    }
+
+    // Set up pub/sub for cross-instance rotation syncing
+    if (!_redisSubscriber) {
+      _redisSubscriber = redis.duplicate();
+      await _redisSubscriber.subscribe('jwks:rotated');
+      _redisSubscriber.on('message', async (channel: string) => {
+        if (channel === 'jwks:rotated') {
+          logger.info('Received JWKS rotated event via Pub/Sub, reloading keys');
+          await this._loadKey(REDIS_KEY_CURRENT, 'current');
+          await this._loadKey(REDIS_KEY_PREVIOUS, 'previous');
+          await this._getLastRotated();
+        }
+      });
     }
   },
 
@@ -218,6 +233,9 @@ export const JwksService = {
       isAuto 
     });
     
+    // Publish rotation event so other instances reload caches
+    await redis.publish('jwks:rotated', now.toString());
+
     return { newKid: newPair.kid, previousKid };
   },
 

@@ -11,6 +11,7 @@ const REQUIRED_QUEUE_NAMES = [
     'ESCROW_RELEASE',
     'REPORT',
     'SESSION_REMINDER',
+    'SESSION_NO_SHOW',
     'STELLAR_TX',
     'ESCROW_CHECK',
     'NOTIFICATIONS',
@@ -18,6 +19,8 @@ const REQUIRED_QUEUE_NAMES = [
     'MAINTENANCE',
     'TRANSCRIPTION',
     'DOMAIN_EVENTS',
+    'RECORDING_CLEANUP',
+    'ANALYTICS_REFRESH',
 ] as const;
 
 for (const queueKey of REQUIRED_QUEUE_NAMES) {
@@ -37,6 +40,7 @@ export { paymentWorker } from './payment.worker';
 export { escrowReleaseWorker } from './escrow-release.worker';
 export { reportWorker } from './report.worker';
 export { sessionReminderWorker } from './sessionReminder.worker';
+export { sessionNoShowWorker } from './session-no-show.worker';
 export { notificationCleanupWorker } from './notificationCleanup.worker';
 export { maintenanceWorker } from './maintenance.worker';
 export { startScheduler, stopScheduler } from './scheduler';
@@ -48,3 +52,5 @@ export { transcriptionWorker } from './transcription.worker';
 export { domainEventsWorker } from './domain-events.worker';
 export { qualityScoreWorker } from './quality-score.worker';
 export { startRetentionEnforcementWorker, stopRetentionEnforcementWorker } from './retention-enforcement.worker';
+export { recordingCleanupWorker } from './recordingCleanup.worker';
+export { analyticsRefreshWorker } from './analyticsRefresh.worker';

@@ -140,6 +140,13 @@ GET /api/v1/timezones/:identifier - Get timezone details
 - `POST /api/v1/payments` - Process payment
 - `GET /api/v1/wallets/:id` - Get wallet info
 
+### New Wallet And Onboarding Endpoints
+```
+POST /api/v1/wallets/defi/sync
+GET /api/v1/wallets/defi/positions
+POST /api/v1/onboarding/steps/:stepId/complete
+```
+
 ## 🔐 Environment Variables
 
 | Variable | Description | Default |
@@ -148,6 +155,12 @@ GET /api/v1/timezones/:identifier - Get timezone details
 | `PORT` | Server port | 5000 |
 | `DATABASE_URL` | PostgreSQL connection string | - |
 | `JWT_SECRET` | JWT signing secret | - |
+| `REDIS_URL` | Redis connection string for cache-backed DeFi syncs | - |
+| `DEFI_WALLET_USE_MOCKS` | Force sandbox mock positions instead of live protocol queries | false |
+| `DEFI_ETHEREUM_AAVE_SUBGRAPH_URL` | Aave Ethereum subgraph endpoint | - |
+| `DEFI_ETHEREUM_COMPOUND_SUBGRAPH_URL` | Compound Ethereum subgraph endpoint | - |
+| `DEFI_POLYGON_AAVE_SUBGRAPH_URL` | Aave Polygon subgraph endpoint | - |
+| `DEFI_POLYGON_COMPOUND_SUBGRAPH_URL` | Compound Polygon subgraph endpoint | - |
 | `STELLAR_NETWORK` | Stellar network (testnet/mainnet) | testnet |
 | `STELLAR_HORIZON_URL` | Horizon server URL | testnet URL |
 | `CORS_ORIGIN` | Allowed CORS origins | * |
@@ -180,6 +193,9 @@ The project uses **Jest** with **Supertest** for comprehensive API integration t
 ```bash
 # Run all tests
 npm test
+
+# Run the new unit coverage around DeFi sync and onboarding dependencies
+npm run test:unit
 
 # Run chaos engineering and failure injection unit tests
 npm run test:chaos
@@ -445,4 +461,3 @@ The final `runner` image uses Debian slim and `npm ci --omit=dev`. If the image 
 - **Reward:** $2
 - **Source:** GitHub-Paid
 - **Date:** 2026-04-27
-
