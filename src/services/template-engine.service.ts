@@ -1,6 +1,7 @@
 import { NotificationTemplatesModel, NotificationTemplateRecord } from '../models/notification-templates.model';
 import { createHash } from 'crypto';
 import { logger } from '../utils/logger';
+import { EmailCDNService } from './email-cdn.service';
 
 export interface RenderedEmail {
   subject: string;
@@ -77,7 +78,10 @@ export const TemplateEngineService = {
   cache: new TemplateCache(),
 
   /**
-   * Render email template with data
+   * Render email template with data.
+   * CDN-resolved asset variables (logoUrl, social icons, etc.) are automatically
+   * merged into the data object so every Handlebars template receives absolute
+   * CDN URLs — fixing broken images in Outlook and corporate email clients.
    */
   async renderEmail(templateId: string, data: any): Promise<RenderedEmail> {
     try {
@@ -88,9 +92,14 @@ export const TemplateEngineService = {
         return this.getFallbackEmailTemplate(data);
       }
 
-      const subject = this.interpolateTemplate(template.subject || 'Notification', data);
-      const htmlContent = this.interpolateTemplate(template.html_content, data);
-      const textContent = this.interpolateTemplate(template.text_content, data);
+      // Merge CDN-resolved variables so templates get absolute asset URLs.
+      // User-provided data takes precedence, allowing per-call overrides.
+      const cdnVars = EmailCDNService.getTemplateVariables();
+      const mergedData = { ...cdnVars, ...data };
+
+      const subject = this.interpolateTemplate(template.subject || 'Notification', mergedData);
+      const htmlContent = this.interpolateTemplate(template.html_content, mergedData);
+      const textContent = this.interpolateTemplate(template.text_content, mergedData);
 
       return {
         subject: this.sanitizeOutput(subject),
