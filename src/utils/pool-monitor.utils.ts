@@ -8,6 +8,7 @@ import {
   dbPoolWaitingClients,
 } from "../config/metrics";
 import { logger } from "./logger.utils";
+import { onPoolPressure } from "../services/database.service";
 
 let monitorInterval: NodeJS.Timeout | null = null;
 let lastExhaustionAlertAt = 0;
@@ -24,7 +25,12 @@ export function updatePoolMetrics(): void {
   dbPoolUtilizationPercent.set(utilization);
 
   const threshold = config.db.poolExhaustionThreshold;
-  if (utilization >= threshold || stats.waitingCount > 0) {
+  const isUnderPressure = utilization >= threshold || stats.waitingCount > 0;
+  
+  if (isUnderPressure) {
+    // Track for circuit breaker
+    onPoolPressure();
+    
     const now = Date.now();
     if (now - lastExhaustionAlertAt >= ALERT_COOLDOWN_MS) {
       lastExhaustionAlertAt = now;

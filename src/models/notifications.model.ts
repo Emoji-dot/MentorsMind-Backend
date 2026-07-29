@@ -30,12 +30,15 @@ export enum NotificationType {
   BOOKING_CONFIRMED = "booking_confirmed",
   PAYMENT_PROCESSED = "payment_processed",
   SESSION_REMINDER = "session_reminder",
+  GOAL_DEADLINE_REMINDER = "goal_deadline_reminder",
+  GOAL_OVERDUE = "goal_overdue",
   DISPUTE_CREATED = "dispute_created",
   SYSTEM_ALERT = "system_alert",
   MEETING_CONFIRMED = "meeting_confirmed",
   MESSAGE_RECEIVED = "message_received",
   SESSION_CANCELLED = "session_cancelled",
   CALENDAR_CONNECTION_EXPIRED = "calendar_connection_expired",
+  REVIEW_RESPONSE = "review_response",
 }
 
 export enum NotificationChannel {

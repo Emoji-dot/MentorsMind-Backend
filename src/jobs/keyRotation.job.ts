@@ -1,6 +1,9 @@
 import pool from "../config/database";
+import { redis } from "../config/redis";
 import { EncryptionUtil } from "../utils/encryption.utils";
 import { logger } from "../utils/logger.utils";
+import { JwksService } from "../services/jwks.service";
+import * as Sentry from "@sentry/node";
 
 const ROTATION_BATCH_SIZE = 100;
 
@@ -27,8 +30,82 @@ interface EncryptedOAuthRow {
   token_encryption_version: string | null;
 }
 
-export const keyRotationJob = {
-  async run(): Promise<{ 
+declare const require: any;
+
+class KeyRotationJob {
+  private jobs: Map<string, any> = new Map();
+
+  initialize(): void {
+    this.startPiiRotation();
+    logger.info("Key rotation jobs initialized", { jobCount: this.jobs.size });
+  }
+
+  /** JWT key rotation execution */
+  async runJwtRotation(): Promise<void> {
+    logger.info("Running scheduled JWT key rotation");
+    
+    const now = new Date();
+    const monthYear = `${now.getUTCMonth() + 1}-${now.getUTCFullYear()}`;
+    const lockKey = `jwks:rotation:lock:${monthYear}`;
+    const replicaId = process.env.RAILWAY_REPLICA_ID || "local-instance";
+
+    try {
+      // Attempt to acquire lock (SET NX EX 3600)
+      const acquired = await redis.set(lockKey, replicaId, "NX", "EX", 3600);
+      if (!acquired) {
+        logger.info("JWT key rotation skipped: lock acquired by another instance");
+        return;
+      }
+
+      logger.info("JWT key rotation lock acquired", { lockKey, replicaId });
+
+      // Implement lock heartbeat: the owning instance refreshes the lock TTL every 10 minutes during rotation
+      const heartbeatInterval = setInterval(async () => {
+        try {
+          await redis.expire(lockKey, 3600);
+        } catch (err) {
+          logger.warn("Failed to refresh JWT rotation lock heartbeat", { error: err });
+        }
+      }, 10 * 60 * 1000);
+
+      try {
+        await JwksService.rotateKeys(true);
+      } finally {
+        clearInterval(heartbeatInterval);
+      }
+    } catch (error) {
+      const err = error as Error;
+      logger.error("JWT key rotation failed", { error: err.message, stack: err.stack });
+      Sentry.captureException(err);
+    }
+  }
+
+  /** PII/encryption key rotation — runs weekly at 1 AM UTC */
+  private startPiiRotation(): void {
+    try {
+      const { CronJob } = require("cron");
+      const job = new CronJob("0 1 * * 0", async () => {
+        logger.info("Running scheduled PII encryption key rotation");
+        try {
+          await this.runPiiRotation();
+        } catch (error) {
+          const err = error as Error;
+          logger.error("PII key rotation failed", { error: err.message, stack: err.stack });
+          Sentry.captureException(err);
+        }
+      });
+
+      job.start();
+      this.jobs.set("pii-rotation", job);
+      logger.info("PII key rotation job started (weekly at 1 AM UTC)");
+    } catch (error) {
+      logger.warn("Failed to start PII key rotation job", {
+        error: (error as Error).message,
+      });
+    }
+  }
+
+  async runPiiRotation(): Promise<{ 
     piiScanned: number; 
     piiRotated: number; 
     webhookScanned: number; 
@@ -64,7 +141,7 @@ export const keyRotationJob = {
       oauthRotated: oauthResult.rotated,
       targetVersion,
     };
-  },
+  }
 
   async rotateUserPII(targetVersion: string): Promise<{ scanned: number; rotated: number }> {
     let rotated = 0;
@@ -120,7 +197,7 @@ export const keyRotationJob = {
     }
 
     return { scanned, rotated };
-  },
+  }
 
   async rotateWebhookKeys(targetVersion: string): Promise<{ scanned: number; rotated: number }> {
     let rotated = 0;
@@ -161,7 +238,7 @@ export const keyRotationJob = {
     }
 
     return { scanned, rotated };
-  },
+  }
 
   async rotateOAuthTokens(targetVersion: string): Promise<{ scanned: number; rotated: number }> {
     let rotated = 0;
@@ -202,5 +279,24 @@ export const keyRotationJob = {
     }
 
     return { scanned, rotated };
-  },
-};
+  }
+
+  getStatus(): Record<string, { running: boolean }> {
+    const status: Record<string, { running: boolean }> = {};
+    for (const [name, job] of this.jobs.entries()) {
+      status[name] = { running: job.running ?? false };
+    }
+    return status;
+  }
+
+  stop(): void {
+    for (const [name, job] of this.jobs.entries()) {
+      job.stop?.();
+      logger.info(`Stopped key rotation job: ${name}`);
+    }
+    this.jobs.clear();
+  }
+}
+
+const keyRotationJob = new KeyRotationJob();
+export default keyRotationJob;

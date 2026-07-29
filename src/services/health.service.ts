@@ -3,6 +3,7 @@ import { server } from "../config/stellar";
 import config from "../config";
 import { redisConfig } from "../config/redis.config";
 import { CacheService } from "./cache.service";
+import { JwksService } from "./jwks.service";
 import { logger } from "../utils/logger.utils";
 import { CURRENT_VERSION } from "../config/api-versions.config";
 import { validateRequiredTables } from "../utils/table-validator.utils";
@@ -29,6 +30,8 @@ export interface DetailedHealthStatus {
     tables?: HealthComponent;
     analyticsViews?: HealthComponent;
     system?: HealthComponent;
+    jwks?: HealthComponent;
+    verificationContract?: HealthComponent;
   };
   uptime: number;
   version: string;
@@ -144,6 +147,8 @@ export class HealthService {
       queueCheck,
       tablesCheck,
       analyticsViewsCheck,
+      jwksCheck,
+      verificationContractCheck,
     ] = await Promise.all([
       this.checkDatabase(),
       this.checkRedis(),
@@ -151,6 +156,8 @@ export class HealthService {
       this.checkBullMQ(),
       this.checkDatabaseTables(),
       this.checkAnalyticsViews(),
+      this.checkJwks(),
+      this.checkVerificationContract(),
     ]);
 
     // Critical components for readiness: all must not be 'unhealthy'
@@ -186,11 +193,46 @@ export class HealthService {
         tables: tablesCheck,
         analyticsViews: analyticsViewsCheck,
         system: this.getSystemInfo(),
+        jwks: jwksCheck,
+        verificationContract: verificationContractCheck,
       },
       uptime: process.uptime(),
       version: config.server.apiVersion || CURRENT_VERSION,
       timestamp: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Reports how many mentor verifications are stuck waiting on an on-chain
+   * transaction (on_chain_pending = true). Degraded once the retry job's
+   * backoff-eligible count grows, which usually means SOROBAN_RPC_URL is
+   * unreachable or the verification contract is rejecting submissions
+   * (issue #768).
+   */
+  private static async checkVerificationContract(): Promise<HealthComponent> {
+    const start = Date.now();
+    try {
+      const { rows } = await db.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE on_chain_pending = TRUE) AS count,
+           COUNT(*) FILTER (WHERE on_chain_pending = TRUE AND retry_count >= 3) AS retrying
+         FROM mentor_verifications`,
+      );
+      const pendingCount = parseInt(rows[0]?.count ?? "0", 10);
+      const escalatedCount = parseInt(rows[0]?.retrying ?? "0", 10);
+
+      return {
+        status: escalatedCount > 0 ? "degraded" : "healthy",
+        responseTimeMs: Date.now() - start,
+        details: { pendingCount, escalatedCount },
+      };
+    } catch (err: any) {
+      return {
+        status: "unhealthy",
+        responseTimeMs: Date.now() - start,
+        error: err.message,
+      };
+    }
   }
 
   private static async checkDatabase(): Promise<HealthComponent> {
@@ -248,6 +290,8 @@ export class HealthService {
         "mv_session_stats",
         "mv_top_mentors",
         "mv_asset_distribution",
+        "mv_revenue_time_series",
+        "mv_hourly_session_demand",
       ];
 
       const query = `
@@ -279,7 +323,7 @@ export class HealthService {
         details: {
           missingViews: missing,
           totalViews: requiredViews.length,
-          message: "Run migration 015_analytics_views.sql to create views",
+          message: "Run migrations 015_analytics_views.sql and 102_create_forecasting_views.sql to create analytics views",
         },
       };
     } catch (err: any) {
@@ -359,6 +403,29 @@ export class HealthService {
     try {
       await server.ledgers().limit(1).call();
       return { status: "healthy", responseTimeMs: Date.now() - start };
+    } catch (err: any) {
+      return {
+        status: "degraded",
+        responseTimeMs: Date.now() - start,
+        error: err.message,
+      };
+    }
+  }
+
+  private static async checkJwks(): Promise<HealthComponent> {
+    const start = Date.now();
+    try {
+      const rotationStatus = await JwksService.getRotationStatus();
+      const currentKey = await JwksService.getCurrentKey();
+      
+      return {
+        status: "healthy",
+        responseTimeMs: Date.now() - start,
+        details: {
+          ...rotationStatus,
+          hasCurrentKey: !!currentKey,
+        },
+      };
     } catch (err: any) {
       return {
         status: "degraded",

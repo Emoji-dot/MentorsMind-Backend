@@ -5,6 +5,7 @@ import { AuthController } from "../controllers/auth.controller";
 import { SessionsController } from "../controllers/sessions.controller";
 import { MfaController } from "../controllers/mfa.controller";
 import { OAuthController } from "../controllers/oauth.controller";
+import { JwksController } from "../controllers/jwks.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { handleTokenRefresh } from "../middleware/token-refresh.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
@@ -159,5 +160,8 @@ router.delete(
   validate(oauthProviderParamSchema),
   asyncHandler(OAuthController.unlinkProvider),
 );
+
+// JWKS endpoint
+router.get("/jwks", asyncHandler(JwksController.getJwks));
 
 export default router;

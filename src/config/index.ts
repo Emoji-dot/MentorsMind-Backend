@@ -28,6 +28,7 @@ const config = {
     connectionTimeoutMs: parseInt(env.DB_CONNECTION_TIMEOUT_MS, 10),
     statementTimeoutMs: parseInt(env.DB_STATEMENT_TIMEOUT_MS, 10),
     poolExhaustionThreshold: parseInt(env.DB_POOL_EXHAUSTION_THRESHOLD, 10),
+    circuitBreakerEnabled: env.DB_CIRCUIT_BREAKER_ENABLED === "true",
   },
 
   jwt: {
@@ -47,6 +48,7 @@ const config = {
 
   cors: {
     origins: env.CORS_ORIGIN.split(",").map((o: string) => o.trim()),
+    maxAge: parseInt(env.CORS_MAX_AGE, 10),
   },
 
   rateLimit: {

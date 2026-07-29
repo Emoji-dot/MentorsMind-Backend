@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { CacheService } from '../services/cache.service';
 import { CacheTTL } from '../utils/cache-key.utils';
+import { env } from '../config/env';
 
 // Shared context for tracking cache hits in this request
 export interface CacheContext {
@@ -9,6 +11,19 @@ export interface CacheContext {
 }
 
 export const cacheContextKey = Symbol('cacheContext');
+
+/**
+ * HMAC-signs a userId for use in a cache key, so keys can't be enumerated
+ * or guessed by iterating over user IDs (issue #716).
+ */
+export function signUserId(userId: string): string {
+  const secret = env.CACHE_KEY_HMAC_SECRET ?? env.FILE_SIGNING_SECRET;
+  return crypto
+    .createHmac('sha256', secret)
+    .update(userId)
+    .digest('hex')
+    .substring(0, 16);
+}
 
 /**
  * Cache middleware factory.
@@ -44,7 +59,7 @@ export function cacheMiddleware(options: {
     if (cacheAuthenticated && !userId) return next();
 
     const defaultKey = cacheAuthenticated
-      ? `mm:http:${userId}:${req.originalUrl}`
+      ? `mm:http:${signUserId(userId)}:${req.originalUrl}`
       : `mm:http:${req.originalUrl}`;
     const key = keyFn ? keyFn(req) : defaultKey;
     const cached = await CacheService.get<{ status: number; body: unknown }>(
