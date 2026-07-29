@@ -177,4 +177,60 @@ router.get(
   }),
 );
 
+/**
+ * @swagger
+ * /assessments/{id}/next-question:
+ *   post:
+ *     summary: Get the next adaptively-selected question for an adaptive assessment
+ *     description: |
+ *       For adaptive assessments (`adaptive_enabled=true`), returns the next
+ *       question selected by the IRT (Rasch) engine based on the current ability
+ *       estimate. Call this endpoint to start a session (no prior answers) or
+ *       to fetch the next question after each submission via `POST /:id/submit`.
+ *       Returns `terminated=true` with `question=null` when SE(θ) < 0.3 or the
+ *       maximum of 15 questions has been reached.
+ *     tags: [Assessments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Next question and IRT state
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     question:
+ *                       type: object
+ *                       nullable: true
+ *                     theta: { type: number, description: "Current ability estimate" }
+ *                     se: { type: number, description: "Standard error of θ" }
+ *                     terminated: { type: boolean }
+ *       400:
+ *         description: Assessment is not adaptive
+ *       404:
+ *         description: Assessment not found
+ */
+router.post(
+  "/:id/next-question",
+  authenticate,
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const result = await AssessmentService.getNextQuestion(
+      req.params.id as string,
+      req.user!.userId,
+    );
+    res.json({ success: true, data: result });
+  }),
+);
+
 export default router;
+
