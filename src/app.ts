@@ -9,15 +9,18 @@ import {
 } from "./middleware/security.middleware";
 import { tracingMiddleware } from "./middleware/tracing.middleware";
 import { requestLoggerMiddleware } from "./middleware/request-logger.middleware";
-import { generalLimiter } from "./middleware/rate-limit.middleware";
+import { distributedGeneralLimiter } from "./middleware/distributed-rate-limit.middleware";
 import { errorHandler } from "./middleware/errorHandler";
 import { notFoundHandler } from "./middleware/notFoundHandler";
 import { swaggerOptions } from "./config/swagger";
 import { blocklistMiddleware } from "./middleware/ipFilter.middleware";
+import { i18nMiddleware } from "./middleware/i18n.middleware";
 import routes from "./routes";
 import v1Router from "./routes/v1";
 import v2Router from "./routes/v2";
 import HealthService from "./services/health.service";
+import { AnalyticsService } from "./services/analytics.service";
+import { AdvancedCacheService } from "./services/advanced-cache.service";
 import { metricsMiddleware } from "./middleware/metrics.middleware";
 import { versioningMiddleware } from "./middleware/versioning.middleware";
 import {
@@ -26,27 +29,40 @@ import {
   SUPPORTED_VERSIONS,
 } from "./config/api-versions.config";
 import { logger } from "./utils/logger";
+import { initializeI18n } from "./config/i18n.config";
+import { tenantMiddleware } from "./middleware/tenant.middleware";
 
 const app: Application = express();
 const { apiVersion } = config.server;
 const resolvedApiVersion = apiVersion || CURRENT_VERSION;
 
+// Initialize i18n
+initializeI18n().catch((err) => {
+  logger.error("Failed to initialize i18n", { error: err });
+});
+
 // Tracing middleware must be first for all downstream components
-app.use(blocklistMiddleware);
 app.use(tracingMiddleware);
+app.use(blocklistMiddleware);
 
 // Security middleware
 app.use(securityMiddleware);
 app.use(corsMiddleware);
 app.use(requestLoggerMiddleware);
 
+// i18n middleware (after request logger, before other middleware)
+app.use(i18nMiddleware);
+
+// Tenant resolution middleware (resolves tenant from hostname)
+app.use(tenantMiddleware as any);
+
 // Body parsing
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 app.use(sanitizeInput);
-app.use(generalLimiter);
-app.use(metricsMiddleware);
+    app.use(distributedGeneralLimiter);
+    app.use(metricsMiddleware);
 app.use(versioningMiddleware);
 app.set("trust proxy", 1);
 
@@ -69,6 +85,16 @@ app.get(`/api/${resolvedApiVersion}/docs/spec.json`, (_req, res) => {
 // Initialize health service
 HealthService.initialize().catch((err) => {
   logger.error("HealthService initialization failed", { error: err });
+});
+
+// Initialize analytics service
+AnalyticsService.initialize().catch((err) => {
+  logger.error("AnalyticsService initialization failed", { error: err });
+});
+
+// Initialize advanced cache service
+AdvancedCacheService.initialize().catch((err) => {
+  logger.error("AdvancedCacheService initialization failed", { error: err });
 });
 
 // ─── GET /api/versions ────────────────────────────────────────────────────────
@@ -112,7 +138,7 @@ if (resolvedApiVersion !== "v1" && resolvedApiVersion !== "v2") {
   app.use(`/api/${resolvedApiVersion}`, routes);
 }
 
-import HealthController from "./controllers/health.controller";
+import { HealthController } from "./controllers/health.controller";
 import { requireAdmin } from "./middleware/admin-auth.middleware";
 import { authenticate } from "./middleware/auth.middleware";
 import { registerMetricsRoute } from "./middleware/metrics.middleware";

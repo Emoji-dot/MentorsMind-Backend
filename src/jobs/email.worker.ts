@@ -7,39 +7,35 @@ import {
 import { EmailService } from "../services/email.service";
 import { logger } from "../utils/logger.utils";
 import type { EmailJobData } from "../queues/email.queue";
+import { runWithJobTraceContext } from "../utils/trace-context.utils";
+import { wrapWithSpan } from "../config/tracing";
 
 const emailService = new EmailService();
 
-import { traceStore } from "../middleware/tracing.middleware";
-
 async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
-  const { jobType: _jobType, requestId, correlationId, ...emailRequest } = job.data;
+  const { jobType: _jobType, requestId, correlationId, traceId, spanId, ...emailRequest } = job.data;
 
-  const context = {
-    requestId: requestId || job.id || 'job-unknown',
-    correlationId: correlationId || job.id || 'job-unknown',
-    startTime: Date.now(),
-  };
+  await runWithJobTraceContext({ requestId, correlationId, traceId, spanId }, () =>
+    wrapWithSpan("queue.email", async () => {
+      logger.info("Email job started", {
+        jobId: job.id,
+        to: emailRequest.to,
+        subject: emailRequest.subject,
+        attempt: job.attemptsMade + 1,
+      });
 
-  return traceStore.run(context, async () => {
-    logger.info("Email job started", {
-      jobId: job.id,
-      to: emailRequest.to,
-      subject: emailRequest.subject,
-      attempt: job.attemptsMade + 1,
-    });
+      const result = await emailService.sendEmail(emailRequest);
 
-    const result = await emailService.sendEmail(emailRequest);
+      if (!result.success) {
+        throw new Error(result.error || "Email send failed");
+      }
 
-    if (!result.success) {
-      throw new Error(result.error || "Email send failed");
-    }
-
-    logger.info("Email job completed", {
-      jobId: job.id,
-      messageId: result.messageId,
-    });
-  });
+      logger.info("Email job completed", {
+        jobId: job.id,
+        messageId: result.messageId,
+      });
+    }, { attributes: { "queue.name": "email", "job.id": job.id ?? "" } }),
+  );
 }
 
 export const emailWorker = new Worker<EmailJobData>(

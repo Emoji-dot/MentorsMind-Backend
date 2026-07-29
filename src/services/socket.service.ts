@@ -52,11 +52,10 @@ export const SocketService = {
       userEvents.shift();
     }
 
-    logger.debug("SocketService: Emitted event to user", {
-      userId,
-      event,
-      dataKeys: Object.keys(data || {}),
-    });
+    logger.debug(
+      { userId, event, dataKeys: Object.keys(data || {}) },
+      "SocketService: Emitted event to user",
+    );
   },
 
   /**
@@ -67,6 +66,23 @@ export const SocketService = {
    */
   emitToUsers(userIds: string[], event: string, data: any): void {
     userIds.forEach((userId) => this.emitToUser(userId, event, data));
+  },
+
+  /**
+   * Emit an event to an arbitrary shared room (for example, the admin room).
+   */
+  emitToRoom(room: string, event: string, data: any): void {
+    if (!io) {
+      logger.warn("SocketService: Socket.IO not initialized");
+      return;
+    }
+
+    io.to(room).emit(event, data);
+
+    logger.debug(
+      { room, event, dataKeys: Object.keys(data || {}) },
+      "SocketService: Emitted event to room",
+    );
   },
 
   /**
@@ -82,10 +98,10 @@ export const SocketService = {
 
     io.emit(event, data);
 
-    logger.debug("SocketService: Emitted event to all", {
-      event,
-      dataKeys: Object.keys(data || {}),
-    });
+    logger.debug(
+      { event, dataKeys: Object.keys(data || {}) },
+      "SocketService: Emitted event to all",
+    );
   },
 
   /**
@@ -112,10 +128,10 @@ export const SocketService = {
     // Update the stored array to only the fresh events
     eventHistory.set(userId, fresh);
 
-    logger.info("SocketService: Replaying missed events", {
-      userId,
-      eventCount: fresh.length,
-    });
+    logger.info(
+      { userId, eventCount: fresh.length },
+      "SocketService: Replaying missed events",
+    );
 
     fresh.forEach(({ event, data }) => {
       this.emitToUser(userId, event, data);

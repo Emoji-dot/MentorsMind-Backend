@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS disputes (
 CREATE INDEX IF NOT EXISTS idx_disputes_status ON disputes(status);
 CREATE INDEX IF NOT EXISTS idx_disputes_transaction_id ON disputes(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_disputes_reporter_id ON disputes(reporter_id);
+CREATE INDEX IF NOT EXISTS idx_disputes_status_created ON disputes(status, created_at DESC);
 
 -- Create dispute_evidence table
 CREATE TABLE IF NOT EXISTS dispute_evidence (

@@ -1,7 +1,17 @@
-import { WebSocket } from 'ws';
-import { AuthenticatedWebSocket } from '../ws-auth.middleware';
-import { SessionModel } from '../../models/session.model';
-import { logger } from '../../utils/logger.utils';
+import { WebSocket } from "ws";
+import { AuthenticatedWebSocket } from "../ws-auth.middleware";
+import { SessionModel } from "../../models/session.model";
+import { logger } from "../../utils/logger.utils";
+import { sanitizeString } from "../../utils/sanitization.utils";
+import { PresenceService } from "../../services/presence.service";
+import { redisClient } from "../../config/redis";
+import { cancelNoShowCheck } from "../../queues/session-no-show.queue";
+
+const NOTES_MAX_BYTES = 50_000;
+const NOTES_RATE_LIMIT = 10; // max events per second per client
+const notesSyncTimestamps = new Map<string, number[]>();
+
+const presenceService = new PresenceService(redisClient);
 
 // ─── Session room map ────────────────────────────────────────────────────────
 
@@ -28,7 +38,7 @@ function broadcastToSession(
 
 function sendError(ws: AuthenticatedWebSocket, message: string): void {
   if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ event: 'session:error', data: { message } }));
+    ws.send(JSON.stringify({ event: "session:error", data: { message } }));
   }
 }
 
@@ -42,22 +52,22 @@ export async function handleSessionRoomMessage(
   msg: { event: string; data?: any },
 ): Promise<void> {
   switch (msg.event) {
-    case 'session:join':
+    case "session:join":
       await handleJoin(client, msg.data);
       break;
-    case 'session:leave':
+    case "session:leave":
       handleLeave(client, msg.data);
       break;
-    case 'session:start':
+    case "session:start":
       handleStart(client, msg.data);
       break;
-    case 'session:end':
+    case "session:end":
       handleEnd(client, msg.data);
       break;
-    case 'session:notes-sync':
+    case "session:notes-sync":
       handleNotesSync(client, msg.data);
       break;
-    case 'session:signal':
+    case "session:signal":
       handleSignal(client, msg.data);
       break;
   }
@@ -67,16 +77,16 @@ export async function handleSessionRoomMessage(
  * Returns true if the event belongs to the session-room handler.
  */
 export function isSessionRoomEvent(event: string): boolean {
-  return event.startsWith('session:') && SESSION_EVENTS.has(event);
+  return event.startsWith("session:") && SESSION_EVENTS.has(event);
 }
 
 const SESSION_EVENTS = new Set([
-  'session:join',
-  'session:leave',
-  'session:start',
-  'session:end',
-  'session:notes-sync',
-  'session:signal',
+  "session:join",
+  "session:leave",
+  "session:start",
+  "session:end",
+  "session:notes-sync",
+  "session:signal",
 ]);
 
 // ─── Event handlers ──────────────────────────────────────────────────────────
@@ -86,16 +96,51 @@ async function handleJoin(
   data: { sessionId?: string },
 ): Promise<void> {
   const { sessionId } = data ?? {};
-  if (!sessionId) return sendError(client, 'sessionId is required');
+  if (!sessionId) return sendError(client, "sessionId is required");
 
   // Verify the session exists and this user is a participant
   const session = await SessionModel.findById(sessionId);
-  if (!session) return sendError(client, 'Session not found');
+  if (!session) return sendError(client, "Session not found");
 
   const isMentor = session.mentor_id === client.userId;
   const isMentee = session.mentee_id === client.userId;
   if (!isMentor && !isMentee) {
-    return sendError(client, 'Not a participant of this session');
+    return sendError(client, "Not a participant of this session");
+  }
+
+  // Determine role
+  const role = isMentor ? 'mentor' : 'mentee';
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PERSIST JOIN TIME: Record when mentor/mentee joins to prevent no-show
+  // ═══════════════════════════════════════════════════════════════════════════
+  try {
+    const joinedAt = await presenceService.markSessionJoined(
+      sessionId,
+      client.userId,
+      role
+    );
+
+    logger.info('Session join time recorded', {
+      sessionId,
+      userId: client.userId,
+      role,
+      joinedAt,
+    });
+
+    // Cancel no-show check if mentor joined (mentee joining doesn't cancel)
+    if (isMentor) {
+      await cancelNoShowCheck(sessionId);
+      logger.info('No-show check cancelled — mentor joined', { sessionId });
+    }
+  } catch (error) {
+    logger.error('Failed to record session join time', {
+      sessionId,
+      userId: client.userId,
+      role,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+    // Continue with WebSocket join even if persistence fails
   }
 
   // Add to room
@@ -109,7 +154,7 @@ async function handleJoin(
   broadcastToSession(
     sessionId,
     {
-      event: 'session:peer-joined',
+      event: "session:peer-joined",
       data: { userId: client.userId, role: client.role },
     },
     client,
@@ -118,7 +163,7 @@ async function handleJoin(
   // Acknowledge to the joining client
   client.send(
     JSON.stringify({
-      event: 'session:joined',
+      event: "session:joined",
       data: {
         sessionId,
         participants: [...sessionRooms.get(sessionId)!].map((ws) => ({
@@ -129,7 +174,7 @@ async function handleJoin(
     }),
   );
 
-  logger.info('Session room: user joined', {
+  logger.info("Session room: user joined", {
     sessionId,
     userId: client.userId,
   });
@@ -149,14 +194,14 @@ function handleStart(
   data: { sessionId?: string },
 ): void {
   const sessionId = data?.sessionId;
-  if (!sessionId) return sendError(client, 'sessionId is required');
+  if (!sessionId) return sendError(client, "sessionId is required");
 
   broadcastToSession(sessionId, {
-    event: 'session:started',
+    event: "session:started",
     data: { sessionId, startedBy: client.userId, ts: Date.now() },
   });
 
-  logger.info('Session room: session started', {
+  logger.info("Session room: session started", {
     sessionId,
     startedBy: client.userId,
   });
@@ -167,17 +212,17 @@ function handleEnd(
   data: { sessionId?: string },
 ): void {
   const sessionId = data?.sessionId;
-  if (!sessionId) return sendError(client, 'sessionId is required');
+  if (!sessionId) return sendError(client, "sessionId is required");
 
   broadcastToSession(sessionId, {
-    event: 'session:ended',
+    event: "session:ended",
     data: { sessionId, endedBy: client.userId, ts: Date.now() },
   });
 
   // Clean up the room
   sessionRooms.delete(sessionId);
 
-  logger.info('Session room: session ended', {
+  logger.info("Session room: session ended", {
     sessionId,
     endedBy: client.userId,
   });
@@ -188,13 +233,37 @@ function handleNotesSync(
   data: { sessionId?: string; notes?: string },
 ): void {
   const { sessionId, notes } = data ?? {};
-  if (!sessionId) return sendError(client, 'sessionId is required');
+  if (!sessionId) return sendError(client, "sessionId is required");
+
+  // Rate limit: max NOTES_RATE_LIMIT events per second per client
+  const now = Date.now();
+  const key = client.userId;
+  const timestamps = (notesSyncTimestamps.get(key) ?? []).filter(
+    (t) => now - t < 1000,
+  );
+  if (timestamps.length >= NOTES_RATE_LIMIT) {
+    return sendError(client, "Too many notes-sync events");
+  }
+  timestamps.push(now);
+  notesSyncTimestamps.set(key, timestamps);
+
+  // Size limit
+  if (notes && notes.length > NOTES_MAX_BYTES) {
+    return sendError(client, "Notes content too large (max 50KB)");
+  }
+
+  const sanitizedNotes = notes != null ? sanitizeString(notes) : notes;
 
   broadcastToSession(
     sessionId,
     {
-      event: 'session:notes-updated',
-      data: { sessionId, notes, updatedBy: client.userId, ts: Date.now() },
+      event: "session:notes-updated",
+      data: {
+        sessionId,
+        notes: sanitizedNotes,
+        updatedBy: client.userId,
+        ts: Date.now(),
+      },
     },
     client,
   );
@@ -206,19 +275,30 @@ function handleSignal(
 ): void {
   const { sessionId, type, payload } = data ?? {};
   if (!sessionId || !type) {
-    return sendError(client, 'sessionId and signal type are required');
+    return sendError(client, "sessionId and signal type are required");
   }
 
   // Forward the signaling data (offer/answer/ice-candidate) to the other peer
   broadcastToSession(
     sessionId,
     {
-      event: 'session:signal',
+      event: "session:signal",
       data: { sessionId, from: client.userId, type, payload },
     },
     client,
   );
 }
+
+// ─── Periodic stale-connection cleanup ───────────────────────────────────────
+
+setInterval(() => {
+  for (const [sessionId, room] of sessionRooms) {
+    for (const ws of room) {
+      if (ws.readyState !== WebSocket.OPEN) room.delete(ws);
+    }
+    if (room.size === 0) sessionRooms.delete(sessionId);
+  }
+}, 30_000).unref();
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
 
@@ -238,7 +318,7 @@ export function removeFromRoom(
   room.delete(client);
 
   broadcastToSession(roomId, {
-    event: 'session:peer-left',
+    event: "session:peer-left",
     data: { userId: client.userId, role: client.role },
   });
 
@@ -246,7 +326,7 @@ export function removeFromRoom(
 
   delete (client as any)._sessionRoomId;
 
-  logger.info('Session room: user left', {
+  logger.info("Session room: user left", {
     sessionId: roomId,
     userId: client.userId,
   });

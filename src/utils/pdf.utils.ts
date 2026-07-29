@@ -80,7 +80,7 @@ export class PDFUtils {
   /**
    * Add header with platform branding
    */
-  private static addHeader(doc: PDFDocument, platformName: string, brandColor: string): void {
+  private static addHeader(doc: InstanceType<typeof PDFDocument>, platformName: string, brandColor: string): void {
     // Platform name
     doc
       .fontSize(16)
@@ -102,7 +102,7 @@ export class PDFUtils {
   /**
    * Add report metadata section
    */
-  private static addReportMetadata(doc: PDFDocument, data: EarningsReportData): void {
+  private static addReportMetadata(doc: InstanceType<typeof PDFDocument>, data: EarningsReportData): void {
     doc.fontSize(10).fillColor('#333333');
 
     // Mentor information
@@ -121,7 +121,7 @@ export class PDFUtils {
   /**
    * Add earnings summary section
    */
-  private static addSummarySectionn(doc: PDFDocument, data: EarningsReportData): void {
+  private static addSummarySectionn(doc: InstanceType<typeof PDFDocument>, data: EarningsReportData): void {
     doc.fontSize(12).font('Helvetica-Bold').text('Earnings Summary', { underline: true });
     doc.moveDown(0.3);
 
@@ -181,7 +181,7 @@ export class PDFUtils {
   /**
    * Add asset breakdown section
    */
-  private static addAssetBreakdown(doc: PDFDocument, data: EarningsReportData): void {
+  private static addAssetBreakdown(doc: InstanceType<typeof PDFDocument>, data: EarningsReportData): void {
     if (!data.byAsset || data.byAsset.length === 0) {
       return;
     }
@@ -229,7 +229,7 @@ export class PDFUtils {
   /**
    * Add sessions table
    */
-  private static addSessionsTable(doc: PDFDocument, data: EarningsReportData): void {
+  private static addSessionsTable(doc: InstanceType<typeof PDFDocument>, data: EarningsReportData): void {
     if (!data.sessions || data.sessions.length === 0) {
       return;
     }
@@ -295,7 +295,7 @@ export class PDFUtils {
   /**
    * Add footer with platform information
    */
-  private static addFooter(doc: PDFDocument, platformName: string): void {
+  private static addFooter(doc: InstanceType<typeof PDFDocument>, platformName: string): void {
     const pageHeight = doc.page.height;
     const footerY = pageHeight - 40;
 

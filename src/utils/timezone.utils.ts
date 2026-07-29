@@ -32,7 +32,7 @@ export const isValidIANATimezone = (tz: string): boolean => {
 export const getAllTimezones = (): string[] => {
   if (validIANATimezones.length === 0) {
     try {
-      validIANATimezones = [...Intl.supportedValuesOf("timeZone")];
+      validIANATimezones = [...(Intl as any).supportedValuesOf("timeZone")];
     } catch {
       validIANATimezones = ["UTC"];
     }

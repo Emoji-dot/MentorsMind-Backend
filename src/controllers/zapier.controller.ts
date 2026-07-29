@@ -68,7 +68,7 @@ export const ZapierController = {
 
   async executeAction(req: ZapierRequest, res: Response): Promise<void> {
     const action = req.params.action as any;
-    const result = await ZapierService.executeAction(action, req.body ?? {});
+    const result = await ZapierService.executeAction(action, req.body ?? {}, req.zapier!);
     ResponseUtil.success(res, result, "Zapier action executed successfully");
   },
 };

@@ -76,7 +76,7 @@ export const LoginAttemptsService = {
       pipeline.incr(key);
       pipeline.expire(key, TTL.COUNTER_MAX);
       const results = await pipeline.exec();
-      const attempts: number = results[0][1] as number;
+      const attempts: number = results ? (results[0][1] as number) : 0;
 
       return this._applyThresholds(email, attempts, redis, permKey, key, ipAddress, userEmail);
     }
@@ -179,9 +179,8 @@ export const LoginAttemptsService = {
   async adminUnlock(email: string): Promise<void> {
     const key = PREFIX + email.toLowerCase();
     const permKey = PERMANENT_PREFIX + email.toLowerCase();
-    const client = redis;
 
-    if (redis && redisAvailable) {
+    if (redis.status === 'ready') {
       await redis.del(key, permKey);
     } else {
       memStore.delete(key);

@@ -30,8 +30,8 @@ export const StellarAccountService = {
       [encryptedSecret, userId],
     );
 
-    // 🔹 Fund account
-    await this.fundAccount(publicKey);
+    // 2. Fund account
+    await this.fundAccount(userId, publicKey);
 
     // 🔹 Verify activation
     await this.verifyActivation(userId, publicKey);
@@ -39,7 +39,7 @@ export const StellarAccountService = {
     return { publicKey };
   },
 
-  async fundAccount(destination: string) {
+  async fundAccount(userId: string, destination: string) {
     const platform = getPlatformKeypair();
     if (!platform) throw new Error("Funding account not configured");
 
@@ -138,7 +138,7 @@ export const StellarAccountService = {
       return { activated: true, message: "Already activated" };
     }
 
-    await this.fundAccount(wallet.stellar_public_key);
+    await this.fundAccount(userId, wallet.stellar_public_key);
     await this.verifyActivation(userId, wallet.stellar_public_key);
 
     return { activated: true };

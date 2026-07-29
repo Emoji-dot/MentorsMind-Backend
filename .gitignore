@@ -1,24 +1,18 @@
 # Dependencies
 node_modules/
 yarn.lock
-pnpm-lock.yaml
 .kiro
-# Environment variables
+
+# Environment variables — keep .env.example tracked as a template
 .env
-.env.local
-.env.*.local
-.env.test
+.env.*
+!.env.example
 
 # Build outputs
 dist/
 build/
 *.tsbuildinfo
 packages/*/dist/
-
-# Environment
-.env
-.env.local
-.env.*.local
 
 # Logs
 logs/

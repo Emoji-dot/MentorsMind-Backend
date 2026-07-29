@@ -1,132 +1,256 @@
-import { Response } from "express";
-import { AuthenticatedRequest } from "../types/api.types";
-import { AnalyticsService } from "../services/analytics.service";
-import { ResponseUtil } from "../utils/response.utils";
+import { Request, Response, NextFunction } from "express";
+import { LearningAnalyticsService } from "../services/learning-analytics.service";
+import { logger } from "../utils/logger.utils";
+import { createError } from "../middleware/errorHandler";
 
 export const AnalyticsController = {
   /**
-   * GET /api/v1/admin/analytics/revenue
-   * Get revenue analytics
+   * Get comprehensive analytics for a learning path
+   * GET /api/v1/analytics/paths/:pathId
    */
-  async getRevenue(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const period = (req.query.period as string) || "30d";
-    const format = req.query.format as string;
+  async getPathAnalytics(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { pathId } = req.params as Record<string, string>;
+      const timeframe = (req.query.timeframe as string) || 'all';
 
-    if (format === "csv") {
-      const csv = await AnalyticsService.exportToCSV("revenue", period);
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="revenue-${period}.csv"`,
+      if (!['week', 'month', 'quarter', 'year', 'all'].includes(timeframe as string)) {
+        throw createError("Invalid timeframe. Must be one of: week, month, quarter, year, all", 400);
+      }
+
+      const analytics = await LearningAnalyticsService.getPathAnalytics(
+        pathId,
+        timeframe as 'week' | 'month' | 'quarter' | 'year' | 'all'
       );
-      res.send(csv);
-      return;
-    }
 
-    const data = await AnalyticsService.getRevenue(period);
-    ResponseUtil.success(res, data, "Revenue analytics retrieved");
+      res.status(200).json({
+        success: true,
+        data: analytics
+      });
+    } catch (error) {
+      logger.error("Failed to get path analytics", {
+        pathId: req.params.pathId,
+        error: error instanceof Error ? error.message : error
+      });
+      next(error);
+    }
   },
 
   /**
-   * GET /api/v1/admin/analytics/users
-   * Get user growth analytics
+   * Get student learning profile
+   * GET /api/v1/analytics/students/:studentId/profile
    */
-  async getUserGrowth(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const period = (req.query.period as string) || "30d";
-    const format = req.query.format as string;
+  async getStudentProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { studentId } = req.params as Record<string, string>;
+      const pathId = req.query.pathId as string | undefined;
 
-    if (format === "csv") {
-      const csv = await AnalyticsService.exportToCSV("users", period);
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="users-${period}.csv"`,
+      // Verify access: students can only view their own profile, mentors can view their students
+      const requestingUserId = req.user?.id;
+      const requestingUserRole = req.user?.role;
+
+      if (requestingUserRole !== 'admin' && requestingUserRole !== 'mentor' && requestingUserId !== studentId) {
+        throw createError("Access denied", 403);
+      }
+
+      const profile = await LearningAnalyticsService.getStudentLearningProfile(
+        studentId,
+        pathId as string | undefined
       );
-      res.send(csv);
-      return;
-    }
 
-    const data = await AnalyticsService.getUserGrowth(period);
-    ResponseUtil.success(res, data, "User growth analytics retrieved");
+      res.status(200).json({
+        success: true,
+        data: profile
+      });
+    } catch (error) {
+      logger.error("Failed to get student profile", {
+        studentId: req.params.studentId,
+        error: error instanceof Error ? error.message : error
+      });
+      next(error);
+    }
   },
 
   /**
-   * GET /api/v1/admin/analytics/sessions
-   * Get session analytics
+   * Get predictive insights for a student
+   * GET /api/v1/analytics/students/:studentId/paths/:pathId/insights
    */
-  async getSessions(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const period = (req.query.period as string) || "30d";
-    const format = req.query.format as string;
+  async getPredictiveInsights(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { studentId, pathId } = req.params as Record<string, string>;
 
-    if (format === "csv") {
-      const csv = await AnalyticsService.exportToCSV("sessions", period);
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="sessions-${period}.csv"`,
-      );
-      res.send(csv);
-      return;
+      // Verify access
+      const requestingUserId = req.user?.id;
+      const requestingUserRole = req.user?.role;
+
+      if (requestingUserRole !== 'admin' && requestingUserRole !== 'mentor' && requestingUserId !== studentId) {
+        throw createError("Access denied", 403);
+      }
+
+      const insights = await LearningAnalyticsService.getPredictiveInsights(studentId, pathId);
+
+      res.status(200).json({
+        success: true,
+        data: insights
+      });
+    } catch (error) {
+      logger.error("Failed to get predictive insights", {
+        studentId: req.params.studentId,
+        pathId: req.params.pathId,
+        error: error instanceof Error ? error.message : error
+      });
+      next(error);
     }
-
-    const data = await AnalyticsService.getSessions(period);
-    ResponseUtil.success(res, data, "Session analytics retrieved");
   },
 
   /**
-   * GET /api/v1/admin/analytics/top-mentors
-   * Get top mentors
+   * Get comparison analytics (student vs peers)
+   * GET /api/v1/analytics/students/:studentId/paths/:pathId/comparison
    */
-  async getTopMentors(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const limit = parseInt(req.query.limit as string) || 10;
-    const format = req.query.format as string;
+  async getComparisonAnalytics(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { studentId, pathId } = req.params as Record<string, string>;
 
-    if (format === "csv") {
-      const csv = await AnalyticsService.exportToCSV("top-mentors");
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader(
-        "Content-Disposition",
-        'attachment; filename="top-mentors.csv"',
-      );
-      res.send(csv);
-      return;
+      // Verify access
+      const requestingUserId = req.user?.id;
+      const requestingUserRole = req.user?.role;
+
+      if (requestingUserRole !== 'admin' && requestingUserRole !== 'mentor' && requestingUserId !== studentId) {
+        throw createError("Access denied", 403);
+      }
+
+      const comparison = await LearningAnalyticsService.getComparisonAnalytics(studentId, pathId);
+
+      res.status(200).json({
+        success: true,
+        data: comparison
+      });
+    } catch (error) {
+      logger.error("Failed to get comparison analytics", {
+        studentId: req.params.studentId,
+        pathId: req.params.pathId,
+        error: error instanceof Error ? error.message : error
+      });
+      next(error);
     }
-
-    const data = await AnalyticsService.getTopMentors(limit);
-    ResponseUtil.success(res, data, "Top mentors retrieved");
   },
 
   /**
-   * GET /api/v1/admin/analytics/asset-distribution
-   * Get asset distribution
+   * Get mentor dashboard analytics
+   * GET /api/v1/analytics/mentors/:mentorId/dashboard
    */
-  async getAssetDistribution(
-    req: AuthenticatedRequest,
-    res: Response,
-  ): Promise<void> {
-    const format = req.query.format as string;
+  async getMentorDashboard(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { mentorId } = req.params as Record<string, string>;
 
-    if (format === "csv") {
-      const csv = await AnalyticsService.exportToCSV("asset-distribution");
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader(
-        "Content-Disposition",
-        'attachment; filename="asset-distribution.csv"',
-      );
-      res.send(csv);
-      return;
+      // Verify access: only the mentor themselves or admins can view
+      const requestingUserId = req.user?.id;
+      const requestingUserRole = req.user?.role;
+
+      if (requestingUserRole !== 'admin' && requestingUserId !== mentorId) {
+        throw createError("Access denied", 403);
+      }
+
+      const dashboard = await LearningAnalyticsService.getMentorDashboardAnalytics(mentorId);
+
+      res.status(200).json({
+        success: true,
+        data: dashboard
+      });
+    } catch (error) {
+      logger.error("Failed to get mentor dashboard", {
+        mentorId: req.params.mentorId,
+        error: error instanceof Error ? error.message : error
+      });
+      next(error);
     }
-
-    const data = await AnalyticsService.getAssetDistribution();
-    ResponseUtil.success(res, data, "Asset distribution retrieved");
   },
 
   /**
-   * POST /api/v1/admin/analytics/refresh
-   * Refresh analytics views
+   * Get milestone analytics for a learning path
+   * GET /api/v1/analytics/paths/:pathId/milestones
    */
-  async refreshViews(req: AuthenticatedRequest, res: Response): Promise<void> {
-    await AnalyticsService.refreshViews();
-    ResponseUtil.success(res, null, "Analytics views refreshed successfully");
+  async getMilestoneAnalytics(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { pathId } = req.params as Record<string, string>;
+      const timeframe = (req.query.timeframe as string) || 'all';
+
+      if (!['week', 'month', 'quarter', 'year', 'all'].includes(timeframe as string)) {
+        throw createError("Invalid timeframe. Must be one of: week, month, quarter, year, all", 400);
+      }
+
+      const timeFilter = LearningAnalyticsService['getTimeFilter'](timeframe as string);
+      const milestoneAnalytics = await LearningAnalyticsService.getMilestoneAnalytics(pathId, timeFilter);
+
+      res.status(200).json({
+        success: true,
+        data: milestoneAnalytics
+      });
+    } catch (error) {
+      logger.error("Failed to get milestone analytics", {
+        pathId: req.params.pathId,
+        error: error instanceof Error ? error.message : error
+      });
+      next(error);
+    }
   },
+
+  /**
+   * Get trend data for a learning path
+   * GET /api/v1/analytics/paths/:pathId/trends
+   */
+  async getTrendData(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { pathId } = req.params as Record<string, string>;
+      const timeframe = (req.query.timeframe as string) || 'month';
+
+      if (!['week', 'month', 'quarter', 'year', 'all'].includes(timeframe as string)) {
+        throw createError("Invalid timeframe. Must be one of: week, month, quarter, year, all", 400);
+      }
+
+      const trendData = await LearningAnalyticsService.getTrendData(
+        pathId,
+        timeframe as 'week' | 'month' | 'quarter' | 'year' | 'all'
+      );
+
+      res.status(200).json({
+        success: true,
+        data: trendData
+      });
+    } catch (error) {
+      logger.error("Failed to get trend data", {
+        pathId: req.params.pathId,
+        error: error instanceof Error ? error.message : error
+      });
+      next(error);
+    }
+  },
+
+  /**
+   * Get bottlenecks for a learning path
+   * GET /api/v1/analytics/paths/:pathId/bottlenecks
+   */
+  async getBottlenecks(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { pathId } = req.params as Record<string, string>;
+      const timeframe = (req.query.timeframe as string) || 'all';
+
+      // Get milestone analytics first
+      const timeFilter = LearningAnalyticsService['getTimeFilter'](timeframe as string);
+      const milestoneAnalytics = await LearningAnalyticsService.getMilestoneAnalytics(pathId, timeFilter);
+
+      // Identify bottlenecks
+      const bottlenecks = await LearningAnalyticsService.identifyBottlenecks(pathId, milestoneAnalytics);
+
+      res.status(200).json({
+        success: true,
+        data: bottlenecks
+      });
+    } catch (error) {
+      logger.error("Failed to get bottlenecks", {
+        pathId: req.params.pathId,
+        error: error instanceof Error ? error.message : error
+      });
+      next(error);
+    }
+  }
 };

@@ -436,7 +436,7 @@ router.get(
 router.get(
   "/:id/rating-summary",
   validate(mentorIdParamSchema),
-  asyncHandler(ReviewsController.getRatingSummary),
+  ReviewsController.getRatingSummary,
 );
 
 /**

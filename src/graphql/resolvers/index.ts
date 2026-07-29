@@ -1,11 +1,21 @@
-import { ApolloError } from '@apollo/server';
-import { AuthenticationError } from '@apollo/server/errors';
+import { GraphQLError } from 'graphql';
 import { Request, Response } from 'express';
+
+export class ApolloError extends GraphQLError {
+  constructor(message: string, code?: string) {
+    super(message, { extensions: { code } });
+  }
+}
+
+export class AuthenticationError extends GraphQLError {
+  constructor(message: string) {
+    super(message, { extensions: { code: 'UNAUTHENTICATED' } });
+  }
+}
 import { BookingsService } from '../../services/bookings.service';
 import { MentorsService } from '../../services/mentors.service';
 import { PaymentsService } from '../../services/payments.service';
 import { UsersService } from '../../services/users.service';
-import { WalletsService } from '../../services/wallets.service';
 import { GraphQLLoaders } from '../dataloaders';
 
 interface GraphQLContext {
@@ -51,15 +61,15 @@ const resolvers = {
           maxRate?: number;
           isAvailable?: boolean;
         };
-        page?: number;
+        cursor?: string;
         limit?: number;
         sortBy?: string;
         sortOrder?: string;
       },
     ) => {
-      const { filter = {}, page = 1, limit = 10, sortBy = 'createdAt', sortOrder = 'desc' } = args;
+      const { filter = {}, cursor, limit = 10, sortBy = 'createdAt', sortOrder = 'desc' } = args;
       return MentorsService.list({
-        page,
+        cursor,
         limit,
         search: filter.search,
         expertise: filter.expertise,
@@ -80,7 +90,7 @@ const resolvers = {
 
     bookings: async (
       _parent: unknown,
-      args: { status?: string; page?: number; limit?: number },
+      args: { status?: string; cursor?: string; limit?: number },
       context: GraphQLContext,
     ) => {
       if (!context.user) {
@@ -88,7 +98,7 @@ const resolvers = {
       }
       return BookingsService.getUserBookings(context.user.userId, {
         status: args.status,
-        page: args.page,
+        cursor: args.cursor,
         limit: args.limit,
       });
     },
@@ -102,16 +112,16 @@ const resolvers = {
 
     payments: async (
       _parent: unknown,
-      args: { status?: string; type?: string; page?: number; limit?: number },
+      args: { status?: string; type?: string; cursor?: string; limit?: number },
       context: GraphQLContext,
     ) => {
       if (!context.user) {
         throw new AuthenticationError('Authentication required');
       }
       return PaymentsService.listUserPayments(context.user.userId, {
-        status: args.status,
+        status: args.status as any,
         type: args.type as any,
-        page: args.page,
+        cursor: args.cursor,
         limit: args.limit,
       });
     },
@@ -125,17 +135,22 @@ const resolvers = {
       if (!context.user || context.user.userId !== parent.id) {
         return null;
       }
-      return WalletsService.getWalletInfo(parent.id);
+      return context.loaders.walletLoader.load(parent.id);
     },
-    bookings: async (parent: any, args: { status?: string; page?: number; limit?: number }, context: GraphQLContext) => {
+    bookings: async (parent: any, args: { status?: string; cursor?: string; limit?: number }, context: GraphQLContext) => {
       if (!context.user || context.user.userId !== parent.id) {
         throw new AuthenticationError('Unauthorized');
       }
-      return BookingsService.getUserBookings(parent.id, {
-        status: args.status,
-        page: args.page,
-        limit: args.limit,
-      });
+      // Filtered/paginated bookings can't be served from the batch loader —
+      // only the unfiltered default view benefits from N+1 batching.
+      if (args.status || args.cursor || args.limit) {
+        return BookingsService.getUserBookings(parent.id, {
+          status: args.status,
+          cursor: args.cursor,
+          limit: args.limit,
+        });
+      }
+      return context.loaders.bookingLoader.load(parent.id);
     },
     payments: async (parent: any, _args: unknown, context: GraphQLContext) => {
       if (!context.user || context.user.userId !== parent.id) {
@@ -166,17 +181,20 @@ const resolvers = {
       if (!context.user || context.user.userId !== parent.id) {
         return null;
       }
-      return WalletsService.getWalletInfo(parent.id);
+      return context.loaders.walletLoader.load(parent.id);
     },
-    bookings: async (parent: any, args: { status?: string; page?: number; limit?: number }, context: GraphQLContext) => {
+    bookings: async (parent: any, args: { status?: string; cursor?: string; limit?: number }, context: GraphQLContext) => {
       if (!context.user || context.user.userId !== parent.id) {
         throw new AuthenticationError('Unauthorized');
       }
-      return BookingsService.getUserBookings(parent.id, {
-        status: args.status,
-        page: args.page,
-        limit: args.limit,
-      });
+      if (args.status || args.cursor || args.limit) {
+        return BookingsService.getUserBookings(parent.id, {
+          status: args.status,
+          cursor: args.cursor,
+          limit: args.limit,
+        });
+      }
+      return context.loaders.bookingLoader.load(parent.id);
     },
     payments: async (parent: any, _args: unknown, context: GraphQLContext) => {
       if (!context.user || context.user.userId !== parent.id) {

@@ -4,14 +4,15 @@ import { DataExportController } from "../controllers/dataExport.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { requireOwnerOrAdmin } from "../middleware/rbac.middleware";
 import { validate } from "../middleware/validation.middleware";
+import { screenBio } from "../middleware/content-moderation.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
 import {
   updateUserSchema,
   updateMeSchema,
   avatarUploadSchema,
-} from '../validators/schemas/users.schemas';
-import { idParamSchema } from '../validators/schemas/common.schemas';
-import { RecommendationController } from '../controllers/recommendation.controller';
+} from "../validators/schemas/users.schemas";
+import { idParamSchema } from "../validators/schemas/common.schemas";
+import { RecommendationController } from "../controllers/recommendation.controller";
 
 const router = Router();
 
@@ -92,13 +93,97 @@ router.get("/me", asyncHandler(UsersController.getMe));
 router.put(
   "/me",
   validate(updateMeSchema),
+  screenBio,
   asyncHandler(UsersController.updateMe),
 );
 
 router.delete("/me", asyncHandler(UsersController.requestAccountDeletion));
 router.post(
+  "/me/delete-request",
+  asyncHandler(UsersController.requestAccountDeletion),
+);
+router.post(
   "/me/cancel-deletion",
   asyncHandler(UsersController.cancelAccountDeletion),
+);
+
+/**
+ * @swagger
+ * /users/me/language:
+ *   get:
+ *     summary: Get current user's language preference
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Language preference retrieved
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         language:
+ *                           type: string
+ *                           example: en
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  "/me/language",
+  asyncHandler(UsersController.getLanguage),
+);
+
+/**
+ * @swagger
+ * /users/me/language:
+ *   put:
+ *     summary: Update current user's language preference
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - language
+ *             properties:
+ *               language:
+ *                 type: string
+ *                 enum: [en, es, fr, de, zh, ja]
+ *                 example: es
+ *     responses:
+ *       200:
+ *         description: Language preference updated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         language:
+ *                           type: string
+ *                           example: es
+ *       400:
+ *         description: Invalid language
+ *       401:
+ *         description: Unauthorized
+ */
+router.put(
+  "/me/language",
+  asyncHandler(UsersController.updateLanguage),
 );
 
 router.post(
@@ -319,17 +404,17 @@ router.delete(
 );
 
 router.get(
-  '/recommendations/mentors',
+  "/recommendations/mentors",
   asyncHandler(RecommendationController.getMentorRecommendations),
 );
 
 router.post(
-  '/recommendations/dismiss/:mentorId',
+  "/recommendations/dismiss/:mentorId",
   asyncHandler(RecommendationController.dismissMentor),
 );
 
 router.post(
-  '/recommendations/click/:mentorId',
+  "/recommendations/click/:mentorId",
   asyncHandler(RecommendationController.logRecommendationClick),
 );
 

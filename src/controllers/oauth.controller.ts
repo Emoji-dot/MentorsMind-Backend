@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import passport from '../config/passport';
+import passport, { EmailRequiredError } from '../config/passport';
 import { env } from '../config/env';
 import { TokenService } from '../services/token.service';
 import { AuditLogService, extractIpAddress } from '../services/auditLog.service';
@@ -26,6 +26,9 @@ export const OAuthController = {
         passport.authenticate('google', { session: false }, async (err: any, user: any) => {
             if (err) {
                 logger.error('Google OAuth callback error', { error: err.message });
+                if (err instanceof EmailRequiredError) {
+                    return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=google&error=email_required`);
+                }
                 return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=google`);
             }
 
@@ -34,7 +37,7 @@ export const OAuthController = {
             }
 
             try {
-                const userQuery = `SELECT email, role FROM users WHERE id = $1`;
+                const userQuery = `SELECT email, role, user_tier FROM users WHERE id = $1`;
                 const userResult = await pool.query(userQuery, [user.userId]);
                 
                 if (userResult.rows.length === 0) {
@@ -42,7 +45,7 @@ export const OAuthController = {
                 }
 
                 const userData = userResult.rows[0];
-                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role);
+                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role, userData.user_tier);
 
                 await AuditLogService.log({
                     userId: user.userId,
@@ -86,6 +89,9 @@ export const OAuthController = {
         passport.authenticate('github', { session: false }, async (err: any, user: any) => {
             if (err) {
                 logger.error('GitHub OAuth callback error', { error: err.message });
+                if (err instanceof EmailRequiredError) {
+                    return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=github&error=email_required`);
+                }
                 return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=github`);
             }
 
@@ -94,7 +100,7 @@ export const OAuthController = {
             }
 
             try {
-                const userQuery = `SELECT email, role FROM users WHERE id = $1`;
+                const userQuery = `SELECT email, role, user_tier FROM users WHERE id = $1`;
                 const userResult = await pool.query(userQuery, [user.userId]);
                 
                 if (userResult.rows.length === 0) {
@@ -102,7 +108,7 @@ export const OAuthController = {
                 }
 
                 const userData = userResult.rows[0];
-                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role);
+                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role, userData.user_tier);
 
                 await AuditLogService.log({
                     userId: user.userId,
@@ -131,10 +137,10 @@ export const OAuthController = {
      * DELETE /api/v1/auth/oauth/:provider
      * Unlink OAuth provider from user account
      */
-    async unlinkProvider(req: Request, res: Response): Promise<void> {
+    async unlinkProvider(req: Request, res: Response): Promise<any> {
         try {
             const userId = (req as any).user?.userId;
-            const provider = req.params.provider;
+            const provider = req.params.provider as string;
 
             if (!userId) {
                 return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -200,7 +206,7 @@ export const OAuthController = {
      * GET /api/v1/auth/oauth/providers
      * Get list of linked OAuth providers for current user
      */
-    async getLinkedProviders(req: Request, res: Response): Promise<void> {
+    async getLinkedProviders(req: Request, res: Response): Promise<any> {
         try {
             const userId = (req as any).user?.userId;
 

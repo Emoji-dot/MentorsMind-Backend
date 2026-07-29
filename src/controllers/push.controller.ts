@@ -50,11 +50,6 @@ export const PushController = {
         return;
       }
 
-      // Deactivate any tokens for the same user/device older than 30 days
-      if (deviceId) {
-        await PushTokensModel.deactivateOldTokens(userId, deviceId, 30);
-      }
-
       ResponseUtil.success(res, {
         message: "Successfully subscribed to push notifications",
         tokenId: pushToken.id,
@@ -144,6 +139,59 @@ export const PushController = {
 
     ResponseUtil.success(res, {
       message: "Test notification sent",
+      successCount: result.successCount,
+      failureCount: result.failureCount,
+    });
+  }),
+
+  /**
+   * Send rich push notification with actions and deep link
+   * POST /api/v1/notifications/push/send
+   */
+  sendRich: asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const userId = (req as any).user?.id;
+    if (!userId) {
+      ResponseUtil.error(res, "Unauthorized", 401);
+      return;
+    }
+
+    const schema = z.object({
+      title: z.string().min(1),
+      body: z.string().min(1),
+      data: z.record(z.string(), z.string()).optional(),
+      imageUrl: z.string().url().optional(),
+      deepLink: z.string().optional(),
+      priority: z.enum(["high", "normal"]).optional(),
+      actions: z
+        .array(
+          z.object({
+            id: z.string(),
+            title: z.string(),
+            icon: z.string().optional(),
+          }),
+        )
+        .optional(),
+      badge: z.number().int().nonnegative().optional(),
+    });
+
+    const validation = schema.safeParse(req.body);
+    if (!validation.success) {
+      ResponseUtil.error(res, validation.error.issues[0].message, 400);
+      return;
+    }
+
+    const result = await PushService.sendRich(userId, validation.data);
+
+    if (!result.success && result.successCount === 0) {
+      ResponseUtil.error(
+        res,
+        result.errors.join(", ") || "Failed to send notification",
+        500,
+      );
+      return;
+    }
+
+    ResponseUtil.success(res, {
       successCount: result.successCount,
       failureCount: result.failureCount,
     });

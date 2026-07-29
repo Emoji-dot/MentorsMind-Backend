@@ -1,58 +1,43 @@
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
-import { WebhookService, SUPPORTED_EVENT_TYPES } from '../services/webhook.service';
+import { WebhookService, WebhookRecord } from '../services/webhook.service';
 import { ResponseUtil } from '../utils/response.utils';
 import { asyncHandler } from '../utils/asyncHandler.utils';
+import { logger } from '../utils/logger';
 
 export const WebhooksController = {
   /**
    * POST /api/v1/webhooks
    * Register a new webhook endpoint.
+   * Validation is handled upstream by the validate(createWebhookSchema) middleware.
    */
   create: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user!.userId;
-    const { url, event_types, description } = req.body;
+    const { url, event_types, description, resource_types = [], filter_statuses = [] } = req.body;
 
-    if (!url || typeof url !== 'string') {
-      return ResponseUtil.error(res, 'url is required', 400);
-    }
-
-    try {
-      new URL(url);
-    } catch {
-      return ResponseUtil.error(res, 'url must be a valid URL', 400);
-    }
-
-    if (!Array.isArray(event_types) || event_types.length === 0) {
-      return ResponseUtil.error(res, 'event_types must be a non-empty array', 400);
-    }
-
-    const invalid = event_types.filter(
-      (e: unknown) => !SUPPORTED_EVENT_TYPES.includes(e as any),
+    const webhook = await WebhookService.create(
+      userId,
+      url,
+      event_types,
+      description,
+      resource_types,
+      filter_statuses,
     );
-    if (invalid.length > 0) {
-      return ResponseUtil.error(
-        res,
-        `Unsupported event types: ${invalid.join(', ')}. Supported: ${SUPPORTED_EVENT_TYPES.join(', ')}`,
-        400,
-      );
-    }
 
-    const webhook = await WebhookService.create(userId, url, event_types, description);
-
-    // Return the plain secret only on creation — never again
     return ResponseUtil.created(res, {
       webhook: {
         id: webhook.id,
         url: webhook.url,
         event_types: webhook.event_types,
+        resource_types: webhook.resource_types,
+        filter_statuses: webhook.filter_statuses,
         is_active: webhook.is_active,
         description: webhook.description,
         created_at: webhook.created_at,
-        // Shown once — store it securely
         secret: webhook.secret_plain,
+        api_key: webhook.api_key_plain,
       },
-    }, 'Webhook registered. Store the secret securely — it will not be shown again.');
+    }, 'Webhook registered. Store the secret and API key securely — they will not be shown again.');
   }),
 
   /**
@@ -71,49 +56,39 @@ export const WebhooksController = {
    */
   getOne: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user!.userId;
-    const webhook = await WebhookService.findById(req.params.id, userId);
+    const webhook = await WebhookService.findById(req.params.id as string, userId);
     if (!webhook) return ResponseUtil.notFound(res, 'Webhook not found');
 
     const { secret_plain: _s, ...safe } = webhook;
-    return ResponseUtil.success(res, { webhook: safe });
+    const circuitBreaker = await WebhookService.getCircuitBreakerStatus(webhook.url);
+
+    return ResponseUtil.success(res, {
+      webhook: {
+        ...safe,
+        circuit_breaker: {
+          state: circuitBreaker.state,
+          failures: circuitBreaker.failures,
+          lastFailureAt: circuitBreaker.lastFailureAt,
+        },
+      },
+    });
   }),
 
   /**
    * PUT /api/v1/webhooks/:id
-   * Update URL or event subscriptions.
+   * Update URL, event subscriptions, or filters.
+   * Validation is handled upstream by the validate(updateWebhookSchema) middleware.
    */
   update: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user!.userId;
-    const { url, event_types, description } = req.body;
+    const { url, event_types, description, resource_types, filter_statuses } = req.body;
 
-    if (url !== undefined) {
-      try {
-        new URL(url);
-      } catch {
-        return ResponseUtil.error(res, 'url must be a valid URL', 400);
-      }
-    }
-
-    if (event_types !== undefined) {
-      if (!Array.isArray(event_types) || event_types.length === 0) {
-        return ResponseUtil.error(res, 'event_types must be a non-empty array', 400);
-      }
-      const invalid = event_types.filter(
-        (e: unknown) => !SUPPORTED_EVENT_TYPES.includes(e as any),
-      );
-      if (invalid.length > 0) {
-        return ResponseUtil.error(
-          res,
-          `Unsupported event types: ${invalid.join(', ')}`,
-          400,
-        );
-      }
-    }
-
-    const updated = await WebhookService.update(req.params.id, userId, {
+    const updated = await WebhookService.update(req.params.id as string, userId, {
       url,
       eventTypes: event_types,
       description,
+      resourceTypes: resource_types,
+      filterStatuses: filter_statuses,
     });
 
     if (!updated) return ResponseUtil.notFound(res, 'Webhook not found');
@@ -124,11 +99,10 @@ export const WebhooksController = {
 
   /**
    * DELETE /api/v1/webhooks/:id
-   * Remove a webhook.
    */
   remove: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user!.userId;
-    const deleted = await WebhookService.delete(req.params.id, userId);
+    const deleted = await WebhookService.delete(req.params.id as string, userId);
     if (!deleted) return ResponseUtil.notFound(res, 'Webhook not found');
     return ResponseUtil.success(res, null, 'Webhook deleted');
   }),
@@ -143,15 +117,14 @@ export const WebhooksController = {
     const offset = parseInt((req.query.offset as string) ?? '0', 10);
 
     const { deliveries, total } = await WebhookService.getDeliveries(
-      req.params.id,
+      req.params.id as string,
       userId,
       limit,
       offset,
     );
 
     if (deliveries.length === 0 && offset === 0) {
-      // Could be not found or genuinely empty — check ownership
-      const webhook = await WebhookService.findById(req.params.id, userId);
+      const webhook = await WebhookService.findById(req.params.id as string, userId);
       if (!webhook) return ResponseUtil.notFound(res, 'Webhook not found');
     }
 
@@ -164,13 +137,52 @@ export const WebhooksController = {
    */
   test: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user!.userId;
-
     try {
-      const result = await WebhookService.sendTest(req.params.id, userId);
+      const result = await WebhookService.sendTest(req.params.id as string, userId);
       return ResponseUtil.success(res, result, 'Test event queued for delivery');
-    } catch (err: any) {
-      const status = err.statusCode ?? 500;
-      return ResponseUtil.error(res, err.message, status);
+    } catch (err: unknown) {
+      const e = err as { statusCode?: number; message: string };
+      return ResponseUtil.error(res, e.message, e.statusCode ?? 500);
     }
+  }),
+
+  /**
+   * POST /api/v1/webhooks/:id/rotate-api-key
+   * Rotate the API key for a webhook.
+   */
+  rotateKey: asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const userId = req.user!.userId;
+    const { grace_period_hours } = req.body;
+
+    const webhook = await WebhookService.rotateApiKey(
+      req.params.id as string,
+      userId,
+      grace_period_hours ? parseInt(grace_period_hours, 10) : 24
+    );
+
+    if (!webhook) return ResponseUtil.notFound(res, 'Webhook not found');
+
+    return ResponseUtil.success(res, {
+      api_key: webhook.api_key_plain,
+      grace_period_end: webhook.api_key_grace_period_end,
+    }, 'API key rotated. The new key is shown above. Store it securely.');
+  }),
+
+  /**
+   * POST /api/v1/webhooks/incoming
+   * Generic receiver for incoming webhooks (requires API key).
+   */
+  receive: asyncHandler(async (req: Request, res: Response) => {
+    // This endpoint is protected by webhookAuth middleware
+    const webhook = (req as any).webhook as WebhookRecord;
+    
+    logger.info('Incoming webhook received', {
+      webhookId: webhook.id,
+      payload: req.body
+    });
+
+    // In a real system, we might enqueue this for processing
+    // For now, we just acknowledge receipt
+    return ResponseUtil.success(res, { received: true }, 'Webhook received and authenticated');
   }),
 };
