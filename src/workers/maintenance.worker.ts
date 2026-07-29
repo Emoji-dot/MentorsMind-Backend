@@ -4,6 +4,7 @@ import { runMaintenanceTasks } from "./scheduler";
 import { VerificationService } from "../services/verification.service";
 import { AuditLogArchivalJob } from "../jobs/auditLog.job";
 import keyRotationJob from "../jobs/keyRotation.job";
+import recommendationStatsJob from "../jobs/recommendationStats.job";
 import { logger } from "../utils/logger.utils";
 
 async function processMaintenanceJob(job: Job): Promise<void> {
@@ -28,6 +29,14 @@ async function processMaintenanceJob(job: Job): Promise<void> {
       jobId: job.id,
     });
     await keyRotationJob.runJwtRotation();
+    return;
+  }
+
+  if (job.name === "recommendation-stats-scheduled") {
+    logger.info("[MaintenanceWorker] Running recommendation stats refresh", {
+      jobId: job.id,
+    });
+    await recommendationStatsJob.refresh();
     return;
   }
 

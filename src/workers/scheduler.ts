@@ -193,8 +193,20 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
+  // Recommendation collaborative stats refresh — daily at 03:00 UTC
+  // Recomputes per-mentor CTR + 48h booking conversion into mentor_recommendation_stats
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "recommendation-stats-scheduled",
+    { jobType: "recommendation-stats-refresh" },
+    {
+      repeat: { pattern: "0 3 * * *" }, // cron: daily 03:00 UTC
+      jobId: "recommendation-stats-recurring",
+    },
+  );
+
   logger.info(
-    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, audit log archival, and key rotation registered",
+    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, audit log archival, key rotation, and recommendation stats refresh registered",
   );
 
   if (!backgroundCheckPollingTimer) {
