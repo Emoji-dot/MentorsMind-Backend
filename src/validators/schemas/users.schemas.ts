@@ -1,10 +1,14 @@
 /**
  * User Validation Schemas
  * Zod schemas for all user-related endpoints.
+ *
+ * Note: The avatar upload endpoint (/users/avatar) uses multer multipart/form-data
+ * and does NOT use a Zod JSON body schema. File validation is handled inside
+ * UploadService (MIME type + file size checks).
  */
 
 import { z } from 'zod';
-import { idParamSchema, nameSchema, longTextSchema, base64ImageSchema, urlSchema } from './common.schemas';
+import { idParamSchema, nameSchema, longTextSchema, urlSchema } from './common.schemas';
 
 export const updateUserSchema = z.object({
     params: idParamSchema.shape.params,
@@ -33,12 +37,6 @@ export const updateMeSchema = z.object({
     }).strict(),
 });
 
-export const avatarUploadSchema = z.object({
-    body: z.object({
-        avatarBase64: base64ImageSchema,
-    }).strict(),
-});
-
 export const getUserByIdSchema = idParamSchema;
 
 export const listUsersSchema = z.object({
@@ -55,5 +53,5 @@ export const listUsersSchema = z.object({
 
 export type UpdateUserInput = z.infer<typeof updateUserSchema>['body'];
 export type UpdateMeInput = z.infer<typeof updateMeSchema>['body'];
-export type AvatarUploadInput = z.infer<typeof avatarUploadSchema>['body'];
 export type ListUsersQuery = z.infer<typeof listUsersSchema>['query'];
+
