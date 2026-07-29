@@ -113,8 +113,15 @@ async function projectBookingCancelled(event: DomainEvent): Promise<void> {
   const transactionId = d.transactionId ?? d.transaction_id;
   const refundPercentage = Number(d.refundPercentage ?? 0);
   const amount = d.amount != null ? parseFloat(String(d.amount)) : NaN;
+  const menteeId = d.menteeId ?? d.mentee_id;
 
-  if (refundEligible && transactionId && Number.isFinite(amount) && amount > 0) {
+  if (
+    refundEligible &&
+    transactionId &&
+    menteeId &&
+    Number.isFinite(amount) &&
+    amount > 0
+  ) {
     try {
       await QueueService.submitStellarTx(
         {
@@ -122,7 +129,7 @@ async function projectBookingCancelled(event: DomainEvent): Promise<void> {
           paymentId: String(transactionId),
           amount: String(amount * (refundPercentage / 100)),
           currency: d.currency ?? "XLM",
-          userId: d.menteeId ?? d.mentee_id,
+          userId: String(menteeId),
           description: reason,
         },
         `refund:booking:${e.aggregateId}`,
