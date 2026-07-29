@@ -29,6 +29,7 @@ import sessionRecordingRoutes from "./session-recording.routes";
 import subscriptionRoutes from "./subscriptions.routes";
 import taxRoutes from "./tax.routes";
 import oracleRoutes from "./oracle.routes";
+import vestingRoutes from "./vesting.routes";
 import { BookingsService } from "../services/bookings.service";
 import { notificationCleanupService } from "../services/notification-cleanup.service";
 import {
