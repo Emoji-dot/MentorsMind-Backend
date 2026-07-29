@@ -15,7 +15,7 @@ export interface BookingRecord {
   duration_minutes: number;
   topic: string;
   notes: string | null;
-  status: "pending" | "confirmed" | "completed" | "cancelled" | "rescheduled";
+  status: "pending" | "confirmed" | "completed" | "cancelled" | "rescheduled" | "no_show";
   amount: string;
   currency: string;
   usd_equivalent: string | null;
@@ -26,6 +26,10 @@ export interface BookingRecord {
   session_id?: string;
   meeting_id?: string;
   meeting_url?: string;
+  mentor_joined_at: Date | null;
+  mentee_joined_at: Date | null;
+  no_show_detected_at: Date | null;
+  no_show_refund_tx_hash: string | null;
   created_at: Date;
   updated_at: Date;
 }
