@@ -17,6 +17,15 @@ router.get('/progress', LearnerController.getProgress);
 
 /**
  * @swagger
+ * /api/v1/learner/goals/at-risk:
+ *   get:
+ *     summary: List active goals with low progress and near deadlines
+ *     tags: [Learners]
+ */
+router.get('/goals/at-risk', LearnerController.getAtRiskGoals);
+
+/**
+ * @swagger
  * /api/v1/learners/timeline/goals:
  *   get:
  *     summary: Get goal completion timeline over 12 months

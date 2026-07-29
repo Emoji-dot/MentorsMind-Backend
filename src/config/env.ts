@@ -61,6 +61,11 @@ const envSchema = z.object({
     .string()
     .min(32, "FILE_SIGNING_SECRET must be at least 32 characters"),
 
+  // Cache Key Signing (issue #716) — HMACs the userId component of authenticated
+  // cache keys so keys can't be guessed/enumerated. Falls back to FILE_SIGNING_SECRET
+  // when unset so existing deployments don't need a new required secret.
+  CACHE_KEY_HMAC_SECRET: z.string().min(32).optional(),
+
   // Stellar
   STELLAR_NETWORK: z.enum(["testnet", "mainnet"]).default("testnet"),
   STELLAR_HORIZON_URL: z
@@ -73,6 +78,14 @@ const envSchema = z.object({
   CORS_ORIGIN: z
     .string()
     .default("http://localhost:3000,http://localhost:5173"),
+  /**
+   * Preflight cache duration in seconds (sent as Access-Control-Max-Age).
+   * Default: 86400 (24 h). Set to 0 to disable caching during development.
+   */
+  CORS_MAX_AGE: z
+    .string()
+    .regex(/^\d+$/, "CORS_MAX_AGE must be a non-negative integer")
+    .default("86400"),
 
   // Rate Limiting
   RATE_LIMIT_WINDOW_MS: z.string().regex(/^\d+$/).default("900000"),
@@ -205,13 +218,19 @@ const envSchema = z.object({
   CDN_FASTLY_SERVICE_ID: z.string().optional(),
   CDN_FASTLY_API_KEY: z.string().optional(),
 
-  // Elasticsearch
+  // Elasticsearch / ELK Stack (issue #740)
   ELASTICSEARCH_URL: z.string().url().default("http://localhost:9200"),
   ELASTICSEARCH_USERNAME: z.string().optional(),
   ELASTICSEARCH_PASSWORD: z.string().optional(),
   ELASTICSEARCH_API_KEY: z.string().optional(),
   ELASTICSEARCH_ENABLED: z.enum(["true", "false"]).default("true"),
   ELASTICSEARCH_INDEX_PREFIX: z.string().default("mentorminds"),
+  /** Max log documents to buffer before flushing to Elasticsearch */
+  ELK_BATCH_SIZE: z.string().regex(/^\d+$/).default("100"),
+  /** Flush interval in ms for the ELK batch transport */
+  ELK_FLUSH_INTERVAL_MS: z.string().regex(/^\d+$/).default("5000"),
+  /** Max retry attempts for failed ELK bulk requests */
+  ELK_MAX_RETRIES: z.string().regex(/^\d+$/).default("3"),
 
   // Stellar (additional keys)
   STELLAR_FUNDING_SECRET: z.string().optional(),
@@ -231,6 +250,24 @@ const envSchema = z.object({
   RETENTION_AUDIT_LOGS_YEARS: z.string().regex(/^\d+$/).default("7"),
   RETENTION_PAYMENTS_YEARS: z.string().regex(/^\d+$/).default("7"),
   RETENTION_SESSIONS_YEARS: z.string().regex(/^\d+$/).default("2"),
+  // Audit Log Archival (issue #772) — audit rows older than this move from hot
+  // PostgreSQL storage to a compressed, S3 Object Lock (WORM) archive, so they
+  // remain queryable for RETENTION_AUDIT_LOGS_YEARS without staying in the DB.
+  AUDIT_ARCHIVE_AFTER_DAYS: z.string().regex(/^\d+$/).default("90"),
+
+  // API Documentation Portal (issue #784)
+  // Enables the /api/v1/sandbox/* routes and adds a "Sandbox" server option
+  // to the Swagger UI so third-party developers can try endpoints against
+  // fixture data with no real side effects.
+  SANDBOX_MODE: z.enum(["true", "false"]).default("false"),
+
+  // Email CDN assets (issue #752)
+  // Physical mailing address shown in email footers for CAN-SPAM / GDPR compliance.
+  COMPANY_ADDRESS: z.string().default("MentorMinds, Inc. — mentorminds.com"),
+  // Base URL for self-hosted email asset icons (logo, social icons).
+  // When CDN_BASE_URL is set, EmailCDNService uses it; otherwise this provides
+  // the fallback absolute URL prefix so email clients always get absolute URLs.
+  EMAIL_ASSETS_BASE_URL: z.string().url().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -242,6 +279,7 @@ const SENSITIVE_KEYS = new Set([
   "JWT_REFRESH_SECRET",
   "JWT_SECRET_PREVIOUS",
   "FILE_SIGNING_SECRET",
+  "CACHE_KEY_HMAC_SECRET",
   "PII_ENCRYPTION_KEYS",
   "PLATFORM_SECRET_KEY",
   "SMTP_PASS",

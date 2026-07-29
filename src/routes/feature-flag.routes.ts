@@ -15,6 +15,9 @@ import {
 
 const router = Router();
 
+// ── "me" endpoint — GET /api/v1/me/feature-flags ─────────────────────────────
+router.get('/me/feature-flags', authenticate, FeatureFlagController.getMyFlags);
+
 // ── Public evaluation (requires auth to identify user) ───────────────────────
 router.get('/evaluate/:key', authenticate, validate(evaluateFlagSchema), FeatureFlagController.evaluate);
 router.post(
@@ -24,8 +27,18 @@ router.post(
   FeatureFlagController.trackConversion,
 );
 
-// ── Admin CRUD (admin only) ───────────────────────────────────────────────────
-router.use(authenticate, requireAdmin);
+// ── Admin CRUD — /api/v1/admin/feature-flags ─────────────────────────────────
+const adminRouter = Router();
+adminRouter.use(authenticate, requireAdmin);
+adminRouter.get('/', FeatureFlagController.list);
+adminRouter.post('/', FeatureFlagController.create);
+adminRouter.get('/key/:key', FeatureFlagController.getByKey);
+adminRouter.get('/metrics/:key', FeatureFlagController.getMetrics);
+adminRouter.get('/:id', FeatureFlagController.getById);
+adminRouter.patch('/:id', FeatureFlagController.update);
+adminRouter.put('/:id', FeatureFlagController.update);
+adminRouter.delete('/:id', FeatureFlagController.remove);
+adminRouter.post('/:id/disable', FeatureFlagController.disable);
 
 router.get('/', FeatureFlagController.list);
 router.post('/', validate(createFeatureFlagSchema), FeatureFlagController.create);

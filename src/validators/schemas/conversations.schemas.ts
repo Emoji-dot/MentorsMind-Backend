@@ -38,6 +38,13 @@ export const markReadSchema = z.object({
     params: z.object({ id: uuidSchema }),
 });
 
+export const batchMarkReadSchema = z.object({
+    params: z.object({ id: uuidSchema }),
+    body: z.object({
+        messageIds: z.array(uuidSchema).min(1, 'At least one message ID is required').max(100, 'Too many message IDs'),
+    }),
+});
+
 export const uploadAttachmentSchema = z.object({
     params: z.object({ id: uuidSchema }),
 });

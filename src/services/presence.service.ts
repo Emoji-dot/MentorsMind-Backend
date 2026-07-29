@@ -10,6 +10,8 @@ const PRESENCE_TTL_SEC = 30;
 /** Redis key helpers */
 const presenceKey = (userId: string) => `online:${userId}`;
 const lastSeenKey = (userId: string) => `last_seen:${userId}`;
+const sessionJoinKey = (sessionId: string, role: 'mentor' | 'mentee') => 
+  `session:${sessionId}:${role}:joined`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +19,14 @@ export interface OnlineStatus {
   userId: string;
   online: boolean;
   last_seen: string | null; // ISO-8601 or null if never seen
+}
+
+export interface SessionPresenceStatus {
+  sessionId: string;
+  mentorJoinedAt: string | null;
+  menteeJoinedAt: string | null;
+  mentorOnline: boolean;
+  menteeOnline: boolean;
 }
 
 // ─── Service ─────────────────────────────────────────────────────────────────
@@ -182,5 +192,126 @@ export class PresenceService {
     );
 
     return rows.map((r) => r.peer_id);
+  }
+
+  // ── Session join tracking ──────────────────────────────────────────────────
+
+  /**
+   * Mark a user as having joined a session. Persists to database and caches in Redis.
+   * This prevents no-show detection from flagging the session.
+   * 
+   * @param sessionId - The booking/session ID
+   * @param userId - The user who joined
+   * @param role - Whether they are 'mentor' or 'mentee'
+   * @returns The timestamp when they joined (ISO-8601)
+   */
+  async markSessionJoined(
+    sessionId: string,
+    userId: string,
+    role: 'mentor' | 'mentee'
+  ): Promise<string> {
+    const joinedAt = new Date().toISOString();
+    
+    // Persist to database
+    const column = role === 'mentor' ? 'mentor_joined_at' : 'mentee_joined_at';
+    await pool.query(
+      `UPDATE bookings 
+       SET ${column} = $1, updated_at = NOW()
+       WHERE id = $2 AND ${column} IS NULL`,
+      [joinedAt, sessionId]
+    );
+
+    // Cache in Redis for fast lookups (TTL: 24 hours)
+    await this.redis.set(
+      sessionJoinKey(sessionId, role),
+      joinedAt,
+      'EX',
+      24 * 60 * 60
+    );
+
+    return joinedAt;
+  }
+
+  /**
+   * Check if a mentor has joined a specific session.
+   * Checks Redis cache first, falls back to database.
+   * 
+   * @param sessionId - The booking/session ID
+   * @returns The timestamp when mentor joined, or null if not joined yet
+   */
+  async getMentorJoinTime(sessionId: string): Promise<string | null> {
+    // Check Redis cache first
+    const cached = await this.redis.get(sessionJoinKey(sessionId, 'mentor'));
+    if (cached) return cached;
+
+    // Fall back to database
+    const { rows } = await pool.query<{ mentor_joined_at: Date | null }>(
+      `SELECT mentor_joined_at FROM bookings WHERE id = $1`,
+      [sessionId]
+    );
+
+    const joinedAt = rows[0]?.mentor_joined_at;
+    if (!joinedAt) return null;
+
+    const timestamp = joinedAt.toISOString();
+    
+    // Backfill cache
+    await this.redis.set(
+      sessionJoinKey(sessionId, 'mentor'),
+      timestamp,
+      'EX',
+      24 * 60 * 60
+    );
+
+    return timestamp;
+  }
+
+  /**
+   * Get full session presence status including join times and current online status.
+   * 
+   * @param sessionId - The booking/session ID
+   * @param mentorId - The mentor user ID
+   * @param menteeId - The mentee user ID
+   * @returns Full presence information for both participants
+   */
+  async getSessionPresence(
+    sessionId: string,
+    mentorId: string,
+    menteeId: string
+  ): Promise<SessionPresenceStatus> {
+    // Get join times from database
+    const { rows } = await pool.query<{
+      mentor_joined_at: Date | null;
+      mentee_joined_at: Date | null;
+    }>(
+      `SELECT mentor_joined_at, mentee_joined_at 
+       FROM bookings WHERE id = $1`,
+      [sessionId]
+    );
+
+    const booking = rows[0];
+
+    // Get current online status
+    const [mentorStatus, menteeStatus] = await this.getBatchStatus([
+      mentorId,
+      menteeId,
+    ]);
+
+    return {
+      sessionId,
+      mentorJoinedAt: booking?.mentor_joined_at?.toISOString() ?? null,
+      menteeJoinedAt: booking?.mentee_joined_at?.toISOString() ?? null,
+      mentorOnline: mentorStatus.online,
+      menteeOnline: menteeStatus.online,
+    };
+  }
+
+  /**
+   * Check if a mentor is currently online AND has active presence.
+   * Used by no-show detection to determine if mentor is available.
+   */
+  async isMentorActive(mentorId: string): Promise<boolean> {
+    const status = await this.getStatus(mentorId);
+    return status.online;
   }
 }
