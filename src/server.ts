@@ -34,6 +34,7 @@ import { initializeSocketService } from "./services/socket.service";
 import { initializeGraphQL } from "./graphql/server";
 import { stellarMonitorJob } from "./jobs/stellarMonitor.job";
 import backupJob from "./jobs/backup.job";
+import { goalReminderJob } from "./jobs/goalReminder.job";
 import keyRotationJob from "./jobs/keyRotation.job";
 import { runReEncryptionJob } from "./jobs/re-encrypt-pii.job";
 import {
@@ -164,6 +165,7 @@ stellarMonitorJob.start().catch((err) => {
 
 // Start scheduled database backup jobs (daily full, hourly WAL, retention)
 backupJob.initialize();
+goalReminderJob.initialize();
 
 // Start background exchange rate refresh
 import("./services/assetExchange.service")
@@ -191,6 +193,7 @@ async function shutdown(signal: string) {
   logger.info({ signal }, "Signal received: closing HTTP server");
   stellarMonitorJob.stop();
   backupJob.stop();
+  goalReminderJob.stop();
   keyRotationJob.stop();
   await Promise.all([
     emailWorker.close(),

@@ -73,6 +73,7 @@ router.use("/auth", authRoutes);
 router.use("/users", usersRoutes);
 router.use("/goals", goalRoutes);
 router.use("/learners", learnerRoutes);
+router.use("/learner", learnerRoutes);
 router.use("/", exportRoutes);
 router.use("/consent", consentRoutes);
 router.use("/compliance", complianceRoutes);

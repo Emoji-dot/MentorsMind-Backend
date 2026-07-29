@@ -211,12 +211,24 @@ export const featureFlagEvaluationsTotal = new Counter<string>({
   name: "feature_flag_evaluations_total",
   help: "Total feature flag evaluations, partitioned by flag key and result",
   labelNames: ["flag", "result"],
+  registers: [metricsRegistry],
+});
+
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
 
 export const rateLimitExceededTotal = new Counter<string>({
   name: "rate_limit_exceeded_total",
   help: "Total number of rate limit exceeded events",
   labelNames: ["tier", "endpoint_category"],
+  registers: [metricsRegistry],
+});
+
+// ─── Goals ────────────────────────────────────────────────────────────────────
+
+export const goalRemindersSentTotal = new Counter<string>({
+  name: "goal_reminders_sent_total",
+  help: "Total number of goal deadline reminders sent, partitioned by reminder type",
+  labelNames: ["reminder_type"],
   registers: [metricsRegistry],
 });
 
