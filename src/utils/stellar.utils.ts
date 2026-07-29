@@ -24,6 +24,7 @@ function parseBalance(b: Horizon.HorizonApi.BalanceLine): StellarBalance {
   };
   if ('asset_code' in b) base.assetCode = b.asset_code;
   if ('asset_issuer' in b) base.assetIssuer = b.asset_issuer;
+  if ('liquidity_pool_id' in b) base.liquidityPoolId = b.liquidity_pool_id;
   if ('limit' in b) base.limit = b.limit;
   return base;
 }

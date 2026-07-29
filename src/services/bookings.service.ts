@@ -21,6 +21,8 @@ import { NotificationType } from "../models/notifications.model";
 import { SessionSummaryModel } from "../models/session-summary.model";
 import { MentorsService } from "./mentors.service";
 import { LoyaltyService } from "./loyalty.service";
+import { scheduleNoShowCheck } from "../queues/session-no-show.queue";
+import config from "../config";
 
 export interface CreateBookingData {
   menteeId: string;
@@ -393,6 +395,36 @@ export const BookingsService = {
       logger.error("Calendar create failed", { bookingId, error: err }),
     );
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Schedule no-show detection check
+    // ═══════════════════════════════════════════════════════════════════════════
+    const gracePeriodMinutes = parseInt(
+      process.env.NO_SHOW_GRACE_PERIOD_MINUTES || '10',
+      10
+    );
+
+    try {
+      await scheduleNoShowCheck({
+        bookingId,
+        mentorId: booking.mentor_id,
+        menteeId: booking.mentee_id,
+        scheduledStart: booking.scheduled_at,
+        gracePeriodMinutes,
+      });
+
+      logger.info('No-show check scheduled', {
+        bookingId,
+        scheduledStart: booking.scheduled_at,
+        gracePeriodMinutes,
+      });
+    } catch (error) {
+      logger.error('Failed to schedule no-show check', {
+        bookingId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      // Don't fail booking confirmation if scheduling fails
+    }
+
     return updated;
   },
 
@@ -420,17 +452,28 @@ export const BookingsService = {
       throw createError("Cannot complete booking before session ends", 400);
     }
 
-    if (userId === booking.mentee_id && SorobanEscrowService.isConfigured()) {
+    if (SorobanEscrowService.isConfigured()) {
       const metadata = await getBookingEscrowMetadata(bookingId);
       if (metadata.escrow_id) {
-        await SorobanEscrowService.releaseFunds({
-          escrowId: metadata.escrow_id,
-          releasedBy: userId,
-          contractAddress: metadata.escrow_contract_address || undefined,
-        });
+        if (userId === booking.mentee_id) {
+          await SorobanEscrowService.releaseFunds({
+            escrowId: metadata.escrow_id,
+            releasedBy: userId,
+            contractAddress: metadata.escrow_contract_address || undefined,
+          });
+        } else {
+          // Mentor is completing the booking -> Schedule auto-release
+          const { scheduleEscrowRelease } = await import("../queues/escrow-release.queue");
+          await scheduleEscrowRelease({
+            escrowId: metadata.escrow_id,
+            mentorId: booking.mentor_id,
+            learnerId: booking.mentee_id,
+            sessionCompletedAt: new Date(),
+          });
+        }
       } else {
         logger.warn(
-          "Skipping Soroban release_funds: no escrow metadata on booking",
+          "Skipping Soroban release/schedule: no escrow metadata on booking",
           {
             bookingId,
           },
@@ -540,6 +583,10 @@ export const BookingsService = {
           bookingId,
           txHash: refundResult.txHash,
         });
+        
+        // Cancel any pending auto-release
+        const { cancelEscrowRelease } = await import("../queues/escrow-release.queue");
+        await cancelEscrowRelease(metadata.escrow_id);
       } else {
         logger.warn("Skipping Soroban refund: no escrow metadata on booking", {
           bookingId,

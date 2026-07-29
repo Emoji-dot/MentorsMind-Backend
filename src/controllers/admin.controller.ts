@@ -10,6 +10,7 @@ import { LoginAttemptsService } from "../services/loginAttempts.service";
 import { IpFilterService } from "../services/ipFilter.service";
 import pool from "../config/database";
 import { keyRotationJob } from "../jobs/keyRotation.job";
+import { AuditLogArchivalJob } from "../jobs/auditLog.job";
 import { accountDeletionService } from "../services/accountDeletion.service";
 import { WebhookService } from "../services/webhook.service";
 
@@ -458,6 +459,29 @@ export const AdminController = {
     );
   },
 
+  /** GET /admin/audit-log/archives — lists S3-archived audit log batches (issue #772) */
+  async getAuditLogArchives(
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+
+    const result = await AuditLogArchivalJob.listArchives(page, limit);
+    ResponseUtil.success(
+      res,
+      result.archives,
+      "Audit log archives retrieved successfully",
+      200,
+      {
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+      } as any,
+    );
+  },
+
   /** POST /admin/users/:id/unlock — clear login lockout for a user */
   async unlockUser(req: AuthenticatedRequest, res: Response): Promise<void> {
     const userId = req.params.id as string;
@@ -638,6 +662,35 @@ export const AdminController = {
       } else {
         ResponseUtil.error(res, result.message, 400);
       }
+    } catch (err: any) {
+      ResponseUtil.error(res, err.message, 500);
+    }
+  },
+
+  /**
+   * GET /api/v1/admin/stellar/stuck-transactions
+   */
+  async getStuckStellarTransactions(
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> {
+    try {
+      const { Queue } = require("bullmq");
+      const { QUEUE_NAMES, redisConnection } = require("../queues/queue.config");
+      const stellarQueue = new Queue(QUEUE_NAMES.STELLAR_TX, { connection: redisConnection });
+      
+      const failedJobs = await stellarQueue.getFailed();
+      const stuck = failedJobs
+        .filter((job: any) => job.attemptsMade > 5)
+        .map((job: any) => ({
+          id: job.id,
+          data: job.data,
+          attemptsMade: job.attemptsMade,
+          failedReason: job.failedReason,
+          timestamp: job.timestamp,
+        }));
+        
+      ResponseUtil.success(res, { count: stuck.length, stuck }, "Stuck stellar transactions retrieved");
     } catch (err: any) {
       ResponseUtil.error(res, err.message, 500);
     }

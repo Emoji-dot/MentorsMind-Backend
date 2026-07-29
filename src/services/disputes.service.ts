@@ -21,11 +21,17 @@ export class DisputeService {
     const { rows: bookingRows } = await pool.query<{
       mentor_id: string;
       mentee_id: string;
-    }>(`SELECT mentor_id, mentee_id FROM bookings WHERE id = $1 LIMIT 1`, [
+      escrow_id: string | null;
+    }>(`SELECT mentor_id, mentee_id, escrow_id FROM bookings WHERE id = $1 LIMIT 1`, [
       sessionId,
     ]);
     const booking = bookingRows[0];
     if (!booking) throw new Error("Session not found");
+
+    if (booking.escrow_id) {
+      const { cancelEscrowRelease } = await import("../queues/escrow-release.queue");
+      await cancelEscrowRelease(booking.escrow_id);
+    }
 
     const respondentId =
       booking.mentor_id === filedById ? booking.mentee_id : booking.mentor_id;

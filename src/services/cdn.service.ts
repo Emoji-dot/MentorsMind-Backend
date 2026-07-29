@@ -6,6 +6,7 @@ import {
   createLQIP,
   ImageFormat,
 } from "../utils/image.utils";
+import { CDNHealthService } from "./cdn-health.service";
 import crypto = require("crypto");
 
 export type CDNProvider = "cloudfront" | "cloudflare" | "fastly";
@@ -83,24 +84,40 @@ function getConfig(): CDNConfig | null {
 /**
  * Rewrite an origin asset path to its CDN URL.
  * Falls back to the original path when CDN is not configured.
+ * Uses CDNHealthService to select the healthiest domain automatically.
  * @param assetPath - The asset path to rewrite
- * @param options - Optional configuration (domain index, versioning)
+ * @param options - Optional configuration (domain index, versioning, forceHealthCheck)
  * @returns The CDN URL for the asset
  */
-function getAssetUrl(
+async function getAssetUrl(
   assetPath: string,
   options: {
     domainIndex?: number;
     version?: string;
     useVersioning?: boolean;
+    forceHealthCheck?: boolean;
   } = {},
-): string {
+): Promise<string> {
   const config = getConfig();
   if (!config) return assetPath;
 
-  // Select domain (default to first, or specified index)
-  const domainIndex = options.domainIndex ?? 0;
-  const domain = config.domains[domainIndex] ?? config.domains[0];
+  let domain: string;
+
+  // If forceHealthCheck or domainIndex is not specified, use healthiest domain
+  if (options.forceHealthCheck || options.domainIndex === undefined) {
+    try {
+      domain = await CDNHealthService.getHealthiestDomain(config.domains);
+    } catch (error) {
+      logger.warn("Failed to get healthiest domain, falling back to first", {
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+      domain = config.domains[0];
+    }
+  } else {
+    // Use specified domain index
+    domain = config.domains[options.domainIndex] ?? config.domains[0];
+  }
+
   if (!domain) return assetPath;
 
   const base = domain.replace(/\/$/, "");
@@ -351,6 +368,7 @@ async function invalidateFastly(paths: string[]): Promise<InvalidationResult> {
 /**
  * Invalidate CDN cache for the given paths.
  * Paths should be absolute, e.g. ["/images/avatar.jpg"].
+ * Failed invalidations are automatically queued for retry via BullMQ.
  */
 async function invalidate(paths: string[]): Promise<InvalidationResult> {
   const config = getConfig();
@@ -385,6 +403,24 @@ async function invalidate(paths: string[]): Promise<InvalidationResult> {
       paths,
       err,
     });
+
+    // Queue failed invalidation for retry
+    try {
+      const { enqueueCDNInvalidation } = await import("../jobs/cdn-invalidation.job");
+      const invalidationQueueId = await enqueueCDNInvalidation(paths, config.provider);
+      logger.info("Failed CDN invalidation queued for retry", {
+        provider: config.provider,
+        paths,
+        invalidationQueueId,
+      });
+    } catch (queueErr) {
+      logger.error("Failed to queue CDN invalidation for retry", {
+        provider: config.provider,
+        paths,
+        error: queueErr instanceof Error ? queueErr.message : "Unknown error",
+      });
+    }
+
     throw err;
   }
 }

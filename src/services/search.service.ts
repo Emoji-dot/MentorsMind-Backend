@@ -16,6 +16,7 @@ import { CacheService } from './cache.service';
 import { CacheTTL } from '../utils/cache-key.utils';
 import { buildSearchQuery } from '../utils/query-builder.utils';
 import elasticsearchService, { SearchQuery, SearchResult, MentorDocument } from './elasticsearch.service';
+import { MessagingService } from './messaging.service';
 import config from '../config';
 import crypto from 'crypto';
 import { logger } from '../utils/logger.utils';
@@ -32,6 +33,32 @@ const POPULAR_SEARCH_CACHE_TTL = 600;
 const AUTOCOMPLETE_CACHE_TTL = 300;
 
 // ── Key helpers ───────────────────────────────────────────────────────────────
+
+export type GlobalSearchResultType = 'mentor' | 'session' | 'message';
+
+export interface GlobalSearchItem {
+  type: GlobalSearchResultType;
+  id: string;
+  [key: string]: unknown;
+}
+
+export interface GlobalSearchOptions {
+  query: string;
+  types?: GlobalSearchResultType[];
+  page?: number;
+  limit?: number;
+  userId: string;
+}
+
+export interface GlobalSearchResult {
+  results: GlobalSearchItem[];
+  meta: {
+    total: number;
+    page: number;
+    limit: number;
+    types: GlobalSearchResultType[];
+  };
+}
 
 function hashParams(params: Record<string, any>): string {
   return crypto.createHash('md5').update(JSON.stringify(params)).digest('hex').substring(0, 8);
@@ -252,71 +279,112 @@ export class SearchService {
   }
 
   /**
-   * Warm the search cache for the top popular queries.
-   *
-   * Called by the cache warming job every 15 minutes to ensure popular searches
-   * (e.g. "Python", "JavaScript") are always pre-cached and served instantly.
+   * Unified global search across mentors, sessions, and messages.
+   * Results are tagged with a `type` field and concatenated in the order:
+   * mentors → sessions → messages. An optional `types` filter restricts
+   * which entity kinds are queried.
    */
-  static async warmPopularSearchCache(): Promise<void> {
-    const esEnabled = config.elasticsearch.enabled;
-    const esConnected = await elasticsearchService.checkConnection();
+  static async globalSearch(options: GlobalSearchOptions): Promise<GlobalSearchResult> {
+    const { query, userId, page = 1, limit = 10 } = options;
+    const types: GlobalSearchResultType[] = options.types && options.types.length > 0
+      ? options.types
+      : ['mentor', 'session', 'message'];
 
-    if (!esEnabled || !esConnected) {
-      logger.debug('Search cache warming skipped — Elasticsearch not available');
-      return;
+    const cacheKey = `mm:search:global:${hashParams({ query, types: [...types].sort(), page, limit, userId })}`;
+
+    const cached = await CacheService.get<GlobalSearchResult>(cacheKey);
+    if (cached !== null) {
+      return cached;
     }
 
-    try {
-      const popular = await elasticsearchService.getPopularSearches(20);
+    const offset = (page - 1) * limit;
+    const results: GlobalSearchItem[] = [];
+    let total = 0;
 
-      if (popular.length === 0) {
-        logger.debug('Search cache warming: no popular searches found');
-        return;
+    // ----- Mentors -----
+    if (types.includes('mentor')) {
+      try {
+        const mentorResult = await SearchService.searchMentors(
+          { query, page, limit },
+          userId,
+        );
+        const mentors = (mentorResult.mentors as any[]).map((m: any) => ({
+          ...m,
+          type: 'mentor' as GlobalSearchResultType,
+        }));
+        results.push(...mentors);
+        total += mentorResult.meta?.total ?? mentors.length;
+      } catch (err) {
+        // Non-fatal: continue with other types
+        console.error('[globalSearch] mentor search failed:', err);
       }
-
-      const warmEntries = popular.map(({ query }) => ({
-        key: buildEsCacheKey({ query }),
-        ttl: POPULAR_SEARCH_CACHE_TTL,
-        fn: async () => {
-          const searchQuery: SearchQuery = {
-            query,
-            filters: {},
-            page: 1,
-            limit: 10,
-            sort: 'relevance',
-          };
-          const result: SearchResult<MentorDocument> = await elasticsearchService.searchMentors(searchQuery);
-          return {
-            mentors: result.hits,
-            meta: {
-              total: result.total,
-              page: result.page,
-              limit: result.limit,
-              aggregations: result.aggregations,
-            },
-          };
-        },
-      }));
-
-      await CacheService.warm(warmEntries);
-      logger.info(`Search cache warmed for ${popular.length} popular queries`);
-    } catch (error) {
-      logger.error('Search cache warming failed', { error });
     }
-  }
 
-  /**
-   * Invalidate all search caches.
-   *
-   * Call this when mentor profiles are updated so stale results are evicted.
-   * Invalidates both Elasticsearch and PostgreSQL search cache namespaces.
-   */
-  static async invalidateSearchCache(): Promise<void> {
-    await Promise.all([
-      CacheService.invalidatePattern('mm:search:es:v1:*'),
-      CacheService.invalidatePattern('mm:search:mentors:v1:*'),
-      CacheService.invalidatePattern('mm:search:autocomplete:*'),
-    ]);
-    logger.info('Search cache invalidated');
+    // ----- Sessions / Bookings -----
+    if (types.includes('session')) {
+      try {
+        const pattern = `%${query}%`;
+        const sessionRows = await pool.query<{
+          id: string;
+          title: string | null;
+          description: string | null;
+          scheduled_at: string;
+          status: string;
+          mentor_id: string;
+          mentee_id: string;
+          total_count: string;
+        }>(
+          `SELECT id, title, description, scheduled_at, status, mentor_id, mentee_id,
+                  'session' AS type,
+                  COUNT(*) OVER() AS total_count
+           FROM bookings
+           WHERE (mentor_id = $1 OR mentee_id = $1)
+             AND (title ILIKE $2 OR description ILIKE $2)
+             AND status NOT IN ('cancelled')
+           ORDER BY scheduled_at DESC
+           LIMIT $3 OFFSET $4`,
+          [userId, pattern, limit, offset],
+        );
+
+        const sessions = sessionRows.rows.map((row) => ({
+          ...row,
+          type: 'session' as GlobalSearchResultType,
+        }));
+        results.push(...sessions);
+        total += parseInt(sessionRows.rows[0]?.total_count ?? '0', 10);
+      } catch (err) {
+        console.error('[globalSearch] session search failed:', err);
+      }
+    }
+
+    // ----- Messages -----
+    if (types.includes('message')) {
+      try {
+        const messagingService = new MessagingService();
+        const messageResult = await messagingService.searchMessages(userId, query, page, limit);
+        const messages = (messageResult.results as any[]).map((m: any) => ({
+          ...m,
+          type: 'message' as GlobalSearchResultType,
+        }));
+        results.push(...messages);
+        total += messageResult.total;
+      } catch (err) {
+        console.error('[globalSearch] message search failed:', err);
+      }
+    }
+
+    const searchResult: GlobalSearchResult = {
+      results,
+      meta: {
+        total,
+        page,
+        limit,
+        types,
+      },
+    };
+
+    await CacheService.set(cacheKey, searchResult, CacheTTL.short);
+
+    return searchResult;
   }
 }

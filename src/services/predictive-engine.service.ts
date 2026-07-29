@@ -110,6 +110,14 @@ export const PredictiveEngineService = {
       try {
         logger.info('Generating revenue forecast', { months, currency });
 
+        if (!await this.relationExists('mv_revenue_time_series')) {
+          logger.warn('Revenue forecasting view missing; returning empty forecast', {
+            view: 'mv_revenue_time_series',
+            migration: '102_create_forecasting_views.sql'
+          });
+          return [];
+        }
+
         // Get historical revenue data
         const query = `
           SELECT 
@@ -126,7 +134,11 @@ export const PredictiveEngineService = {
         const { rows } = await pool.query(query, params);
 
         if (rows.length < 30) { // Need at least 30 days of data
-          throw new Error('Insufficient historical data for revenue forecasting');
+          logger.warn('Insufficient historical data for revenue forecasting', {
+            rows: rows.length,
+            minimumRows: 30
+          });
+          return [];
         }
 
         // Group by currency if not specified
@@ -179,6 +191,14 @@ export const PredictiveEngineService = {
       try {
         logger.info('Generating demand forecast', { days });
 
+        if (!await this.relationExists('mv_hourly_session_demand')) {
+          logger.warn('Demand forecasting view missing; returning empty forecast', {
+            view: 'mv_hourly_session_demand',
+            migration: '102_create_forecasting_views.sql'
+          });
+          return [];
+        }
+
         // Get historical hourly demand data
         const query = `
           SELECT 
@@ -195,7 +215,11 @@ export const PredictiveEngineService = {
         const { rows } = await pool.query(query);
 
         if (rows.length < 168) { // Need at least 1 week of hourly data
-          throw new Error('Insufficient historical data for demand forecasting');
+          logger.warn('Insufficient historical data for demand forecasting', {
+            rows: rows.length,
+            minimumRows: 168
+          });
+          return [];
         }
 
         // Group by day of week and hour
@@ -245,6 +269,21 @@ export const PredictiveEngineService = {
       }
     });
   },
+
+  async relationExists(relationName: string): Promise<boolean> {
+    const { rows } = await pool.query(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM information_schema.tables
+         WHERE table_schema = 'public'
+           AND table_name = $1
+           AND table_type IN ('BASE TABLE', 'MATERIALIZED VIEW')
+       ) AS exists`,
+      [relationName],
+    );
+    return rows[0]?.exists === true;
+  },
+
   /**
    * Calculate forecast accuracy
    */
