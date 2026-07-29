@@ -1677,3 +1677,119 @@ router.get(
 );
 
 export default router;
+
+// ─── Admin Impersonation (issue #750) ─────────────────────────────────────────
+
+/**
+ * @swagger
+ * /admin/users/{id}/impersonate:
+ *   post:
+ *     summary: Start an admin impersonation session for a user
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Target user ID to impersonate
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 minLength: 1
+ *                 description: Business reason for impersonating this user
+ *           example:
+ *             reason: "Debugging reported UI bug in booking flow"
+ *     responses:
+ *       200:
+ *         description: Impersonation session started; contains a 15-minute JWT
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         token:
+ *                           type: string
+ *                         sessionId:
+ *                           type: string
+ *                           format: uuid
+ *                         expiresAt:
+ *                           type: string
+ *                           format: date-time
+ *                         targetUser:
+ *                           type: object
+ *       400:
+ *         description: Missing reason or invalid target user
+ *       403:
+ *         description: Cannot impersonate another admin
+ *       404:
+ *         description: Target user not found
+ */
+router.post(
+  "/users/:id/impersonate",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "USER", id: req.params.id as string }),
+  }),
+  asyncHandler(AdminController.startImpersonation),
+);
+
+/**
+ * @swagger
+ * /admin/impersonation/{sessionId}:
+ *   delete:
+ *     summary: Explicitly end an active impersonation session
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Impersonation session ID to end
+ *     responses:
+ *       200:
+ *         description: Impersonation session ended
+ *       404:
+ *         description: Session not found or already ended
+ */
+router.delete(
+  "/impersonation/:sessionId",
+  auditLogMiddleware({
+    action: AuditAction.ADMIN_ACTION,
+    getEntityDetails: (req) => ({ type: "IMPERSONATION_SESSION", id: req.params.sessionId as string }),
+  }),
+  asyncHandler(AdminController.endImpersonation),
+);
+
+/**
+ * @swagger
+ * /admin/impersonation:
+ *   get:
+ *     summary: List active impersonation sessions for the calling admin
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of active impersonation sessions
+ */
+router.get("/impersonation", asyncHandler(AdminController.listActiveImpersonations));
