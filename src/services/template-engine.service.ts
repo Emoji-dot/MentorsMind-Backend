@@ -24,7 +24,7 @@ export interface ValidationResult {
 export interface Template {
   id: string;
   name: string;
-  type: 'email' | 'in_app';
+  type: "email" | "in_app";
   subject?: string;
   htmlContent: string;
   textContent: string;
@@ -37,7 +37,10 @@ export interface Template {
  * In production, this could be replaced with Redis
  */
 class TemplateCache {
-  private cache = new Map<string, { template: NotificationTemplateRecord; timestamp: number }>();
+  private cache = new Map<
+    string,
+    { template: NotificationTemplateRecord; timestamp: number }
+  >();
   private readonly TTL = 5 * 60 * 1000; // 5 minutes
 
   set(key: string, template: NotificationTemplateRecord): void {
@@ -83,11 +86,19 @@ export const TemplateEngineService = {
    * merged into the data object so every Handlebars template receives absolute
    * CDN URLs — fixing broken images in Outlook and corporate email clients.
    */
-  async renderEmail(templateId: string, data: any): Promise<RenderedEmail> {
+  async renderEmail(
+    templateId: string | { name: string; tenantId?: string },
+    data: any,
+  ): Promise<RenderedEmail> {
     try {
-      const template = await this.getTemplate(templateId);
-      
-      if (!template || template.type !== 'email') {
+      const templateIdStr =
+        typeof templateId === "string" ? templateId : templateId.name;
+      const tenantId =
+        typeof templateId === "string" ? undefined : templateId.tenantId;
+
+      const template = await this.resolveTemplate(templateIdStr, tenantId);
+
+      if (!template || (template as any).type !== "email") {
         logger.warn(`Email template ${templateId} not found, using fallback`);
         return this.getFallbackEmailTemplate(data);
       }
@@ -107,7 +118,7 @@ export const TemplateEngineService = {
         textContent: this.sanitizeOutput(textContent),
       };
     } catch (error) {
-      logger.error('Failed to render email template:', error);
+      logger.error("Failed to render email template:", error);
       return this.getFallbackEmailTemplate(data);
     }
   },
@@ -115,17 +126,31 @@ export const TemplateEngineService = {
   /**
    * Render in-app notification template with data
    */
-  async renderInApp(templateId: string, data: any): Promise<RenderedNotification> {
+  async renderInApp(
+    templateId: string | { name: string; tenantId?: string },
+    data: any,
+  ): Promise<RenderedNotification> {
     try {
-      const template = await this.getTemplate(templateId);
-      
-      if (!template || template.type !== 'in_app') {
+      const templateIdStr =
+        typeof templateId === "string" ? templateId : templateId.name;
+      const tenantId =
+        typeof templateId === "string" ? undefined : templateId.tenantId;
+
+      const template = await this.resolveTemplate(templateIdStr, tenantId);
+
+      if (!template || (template as any).type !== "in_app") {
         logger.warn(`In-app template ${templateId} not found, using fallback`);
         return this.getFallbackInAppTemplate(data);
       }
 
-      const title = this.interpolateTemplate(template.subject || 'Notification', data);
-      const message = this.interpolateTemplate(template.text_content, data);
+      const title = this.interpolateTemplate(
+        (template as any).subject || "Notification",
+        data,
+      );
+      const message = this.interpolateTemplate(
+        (template as any).text_content,
+        data,
+      );
 
       return {
         title: this.sanitizeOutput(title),
@@ -133,7 +158,7 @@ export const TemplateEngineService = {
         data: data || {},
       };
     } catch (error) {
-      logger.error('Failed to render in-app template:', error);
+      logger.error("Failed to render in-app template:", error);
       return this.getFallbackInAppTemplate(data);
     }
   },
@@ -151,12 +176,12 @@ export const TemplateEngineService = {
     try {
       // Validate required fields
       if (!template.id || !template.name) {
-        result.errors.push('Template ID and name are required');
+        result.errors.push("Template ID and name are required");
         result.isValid = false;
       }
 
       if (!template.htmlContent && !template.textContent) {
-        result.errors.push('Template must have either HTML or text content');
+        result.errors.push("Template must have either HTML or text content");
         result.isValid = false;
       }
 
@@ -170,19 +195,24 @@ export const TemplateEngineService = {
       // Check for undefined variables
       const undefinedVars = this.findUndefinedVariables(template);
       if (undefinedVars.length > 0) {
-        result.warnings.push(`Undefined variables found: ${undefinedVars.join(', ')}`);
+        result.warnings.push(
+          `Undefined variables found: ${undefinedVars.join(", ")}`,
+        );
       }
 
       // Validate HTML content for XSS vulnerabilities
       if (template.htmlContent) {
-        const xssWarnings = this.checkForXssVulnerabilities(template.htmlContent);
+        const xssWarnings = this.checkForXssVulnerabilities(
+          template.htmlContent,
+        );
         if (xssWarnings.length > 0) {
           result.warnings.push(...xssWarnings);
         }
       }
-
     } catch (error) {
-      result.errors.push(`Validation error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      result.errors.push(
+        `Validation error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
       result.isValid = false;
     }
 
@@ -206,10 +236,12 @@ export const TemplateEngineService = {
   /**
    * Get template from cache or database
    */
-  async getTemplate(templateId: string): Promise<NotificationTemplateRecord | null> {
+  async getTemplate(
+    templateId: string,
+  ): Promise<NotificationTemplateRecord | null> {
     // Try cache first
     let template = this.cache.get(templateId);
-    
+
     if (!template) {
       // Load from database
       template = await NotificationTemplatesModel.getById(templateId);
@@ -226,7 +258,7 @@ export const TemplateEngineService = {
    */
   interpolateTemplate(template: string, data: any): string {
     if (!template || !data) {
-      return template || '';
+      return template || "";
     }
 
     return template.replace(/\{\{(\w+)\}\}/g, (match, variable) => {
@@ -239,7 +271,7 @@ export const TemplateEngineService = {
    * Get nested value from object using dot notation
    */
   getNestedValue(obj: any, path: string): any {
-    return path.split('.').reduce((current, key) => {
+    return path.split(".").reduce((current, key) => {
       return current && current[key] !== undefined ? current[key] : undefined;
     }, obj);
   },
@@ -248,34 +280,37 @@ export const TemplateEngineService = {
    * Sanitize output to prevent XSS attacks
    */
   sanitizeOutput(input: string): string {
-    if (!input) return '';
-    
+    if (!input) return "";
+
     return input
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#x27;')
-      .replace(/\//g, '&#x2F;');
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#x27;")
+      .replace(/\//g, "&#x2F;");
   },
 
   /**
    * Sanitize HTML content while preserving safe tags
    */
   sanitizeHtml(html: string): string {
-    if (!html) return '';
+    if (!html) return "";
 
     // Allow only safe HTML tags and attributes
     // Simple HTML sanitization (in production, use a library like DOMPurify)
     let sanitized = html;
 
     // Remove script tags and their content
-    sanitized = sanitized.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-    
+    sanitized = sanitized.replace(
+      /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
+      "",
+    );
+
     // Remove dangerous event handlers
-    sanitized = sanitized.replace(/\s*on\w+\s*=\s*["'][^"']*["']/gi, '');
-    
+    sanitized = sanitized.replace(/\s*on\w+\s*=\s*["'][^"']*["']/gi, "");
+
     // Remove javascript: URLs
-    sanitized = sanitized.replace(/href\s*=\s*["']javascript:[^"']*["']/gi, '');
+    sanitized = sanitized.replace(/href\s*=\s*["']javascript:[^"']*["']/gi, "");
 
     return sanitized;
   },
@@ -291,19 +326,19 @@ export const TemplateEngineService = {
     // Check for unmatched braces
     const openBraces = (template.match(/\{\{/g) || []).length;
     const closeBraces = (template.match(/\}\}/g) || []).length;
-    
+
     if (openBraces !== closeBraces) {
-      errors.push('Unmatched template braces {{ }}');
+      errors.push("Unmatched template braces {{ }}");
     }
 
     // Check for nested braces (not supported in simple implementation)
-    if (template.includes('{{{') || template.includes('}}}')) {
-      errors.push('Nested braces are not supported');
+    if (template.includes("{{{") || template.includes("}}}")) {
+      errors.push("Nested braces are not supported");
     }
 
     // Check for empty variable names
-    if (template.includes('{{}}')) {
-      errors.push('Empty variable names are not allowed');
+    if (template.includes("{{}}")) {
+      errors.push("Empty variable names are not allowed");
     }
 
     return errors;
@@ -318,20 +353,22 @@ export const TemplateEngineService = {
 
     // Extract variables from all template content
     const contents = [
-      template.subject || '',
-      template.htmlContent || '',
-      template.textContent || '',
-    ].join(' ');
+      template.subject || "",
+      template.htmlContent || "",
+      template.textContent || "",
+    ].join(" ");
 
     const variableMatches = contents.match(/\{\{(\w+)\}\}/g);
     if (variableMatches) {
-      variableMatches.forEach(match => {
-        const variable = match.replace(/\{\{|\}\}/g, '');
+      variableMatches.forEach((match) => {
+        const variable = match.replace(/\{\{|\}\}/g, "");
         usedVariables.add(variable);
       });
     }
 
-    return Array.from(usedVariables).filter(variable => !definedVariables.has(variable));
+    return Array.from(usedVariables).filter(
+      (variable) => !definedVariables.has(variable),
+    );
   },
 
   /**
@@ -344,22 +381,22 @@ export const TemplateEngineService = {
 
     // Check for script tags
     if (/<script/i.test(html)) {
-      warnings.push('Script tags detected in HTML content');
+      warnings.push("Script tags detected in HTML content");
     }
 
     // Check for event handlers
     if (/\s*on\w+\s*=/i.test(html)) {
-      warnings.push('Event handlers detected in HTML content');
+      warnings.push("Event handlers detected in HTML content");
     }
 
     // Check for javascript: URLs
     if (/javascript:/i.test(html)) {
-      warnings.push('JavaScript URLs detected in HTML content');
+      warnings.push("JavaScript URLs detected in HTML content");
     }
 
     // Check for data: URLs
     if (/data:/i.test(html)) {
-      warnings.push('Data URLs detected in HTML content');
+      warnings.push("Data URLs detected in HTML content");
     }
 
     return warnings;
@@ -369,10 +406,10 @@ export const TemplateEngineService = {
    * Get fallback email template
    */
   getFallbackEmailTemplate(data: any): RenderedEmail {
-    const name = data?.name || data?.user?.name || 'User';
-    
+    const name = data?.name || data?.user?.name || "User";
+
     return {
-      subject: 'Notification from MentorMinds',
+      subject: "Notification from MentorMinds",
       htmlContent: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #4A90E2;">Hello ${this.sanitizeOutput(name)}</h2>
@@ -390,8 +427,8 @@ export const TemplateEngineService = {
    */
   getFallbackInAppTemplate(data: any): RenderedNotification {
     return {
-      title: 'New Notification',
-      message: 'You have a new notification.',
+      title: "New Notification",
+      message: "You have a new notification.",
       data: data || {},
     };
   },
@@ -417,7 +454,7 @@ export const TemplateEngineService = {
    * Preload commonly used templates
    */
   async preloadTemplates(templateIds: string[]): Promise<void> {
-    const promises = templateIds.map(id => this.cacheTemplate(id));
+    const promises = templateIds.map((id) => this.cacheTemplate(id));
     await Promise.all(promises);
   },
 
@@ -430,7 +467,7 @@ export const TemplateEngineService = {
       htmlContent: template.htmlContent,
       textContent: template.textContent,
     });
-    
-    return createHash('md5').update(content).digest('hex');
+
+    return createHash("md5").update(content).digest("hex");
   },
 };

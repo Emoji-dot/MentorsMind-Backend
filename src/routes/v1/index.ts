@@ -94,6 +94,7 @@ router.use("/webhooks", webhookRoutes);
 router.use("/dl", deepLinkRoutes);
 router.use("/notifications", notificationsRoutes);
 router.use("/", notesRoutes);
+router.use("/tenant/email-templates", tenantEmailTemplatesRoutes);
 
 // Learning Path Builder routes
 router.use("/learning-paths", learningPathRoutes);
