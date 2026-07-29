@@ -250,7 +250,6 @@ const envSchema = z.object({
   RETENTION_AUDIT_LOGS_YEARS: z.string().regex(/^\d+$/).default("7"),
   RETENTION_PAYMENTS_YEARS: z.string().regex(/^\d+$/).default("7"),
   RETENTION_SESSIONS_YEARS: z.string().regex(/^\d+$/).default("2"),
-
   // Audit Log Archival (issue #772) — audit rows older than this move from hot
   // PostgreSQL storage to a compressed, S3 Object Lock (WORM) archive, so they
   // remain queryable for RETENTION_AUDIT_LOGS_YEARS without staying in the DB.

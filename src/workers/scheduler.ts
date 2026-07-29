@@ -10,6 +10,9 @@ import { VerificationService } from "../services/verification.service";
 import { BackgroundCheckService } from "../services/background-check.service";
 import { EnrollmentService } from "../services/enrollment.service";
 import { accountDeletionJob } from "../jobs/accountDeletion.job";
+import databaseMaintenanceJob from "../jobs/database-maintenance.job";
+import staleDataCleanupJob from "../jobs/stale-data-cleanup.job";
+import deprecationMaintenanceJob from "../jobs/deprecation-maintenance.job";
 import { logger } from "../utils/logger.utils";
 import config from "../config";
 import { AuditLogModel } from "../models/audit-log.model";
@@ -174,6 +177,9 @@ export async function startScheduler(): Promise<void> {
       jobId: "audit-log-archival-recurring",
     },
   );
+  databaseMaintenanceJob.initialize();
+  staleDataCleanupJob.initialize();
+  deprecationMaintenanceJob.initialize();
 
   // JWT Key Rotation — monthly on the 1st at 00:00 UTC (issue #778)
   await addRepeatableJobIfNotExists(
@@ -263,5 +269,20 @@ export async function runMaintenanceTasks(): Promise<void> {
     }
   } catch (error) {
     logger.error("Maintenance: error cleaning up expired exports", { error });
+  }
+
+  try {
+    const cleanupResult = await staleDataCleanupJob.triggerCleanup();
+    logger.info("Maintenance: stale data cleanup completed", {
+      dryRun: cleanupResult.dryRun,
+      durationMs: cleanupResult.durationMs,
+      operations: cleanupResult.operations.map((operation) => ({
+        table: operation.table,
+        rowsDeleted: operation.rowsDeleted,
+        status: operation.status,
+      })),
+    });
+  } catch (error) {
+    logger.error("Maintenance: error running stale data cleanup", { error });
   }
 }
