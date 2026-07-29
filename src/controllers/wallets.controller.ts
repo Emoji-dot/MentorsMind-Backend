@@ -3,6 +3,7 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../types';
 import { WalletsService } from '../services/wallets.service';
 import { stellarService } from '../services/stellar.service';
+import { defiWalletService } from '../services/defi-wallet.service';
 import { ResponseUtil } from '../utils/response.utils';
 import { logger } from '../utils/logger.utils';
 import type { 
@@ -14,6 +15,90 @@ import type {
 } from '../validators/schemas/wallet.schemas';
 
 export const WalletsController = {
+  /** POST /wallets/defi/sync */
+  async syncDeFiPositions(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user!.userId;
+      const positions = await defiWalletService.syncPositions(userId);
+      const totalValue = await defiWalletService.getPortfolioValue(userId);
+      const portfolioRisk = defiWalletService.calculatePortfolioRisk(positions);
+
+      await WalletsService.logWalletEvent(userId, {
+        eventType: 'balance_check',
+        metadata: {
+          action: 'defi_sync',
+          positionsCount: positions.length,
+          totalValue,
+          portfolioRisk,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('User-Agent'),
+      });
+
+      ResponseUtil.success(
+        res,
+        {
+          positions,
+          totalValue,
+          portfolioRisk,
+          cachedForSeconds: 600,
+          syncedAt: new Date().toISOString(),
+        },
+        'DeFi positions synced successfully',
+      );
+    } catch (error) {
+      logger.error('wallets.syncDeFiPositions failed', {
+        userId: req.user?.userId,
+        error: error instanceof Error ? error.message : error,
+      });
+      ResponseUtil.error(res, 'Failed to sync DeFi positions', 502);
+    }
+  },
+
+  /** GET /wallets/defi/positions */
+  async getDeFiPositions(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user!.userId;
+      const positions =
+        (await defiWalletService.getCachedPositions(userId)) ??
+        (await defiWalletService.syncPositions(userId));
+      const totalValue = positions.reduce(
+        (sum, position) => sum + parseFloat(position.value),
+        0,
+      );
+      const portfolioRisk = defiWalletService.calculatePortfolioRisk(positions);
+
+      await WalletsService.logWalletEvent(userId, {
+        eventType: 'balance_check',
+        metadata: {
+          action: 'defi_positions_view',
+          positionsCount: positions.length,
+          totalValue: totalValue.toFixed(2),
+          portfolioRisk,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('User-Agent'),
+      });
+
+      ResponseUtil.success(
+        res,
+        {
+          positions,
+          totalValue: totalValue.toFixed(2),
+          portfolioRisk,
+          cached: true,
+        },
+        'DeFi positions retrieved successfully',
+      );
+    } catch (error) {
+      logger.error('wallets.getDeFiPositions failed', {
+        userId: req.user?.userId,
+        error: error instanceof Error ? error.message : error,
+      });
+      ResponseUtil.error(res, 'Failed to retrieve DeFi positions', 502);
+    }
+  },
+
   /** GET /wallets/me */
   async getWalletInfo(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {

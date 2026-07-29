@@ -21,7 +21,8 @@ export const CalendarController = {
       tokenPrefix: (token as string).slice(0, 8),
     });
 
-    const feed = await CalendarService.getICalFeed(token as string);
+    const ip = req.ip || req.socket?.remoteAddress || "unknown";
+    const feed = await CalendarService.getICalFeed(token as string, ip);
 
     res.setHeader("Content-Type", "text/calendar; charset=utf-8");
     res.setHeader(
@@ -29,8 +30,8 @@ export const CalendarController = {
       'attachment; filename="mentorminds.ics"',
     );
     // private: disallow CDN/proxy caching of personal schedule data
-    // no-store: do not persist the response body in any cache
-    res.setHeader("Cache-Control", "private, no-store");
+    // max-age=300: cache in the client for 5 minutes
+    res.setHeader("Cache-Control", "private, max-age=300");
     res.send(feed);
   },
 

@@ -36,6 +36,7 @@ async function startWorkers() {
     maintenanceWorker,
     webhookDeliveryWorker,
     transcriptionWorker,
+    qualityScoreWorker,
     startScheduler,
     stopScheduler,
     startOutboxWorker,
@@ -59,7 +60,7 @@ async function startWorkers() {
       "maintenance",
       "webhookDelivery",
       "transcription",
-      "outbox",
+      "qualityScore",
     ],
   });
 
@@ -80,7 +81,7 @@ async function startWorkers() {
       maintenanceWorker.close(),
       webhookDeliveryWorker.close(),
       transcriptionWorker.close(),
-      stopOutboxWorker(),
+      qualityScoreWorker.close(),
       stopScheduler(),
     ]);
 

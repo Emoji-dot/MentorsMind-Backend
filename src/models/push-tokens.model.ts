@@ -1,5 +1,5 @@
-import pool from '../config/database';
-import { logger } from '../utils/logger';
+import pool from "../config/database";
+import { logger } from "../utils/logger";
 
 export interface PushTokenRecord {
   id: string;
@@ -8,6 +8,7 @@ export interface PushTokenRecord {
   device_type?: string;
   device_id?: string;
   is_active: boolean;
+  is_valid: boolean;
   last_used_at: Date;
   created_at: Date;
   updated_at: Date;
@@ -36,18 +37,24 @@ export const PushTokensModel = {
         device_type = COALESCE($3, push_tokens.device_type),
         device_id = COALESCE($4, push_tokens.device_id),
         is_active = TRUE,
+        is_valid = TRUE,
         last_used_at = NOW(),
         updated_at = NOW()
       RETURNING *;
     `;
 
-    const values = [input.user_id, input.token, input.device_type || null, input.device_id || null];
+    const values = [
+      input.user_id,
+      input.token,
+      input.device_type || null,
+      input.device_id || null,
+    ];
 
     try {
       const { rows } = await pool.query<PushTokenRecord>(query, values);
       return rows[0] || null;
     } catch (error) {
-      logger.error('Failed to upsert push token:', error);
+      logger.error("Failed to upsert push token:", error);
       return null;
     }
   },
@@ -58,7 +65,7 @@ export const PushTokensModel = {
   async getActiveTokensByUserId(userId: string): Promise<PushTokenRecord[]> {
     const query = `
       SELECT * FROM push_tokens
-      WHERE user_id = $1 AND is_active = TRUE
+      WHERE user_id = $1 AND is_active = TRUE AND is_valid = TRUE
       ORDER BY last_used_at DESC;
     `;
 
@@ -66,7 +73,7 @@ export const PushTokensModel = {
       const { rows } = await pool.query<PushTokenRecord>(query, [userId]);
       return rows;
     } catch (error) {
-      logger.error('Failed to get active push tokens:', error);
+      logger.error("Failed to get active push tokens:", error);
       return [];
     }
   },
@@ -85,7 +92,7 @@ export const PushTokensModel = {
       const { rowCount } = await pool.query(query, [userId, token]);
       return (rowCount ?? 0) > 0;
     } catch (error) {
-      logger.error('Failed to delete push token:', error);
+      logger.error("Failed to delete push token:", error);
       return false;
     }
   },
@@ -105,7 +112,7 @@ export const PushTokensModel = {
       const { rowCount } = await pool.query(query, [token]);
       return (rowCount ?? 0) > 0;
     } catch (error) {
-      logger.error('Failed to mark token inactive:', error);
+      logger.error("Failed to mark token inactive:", error);
       return false;
     }
   },
@@ -117,7 +124,7 @@ export const PushTokensModel = {
     const query = `
       UPDATE push_tokens
       SET last_used_at = NOW(), updated_at = NOW()
-      WHERE token = $1 AND is_active = TRUE
+      WHERE token = $1 AND is_active = TRUE AND is_valid = TRUE
       RETURNING id;
     `;
 
@@ -125,7 +132,7 @@ export const PushTokensModel = {
       const { rowCount } = await pool.query(query, [token]);
       return (rowCount ?? 0) > 0;
     } catch (error) {
-      logger.error('Failed to update token last_used_at:', error);
+      logger.error("Failed to update token last_used_at:", error);
       return false;
     }
   },
@@ -144,7 +151,7 @@ export const PushTokensModel = {
       const { rowCount } = await pool.query(query, [userId]);
       return rowCount ?? 0;
     } catch (error) {
-      logger.error('Failed to delete all push tokens for user:', error);
+      logger.error("Failed to delete all push tokens for user:", error);
       return 0;
     }
   },
@@ -164,8 +171,77 @@ export const PushTokensModel = {
       const { rowCount } = await pool.query(query);
       return rowCount ?? 0;
     } catch (error) {
-      logger.error('Failed to cleanup inactive tokens:', error);
+      logger.error("Failed to cleanup inactive tokens:", error);
       return 0;
+    }
+  },
+
+  /**
+   * Delete a token regardless of user (used when FCM reports token not registered)
+   */
+  async deleteByToken(token: string): Promise<boolean> {
+    const query = `
+      DELETE FROM push_tokens
+      WHERE token = $1
+      RETURNING id;
+    `;
+
+    try {
+      const { rowCount } = await pool.query(query, [token]);
+      return (rowCount ?? 0) > 0;
+    } catch (error) {
+      logger.error("Failed to delete push token by token:", error);
+      return false;
+    }
+  },
+
+  /**
+   * Deactivate tokens for the same user/device older than a threshold (days)
+   */
+  async deactivateOldTokens(
+    userId: string,
+    deviceId?: string,
+    daysOld: number = 30,
+  ): Promise<number> {
+    if (!deviceId) return 0;
+    const query = `
+      UPDATE push_tokens
+      SET is_active = FALSE, updated_at = NOW()
+      WHERE user_id = $1
+        AND device_id = $2
+        AND last_used_at < NOW() - INTERVAL '${daysOld} days'
+      RETURNING id;
+    `;
+
+    try {
+      const { rowCount } = await pool.query(query, [userId, deviceId]);
+      return rowCount ?? 0;
+    } catch (error) {
+      logger.error("Failed to deactivate old push tokens:", error);
+      return 0;
+    }
+  },
+
+  /**
+   * Fetch a batch of active & valid tokens with their user ids for validation
+   */
+  async getActiveTokensBatch(
+    limit: number,
+    offset: number,
+  ): Promise<Pick<PushTokenRecord, "user_id" | "token" | "device_id">[]> {
+    const query = `
+      SELECT user_id, token, device_id FROM push_tokens
+      WHERE is_active = TRUE AND is_valid = TRUE
+      ORDER BY last_used_at DESC
+      LIMIT $1 OFFSET $2;
+    `;
+
+    try {
+      const { rows } = await pool.query(query, [limit, offset]);
+      return rows;
+    } catch (error) {
+      logger.error("Failed to fetch active token batch:", error);
+      return [];
     }
   },
 };

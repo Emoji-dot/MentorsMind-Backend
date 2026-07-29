@@ -11,6 +11,7 @@ import {
   sendMessageSchema,
   deleteMessageSchema,
   markReadSchema,
+  batchMarkReadSchema,
   uploadAttachmentSchema,
 } from '../validators/schemas/conversations.schemas';
 
@@ -200,6 +201,47 @@ router.post(
   authenticate,
   validate(markReadSchema),
   asyncHandler(ConversationsController.markRead),
+);
+
+/**
+ * @swagger
+ * /api/v1/conversations/{id}/messages/read:
+ *   post:
+ *     summary: Batch mark specific messages as read
+ *     tags: [Conversations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [messageIds]
+ *             properties:
+ *               messageIds:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                   format: uuid
+ *     responses:
+ *       200:
+ *         description: Messages marked as read
+ *       400:
+ *         description: Invalid input
+ */
+router.post(
+  '/:id/messages/read',
+  authenticate,
+  validate(batchMarkReadSchema),
+  asyncHandler(ConversationsController.batchMarkAsRead),
 );
 
 /**
