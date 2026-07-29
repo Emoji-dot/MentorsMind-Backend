@@ -39,9 +39,12 @@ async function startWorkers() {
     qualityScoreWorker,
     startScheduler,
     stopScheduler,
+    startOutboxWorker,
+    stopOutboxWorker,
   } = await import("./workers");
 
   await startScheduler();
+  await startOutboxWorker();
 
   logger.info("[WorkerProcess] All workers and scheduler started", {
     workers: [
