@@ -54,6 +54,7 @@ export const QUEUE_NAMES = {
   RECORDING_CLEANUP: "recording-cleanup-queue",
   ANALYTICS_REFRESH: "analytics-refresh-queue",
   QUALITY_SCORE: "quality-score-queue",
+  CDN_INVALIDATION: "cdn-invalidation-queue",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -109,4 +110,5 @@ export const CONCURRENCY = {
   MAINTENANCE: 1,
   TRANSCRIPTION: 5,
   QUALITY_SCORE: 1,
+  CDN_INVALIDATION: 5,
 } as const;
