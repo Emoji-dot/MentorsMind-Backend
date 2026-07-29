@@ -56,6 +56,7 @@ export const QUEUE_NAMES = {
   ANALYTICS_REFRESH: "analytics-refresh-queue",
   QUALITY_SCORE: "quality-score-queue",
   CDN_INVALIDATION: "cdn-invalidation-queue",
+  INSIGHT_GENERATION: "insight-generation-queue",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -113,4 +114,6 @@ export const CONCURRENCY = {
   TRANSCRIPTION: 5,
   QUALITY_SCORE: 1,
   CDN_INVALIDATION: 5,
+  /** Parallel per-user insight jobs — supports ~1k users within 10 minutes */
+  INSIGHT_GENERATION: 20,
 } as const;
