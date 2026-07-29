@@ -255,6 +255,14 @@ const envSchema = z.object({
   // to the Swagger UI so third-party developers can try endpoints against
   // fixture data with no real side effects.
   SANDBOX_MODE: z.enum(["true", "false"]).default("false"),
+
+  // Email CDN assets (issue #752)
+  // Physical mailing address shown in email footers for CAN-SPAM / GDPR compliance.
+  COMPANY_ADDRESS: z.string().default("MentorMinds, Inc. — mentorminds.com"),
+  // Base URL for self-hosted email asset icons (logo, social icons).
+  // When CDN_BASE_URL is set, EmailCDNService uses it; otherwise this provides
+  // the fallback absolute URL prefix so email clients always get absolute URLs.
+  EMAIL_ASSETS_BASE_URL: z.string().url().optional(),
 });
 
 // ---------------------------------------------------------------------------
