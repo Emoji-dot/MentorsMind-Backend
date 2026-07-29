@@ -143,4 +143,7 @@ router.use("/sync", syncRoutes);
 // Unified global search across mentors, sessions, and messages (issue #738)
 router.use("/search", searchRoutes);
 
+// Verifiable Credentials (DID / W3C VC)
+router.use("/credentials", credentialsRoutes);
+
 export default router;
