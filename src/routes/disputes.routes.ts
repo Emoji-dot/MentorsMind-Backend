@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { DisputesController } from "../controllers/disputes.controller";
 import { validate } from "../middleware/validation.middleware";
+import { authenticate, requireRole } from "../middleware/auth.middleware";
 import {
   disputeIdParamSchema,
   openDisputeSchema,
@@ -11,7 +12,8 @@ import {
 
 const router = Router();
 
-// Middleware placeholder for authentication (assume it's attached where this router is mounted)
+// Apply authentication to all dispute routes
+router.use(authenticate as any);
 
 // User/Admin routes
 router.get("/templates/resolution", DisputesController.getResolutionTemplates);
@@ -27,11 +29,13 @@ router.post(
 // Admin-only routes
 router.post(
   "/:id/resolve",
+  requireRole(["admin"]) as any,
   validate(resolveDisputeSchema),
   DisputesController.resolveDispute,
 );
 router.post(
   "/:id/mediate",
+  requireRole(["admin"]) as any,
   validate(mediateDisputeSchema),
   DisputesController.mediateDispute,
 );

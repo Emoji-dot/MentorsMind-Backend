@@ -1,7 +1,19 @@
-import { GoalModel, Goal, GoalProgressLog } from '../models/goal.model';
+import {
+  GoalModel,
+  Goal,
+  GoalProgressLog,
+  AtRiskGoal,
+  GoalReminderCandidate,
+  GoalReminderType,
+  GoalMentorSuggestion,
+} from '../models/goal.model';
 import { createError } from '../middleware/errorHandler';
 
 import { LearnerService } from './learners.service';
+
+export interface BookingSuggestion extends GoalMentorSuggestion {
+  booking_url: string;
+}
 
 export class GoalService {
   static async createGoal(learnerId: string, data: Partial<Goal>): Promise<Goal> {
@@ -26,6 +38,16 @@ export class GoalService {
     const goal = await this.getGoal(id, learnerId);
     
     const updateData = { ...data };
+
+    if (
+      updateData.target_date !== undefined &&
+      updateData.target_date !== goal.target_date
+    ) {
+      updateData.reminder_sent_7d = false;
+      updateData.reminder_sent_3d = false;
+      updateData.reminder_sent_1d = false;
+      updateData.overdue_notified = false;
+    }
     
     // Auto-complete logic
     if (updateData.progress !== undefined) {
@@ -76,5 +98,77 @@ export class GoalService {
     await this.getGoal(id, learnerId);
     // Note: In a real system, we'd also verify booking exists and belongs to learner
     await GoalModel.linkBooking(id, bookingId);
+  }
+
+  static async listAtRiskGoals(learnerId: string): Promise<AtRiskGoal[]> {
+    return GoalModel.findAtRiskGoals(learnerId);
+  }
+
+  static async getGoalsDueForReminder(
+    reminderType: GoalReminderType,
+  ): Promise<GoalReminderCandidate[]> {
+    return GoalModel.findGoalsForReminder(reminderType);
+  }
+
+  static async markReminderSent(
+    goalId: string,
+    reminderType: GoalReminderType,
+  ): Promise<void> {
+    await GoalModel.markReminderSent(goalId, reminderType);
+  }
+
+  static async getBookingSuggestion(
+    goal: Pick<Goal, 'title' | 'description'>,
+  ): Promise<BookingSuggestion | null> {
+    const keywords = this.extractGoalKeywords(goal);
+    const suggestion = await GoalModel.findBestMentorSuggestion(keywords);
+
+    if (!suggestion) {
+      return null;
+    }
+
+    return {
+      ...suggestion,
+      booking_url: `/api/v1/bookings`,
+    };
+  }
+
+  static extractGoalKeywords(
+    goal: Pick<Goal, 'title' | 'description'>,
+  ): string[] {
+    const stopWords = new Set([
+      'about',
+      'after',
+      'before',
+      'build',
+      'complete',
+      'finish',
+      'goal',
+      'have',
+      'into',
+      'learn',
+      'learning',
+      'make',
+      'more',
+      'over',
+      'plan',
+      'that',
+      'this',
+      'through',
+      'want',
+      'with',
+      'your',
+    ]);
+
+    const raw = `${goal.title} ${goal.description || ''}`.toLowerCase();
+    const tokens = raw
+      .split(/[^a-z0-9+#.]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3 && !stopWords.has(token));
+
+    const fullTitle = goal.title.trim().toLowerCase();
+    const ordered = fullTitle.length >= 3 ? [fullTitle, ...tokens] : tokens;
+
+    return Array.from(new Set(ordered)).slice(0, 12);
   }
 }

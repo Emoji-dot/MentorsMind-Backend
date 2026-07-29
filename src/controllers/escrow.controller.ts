@@ -237,4 +237,24 @@ export const EscrowController = {
       ResponseUtil.error(res, error instanceof Error ? error.message : 'Failed to retrieve escrows');
     }
   },
+
+  /** GET /api/v1/admin/escrow/pending-releases - List pending auto-releases */
+  async getPendingReleases(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { escrowReleaseQueue } = await import('../queues/escrow-release.queue');
+      const delayedJobs = await escrowReleaseQueue.getDelayed();
+      
+      const pendingReleases = delayedJobs.map(job => ({
+        jobId: job.id,
+        escrowId: job.data.escrowId,
+        mentorId: job.data.mentorId,
+        learnerId: job.data.learnerId,
+        releaseScheduledAt: job.timestamp + (job.delay || 0),
+      }));
+
+      ResponseUtil.success(res, pendingReleases, 'Pending escrow releases retrieved successfully');
+    } catch (error) {
+      ResponseUtil.error(res, error instanceof Error ? error.message : 'Failed to retrieve pending releases');
+    }
+  },
 };

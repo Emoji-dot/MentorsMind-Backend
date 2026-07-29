@@ -6,6 +6,7 @@ import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { Queue } from "bullmq";
 import { redisConnection } from "../queues/queue.config";
+import { WebhookCircuitBreaker, CircuitStatus } from "./webhook-circuit-breaker.service";
 
 export interface WebhookEvent {
   event: string;
@@ -354,7 +355,7 @@ export const WebhookService = {
     secret: string,
     payload: Record<string, unknown>,
     attemptNumber: number,
-  ): Promise<void> {
+  ): Promise<{ success: boolean }> {
     try {
       const startTime = Date.now();
       const signature = this.generateSignature(payload as any, secret);
@@ -387,6 +388,7 @@ export const WebhookService = {
         }
 
         logger.info("Webhook delivered successfully", { deliveryId, webhookId, attemptNumber, durationMs });
+        return { success: true };
       } else {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -449,7 +451,14 @@ export const WebhookService = {
 
         logger.error("Webhook delivery failed permanently", { deliveryId, webhookId, attemptNumber, error: errorMessage });
       }
+
+      return { success: false };
     }
+  },
+
+  /** Circuit breaker state for this endpoint URL, for display in the webhook details API (issue #783). */
+  async getCircuitBreakerStatus(url: string): Promise<CircuitStatus> {
+    return WebhookCircuitBreaker.getStatus(url);
   },
 
   async sendFailureAlert(webhookId: string, failureCount: number): Promise<void> {

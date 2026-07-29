@@ -1,4 +1,5 @@
 import { Router } from "express";
+import multer from "multer";
 import { UsersController } from "../controllers/users.controller";
 import { DataExportController } from "../controllers/dataExport.controller";
 import { authenticate } from "../middleware/auth.middleware";
@@ -9,10 +10,29 @@ import { asyncHandler } from "../utils/asyncHandler.utils";
 import {
   updateUserSchema,
   updateMeSchema,
-  avatarUploadSchema,
 } from "../validators/schemas/users.schemas";
 import { idParamSchema } from "../validators/schemas/common.schemas";
 import { RecommendationController } from "../controllers/recommendation.controller";
+import { MAX_AVATAR_SIZE_BYTES } from "../services/upload.service";
+
+// ---------------------------------------------------------------------------
+// Multer — in-memory storage for avatar uploads
+// 5 MB hard limit enforced here (UploadService also validates for defence-in-depth)
+// ---------------------------------------------------------------------------
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_AVATAR_SIZE_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      // Pass error so multer rejects the upload early
+      cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', file.fieldname));
+    }
+  },
+});
+
 
 const router = Router();
 
@@ -199,16 +219,28 @@ router.get(
  * @swagger
  * /users/avatar:
  *   post:
- *     summary: Upload user avatar (base64)
+ *     summary: Upload user avatar (multipart/form-data)
+ *     description: |
+ *       Upload an image file as the authenticated user's avatar.
+ *       The image is resized to 256×256 JPEG before being stored on S3.
+ *       Only image/jpeg, image/png, and image/webp are accepted.
+ *       Maximum file size is 5 MB.
  *     tags: [Users]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
- *         application/json:
+ *         multipart/form-data:
  *           schema:
- *             $ref: '#/components/schemas/AvatarUploadRequest'
+ *             type: object
+ *             required:
+ *               - avatar
+ *             properties:
+ *               avatar:
+ *                 type: string
+ *                 format: binary
+ *                 description: Image file (JPEG, PNG, or WebP). Max 5 MB.
  *     responses:
  *       200:
  *         description: Avatar updated successfully
@@ -225,25 +257,22 @@ router.get(
  *                         avatarUrl:
  *                           type: string
  *                           format: uri
- *                           example: https://cdn.mentorminds.com/avatars/user-123.jpg
+ *                           example: https://cdn.mentorminds.com/avatars/user-123/1720000000000.jpg
  *       400:
- *         description: Invalid image data
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
+ *         description: No file provided
  *       401:
  *         description: Unauthorized
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
+ *       413:
+ *         description: File exceeds 5 MB limit
+ *       415:
+ *         description: Unsupported media type (only JPEG, PNG, WebP allowed)
  */
 router.post(
   "/avatar",
-  validate(avatarUploadSchema),
+  avatarUpload.single('avatar'),
   asyncHandler(UsersController.uploadAvatar),
 );
+
 
 /**
  * @swagger

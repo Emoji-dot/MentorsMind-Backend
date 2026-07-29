@@ -11,6 +11,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.middleware';
 import { OfflineController } from '../controllers/offline.controller';
+import { syncCursorMiddleware } from '../middleware/sync-cursor.middleware';
 import { validate } from '../middleware/validation.middleware';
 import {
   getSnapshotSchema,
@@ -49,6 +50,7 @@ const snapshotLimiter = rateLimit({
 
 // All offline routes require authentication
 router.use(authenticate as any);
+router.use(syncCursorMiddleware);
 
 /**
  * @swagger

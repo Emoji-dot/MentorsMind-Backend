@@ -7,6 +7,9 @@ import {
   Participant,
   ScreenShareState,
 } from '../types/collaboration.types';
+import { CodeCollaborationService } from './code-collaboration.service';
+import { OTOperation } from '../utils/operational-transform.utils';
+import { CacheService } from './cache.service';
 
 interface JoinPayload {
   sessionId: string;
@@ -39,9 +42,11 @@ export const initializeCollaborationSocket = (httpServer: HttpServer): void => {
       }
 
       const room = `collab:${payload.sessionId}`;
+      const sessionRoom = `session:${payload.sessionId}`;
       socket.data.sessionId = payload.sessionId;
       socket.data.userId = payload.userId;
       socket.join(room);
+      socket.join(sessionRoom);
       socket.to(room).emit('participantJoined', {
         sessionId: payload.sessionId,
         userId: payload.userId,
@@ -89,25 +94,78 @@ export const initializeCollaborationSocket = (httpServer: HttpServer): void => {
       }
     });
 
-    socket.on('codeUpdate', async (payload: CollaborationPayload) => {
-      if (!payload || !payload.sessionId || !payload.userId || !payload.sharedCode) {
+    socket.on('codeUpdate', async (payload: { sessionId: string; userId: string; operation: OTOperation }) => {
+      if (!payload || !payload.sessionId || !payload.userId || !payload.operation) {
         return;
       }
 
-      const room = `collab:${payload.sessionId}`;
-      socket.to(room).emit('codeUpdate', {
-        sessionId: payload.sessionId,
-        userId: payload.userId,
-        sharedCode: payload.sharedCode,
-      });
+      const sessionRoom = `session:${payload.sessionId}`;
 
       try {
-        await CollaborationService.updateCollaborationSession(payload.sessionId, {
-          sharedCode: payload.sharedCode,
-        }, payload.userId);
+        const transformedOp = await CodeCollaborationService.applyOperation(payload.sessionId, payload.operation);
+        
+        socket.to(sessionRoom).emit('codeUpdate', {
+          sessionId: payload.sessionId,
+          userId: payload.userId,
+          operation: transformedOp,
+        });
+
+        socket.emit('codeUpdateAck', {
+          sessionId: payload.sessionId,
+          operation: transformedOp,
+        });
       } catch (error) {
         console.error('Failed to persist code editor update:', error);
       }
+    });
+
+    socket.on('codeUndo', async (payload: { sessionId: string; userId: string }) => {
+      try {
+        const op = await CodeCollaborationService.undo(payload.sessionId, payload.userId);
+        if (op) {
+          const sessionRoom = `session:${payload.sessionId}`;
+          io.to(sessionRoom).emit('codeUpdate', {
+            sessionId: payload.sessionId,
+            userId: payload.userId,
+            operation: op,
+            isUndo: true
+          });
+        }
+      } catch (error) {
+        console.error('Failed to undo:', error);
+      }
+    });
+
+    socket.on('codeRedo', async (payload: { sessionId: string; userId: string }) => {
+      try {
+        const op = await CodeCollaborationService.redo(payload.sessionId, payload.userId);
+        if (op) {
+          const sessionRoom = `session:${payload.sessionId}`;
+          io.to(sessionRoom).emit('codeUpdate', {
+            sessionId: payload.sessionId,
+            userId: payload.userId,
+            operation: op,
+            isRedo: true
+          });
+        }
+      } catch (error) {
+        console.error('Failed to redo:', error);
+      }
+    });
+
+    socket.on('cursorUpdate', async (payload: { sessionId: string; userId: string; position: any }) => {
+      if (!payload || !payload.sessionId || !payload.userId || !payload.position) {
+        return;
+      }
+      
+      const sessionRoom = `session:${payload.sessionId}`;
+      socket.to(sessionRoom).emit('cursorUpdate', {
+        userId: payload.userId,
+        position: payload.position
+      });
+
+      const key = `cursor:${payload.userId}:${JSON.stringify(payload.position)}`;
+      await CacheService.set(key, payload.position, 300);
     });
 
     socket.on('screenShareState', async (payload: CollaborationPayload) => {
@@ -139,7 +197,12 @@ export const initializeCollaborationSocket = (httpServer: HttpServer): void => {
       }
 
       const room = `collab:${sessionId}`;
+      const sessionRoom = `session:${sessionId}`;
       socket.to(room).emit('participantLeft', {
+        sessionId,
+        userId,
+      });
+      socket.to(sessionRoom).emit('participantLeft', {
         sessionId,
         userId,
       });

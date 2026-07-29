@@ -56,6 +56,12 @@ router.post(
   requireRole("admin"),
   asyncHandler(ComplianceController.enforceRetentionPolicies),
 );
+router.post(
+  "/retention/preview",
+  authenticate,
+  requireRole("admin"),
+  asyncHandler(ComplianceController.previewRetentionPolicies),
+);
 
 router.post(
   "/lineage",

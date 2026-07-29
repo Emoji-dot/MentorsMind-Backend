@@ -4,6 +4,10 @@ import { UsersService } from "./users.service";
 import { NotificationChannel } from "./notification.service";
 import { logger } from "../utils/logger";
 import { env } from "../config/env";
+import {
+  pushTokenInvalidTotal,
+  pushNotificationsSentTotal,
+} from "../config/metrics";
 
 export interface NotificationAction {
   id: string;
@@ -240,19 +244,70 @@ export const PushService = {
           ...baseMessage,
           tokens: batch,
         };
-        const response = await admin.messaging().sendEachForMulticast(message);
-
+        let response: admin.messaging.BatchResponse;
+        try {
+          response = await admin.messaging().sendEachForMulticast(message);
+        } catch (err) {
+          // If the batch send itself fails, record and continue
+          result.errors.push(
+            `Batch send failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          logger.error("Push multicast batch error", { error: err });
+          continue;
+        }
         result.successCount += response.successCount;
         result.failureCount += response.failureCount;
 
         response.responses.forEach((resp, idx) => {
-          if (!resp.success) {
+          if (resp.success) {
+            // success metric
+            try {
+              pushNotificationsSentTotal.inc({ status: "success" });
+            } catch (e) {
+              logger.debug(
+                "Failed to increment pushNotificationsSentTotal success",
+                { error: e },
+              );
+            }
+          } else {
+            // failure metric
+            try {
+              pushNotificationsSentTotal.inc({ status: "failure" });
+            } catch (e) {
+              logger.debug(
+                "Failed to increment pushNotificationsSentTotal failure",
+                { error: e },
+              );
+            }
             const error = resp.error;
             if (
               error?.code === "messaging/invalid-registration-token" ||
               error?.code === "messaging/registration-token-not-registered"
             ) {
-              result.invalidTokens.push(batch[idx]);
+              const badToken = batch[idx];
+              result.invalidTokens.push(badToken);
+              // increment invalid token counter
+              try {
+                pushTokenInvalidTotal.inc();
+              } catch (e) {
+                logger.debug("Failed to increment pushTokenInvalidTotal", {
+                  error: e,
+                });
+              }
+              // delete stale token immediately to avoid repeated failures
+              (async () => {
+                try {
+                  await PushTokensModel.deleteByToken(badToken);
+                  logger.info("Deleted invalid push token immediately", {
+                    token: badToken,
+                  });
+                } catch (err) {
+                  logger.error("Failed to delete invalid push token", {
+                    token: badToken,
+                    error: err,
+                  });
+                }
+              })();
             } else {
               result.errors.push(
                 `Token ${i + idx}: ${error?.message || "Unknown error"}`,
@@ -288,10 +343,18 @@ export const PushService = {
       return;
     }
 
-    logger.info(`Marking ${tokens.length} invalid tokens as inactive`);
+    logger.info(`Deleting ${tokens.length} invalid tokens from database`);
 
     for (const token of tokens) {
-      await PushTokensModel.markTokenInactive(token);
+      try {
+        await PushTokensModel.deleteByToken(token);
+        logger.info("Deleted invalid push token", { token });
+      } catch (err) {
+        logger.error("Failed to delete invalid push token", {
+          token,
+          error: err,
+        });
+      }
     }
   },
 

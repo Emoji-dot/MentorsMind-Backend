@@ -45,15 +45,27 @@ export const QUEUE_NAMES = {
   REPORT: "report-queue",
   EXPORT: "export-queue",
   SESSION_REMINDER: "session-reminder-queue",
+  SESSION_NO_SHOW: "session-no-show-queue",
   AUDIT_LOG: "audit-log-queue",
   NOTIFICATION_CLEANUP: "notification-cleanup-queue",
   MAINTENANCE: "maintenance-queue",
   TRANSCRIPTION: "transcription-queue",
   BULK: "bulk-queue",
   DOMAIN_EVENTS: "domain-events-queue",
+  RECORDING_CLEANUP: "recording-cleanup-queue",
+  ANALYTICS_REFRESH: "analytics-refresh-queue",
+  QUALITY_SCORE: "quality-score-queue",
+  CDN_INVALIDATION: "cdn-invalidation-queue",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
+
+export const QUEUE_PRIORITIES = {
+  CRITICAL: 1,
+  HIGH: 5,
+  NORMAL: 10,
+  BULK: 100,
+} as const;
 
 export enum JobType {
   EMAIL = "email",
@@ -96,6 +108,9 @@ export const CONCURRENCY = {
   PAYMENT_POLL: 5,
   REPORT: 2,
   SESSION_REMINDER: 1,
+  SESSION_NO_SHOW: 3,
   MAINTENANCE: 1,
   TRANSCRIPTION: 5,
+  QUALITY_SCORE: 1,
+  CDN_INVALIDATION: 5,
 } as const;

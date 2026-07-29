@@ -60,7 +60,18 @@ export const WebhooksController = {
     if (!webhook) return ResponseUtil.notFound(res, 'Webhook not found');
 
     const { secret_plain: _s, ...safe } = webhook;
-    return ResponseUtil.success(res, { webhook: safe });
+    const circuitBreaker = await WebhookService.getCircuitBreakerStatus(webhook.url);
+
+    return ResponseUtil.success(res, {
+      webhook: {
+        ...safe,
+        circuit_breaker: {
+          state: circuitBreaker.state,
+          failures: circuitBreaker.failures,
+          lastFailureAt: circuitBreaker.lastFailureAt,
+        },
+      },
+    });
   }),
 
   /**

@@ -10,6 +10,10 @@ import {
 } from "./notification.service";
 import { NotificationType } from "../models/notifications.model";
 import pool from "../config/database";
+import {
+  emitDisputeOpened,
+  emitDisputeResolved,
+} from "./outbox.service";
 
 export class DisputeService {
   static async openDispute(
@@ -17,60 +21,66 @@ export class DisputeService {
     filedById: string,
     type: "payment" | "quality" | "conduct" | "cancellation",
     reason: string,
+    ipAddress: string | null = null,
+    userAgent: string | null = null
   ): Promise<DisputeRecord> {
     const { rows: bookingRows } = await pool.query<{
       mentor_id: string;
       mentee_id: string;
-    }>(`SELECT mentor_id, mentee_id FROM bookings WHERE id = $1 LIMIT 1`, [
+      escrow_id: string | null;
+    }>(`SELECT mentor_id, mentee_id, escrow_id FROM bookings WHERE id = $1 LIMIT 1`, [
       sessionId,
     ]);
     const booking = bookingRows[0];
     if (!booking) throw new Error("Session not found");
 
+    if (booking.escrow_id) {
+      const { cancelEscrowRelease } = await import("../queues/escrow-release.queue");
+      await cancelEscrowRelease(booking.escrow_id);
+    }
+
     const respondentId =
       booking.mentor_id === filedById ? booking.mentee_id : booking.mentor_id;
 
-    const dispute = await DisputeModel.create({
-      session_id: sessionId,
-      filed_by_id: filedById,
-      respondent_id: respondentId,
-      type,
-      reason,
-    });
-
-    await AuditLogModel.create({
-      level: "info",
-      action: "dispute_opened",
-      message: `Dispute opened for session ${sessionId}`,
-      user_id: filedById,
-      entity_type: "dispute",
-      entity_id: dispute.id,
-      metadata: { reason, type },
-      ip_address: null,
-      user_agent: null,
-    });
-
-    const openedNotifications = [
-      NotificationService.sendNotification({
-        userId: filedById,
-        type: NotificationType.DISPUTE_CREATED,
-        channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
-        priority: NotificationPriority.HIGH,
-        data: { disputeId: dispute.id, event: "dispute_opened" },
-      }),
-    ];
-    if (respondentId) {
-      openedNotifications.push(
-        NotificationService.sendNotification({
-          userId: respondentId,
-          type: NotificationType.DISPUTE_CREATED,
-          channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
-          priority: NotificationPriority.HIGH,
-          data: { disputeId: dispute.id, event: "dispute_opened" },
-        }),
+    // Atomic writes: dispute INSERT + audit-log INSERT + outbox row.
+    // The outbox worker re-dispatches the notification fan-out reliably
+    // if the process crashes before sendNotification finishes.
+    const dispute = await DatabaseService.withTransaction(async (client) => {
+      const insertResult = await client.query<DisputeRecord>(
+        `INSERT INTO disputes (session_id, filed_by_id, respondent_id, type, reason, status)
+         VALUES ($1, $2, $3, $4, $5, 'open')
+         RETURNING *`,
+        [sessionId, filedById, respondentId, type, reason],
       );
-    }
-    await Promise.all(openedNotifications);
+      const created = insertResult.rows[0];
+      if (!created) throw new Error("Failed to create dispute");
+
+      await client.query(
+        `INSERT INTO audit_logs
+           (level, action, message, user_id, entity_type, entity_id, metadata, ip_address, user_agent)
+         VALUES ('info', 'dispute_opened', $1, $2, 'dispute', $3, $4, NULL, NULL)`,
+        [
+          `Dispute opened for session ${sessionId}`,
+          filedById,
+          created.id,
+          JSON.stringify({ reason, type }),
+        ],
+      );
+
+      await emitDisputeOpened(
+        {
+          disputeId: created.id,
+          filedById,
+          respondentId,
+          bookingId: sessionId,
+          type,
+          reason,
+        },
+        { client, userId: filedById },
+      );
+
+      return created;
+    });
 
     return dispute;
   }
@@ -81,9 +91,19 @@ export class DisputeService {
   static async uploadEvidence(
     disputeId: string,
     userId: string,
+    userRole: string,
     textContent?: string,
     fileUrl?: string,
+    ipAddress: string | null = null,
+    userAgent: string | null = null
   ) {
+    const dispute = await DisputeModel.findById(disputeId);
+    if (!dispute) throw new Error("Dispute not found");
+
+    if (dispute.filed_by_id !== userId && dispute.respondent_id !== userId && userRole !== "admin") {
+      throw new Error("Unauthorized: You are not a party to this dispute");
+    }
+
     const evidence = await DisputeModel.addEvidence({
       dispute_id: disputeId,
       submitter_id: userId,
@@ -100,8 +120,8 @@ export class DisputeService {
       entity_type: "dispute_evidence",
       entity_id: evidence.id,
       metadata: { file_attached: !!fileUrl },
-      ip_address: null,
-      user_agent: null,
+      ip_address: ipAddress,
+      user_agent: userAgent,
     });
 
     return evidence;
@@ -182,6 +202,8 @@ export class DisputeService {
     disputeId: string,
     adminId: string,
     notes: string,
+    ipAddress: string | null = null,
+    userAgent: string | null = null
   ): Promise<DisputeRecord> {
     const dispute = await DisputeModel.findById(disputeId);
     if (!dispute) throw new Error("Dispute not found");
@@ -202,8 +224,8 @@ export class DisputeService {
       entity_type: "dispute",
       entity_id: disputeId,
       metadata: { notes },
-      ip_address: null,
-      user_agent: null,
+      ip_address: ipAddress,
+      user_agent: userAgent,
     });
 
     return updated!;
@@ -213,13 +235,16 @@ export class DisputeService {
    * Admins resolve a dispute.
    * Looks up the booking's escrow_id and escrow_contract_address via the dispute's
    * session_id, calls the real SorobanEscrowService, and wraps the escrow call
-   * + DB status update in a single transaction so they succeed or fail together.
+   * + DB status update + outbox event in a single transaction so the durable
+   * side-effects remain consistent.
    */
   static async resolveDispute(
     disputeId: string,
     adminId: string,
     mentorPct: number,
     notes: string,
+    ipAddress: string | null = null,
+    userAgent: string | null = null
   ): Promise<DisputeRecord> {
     const dispute = await DisputeModel.findById(disputeId);
     if (!dispute) throw new Error("Dispute not found");
@@ -241,7 +266,9 @@ export class DisputeService {
       throw new Error(`No escrow_id found for booking ${dispute.session_id}`);
     }
 
-    // Execute escrow action + DB status update atomically
+    // Execute escrow action + DB status update + outbox write atomically.
+    // The outbox worker re-dispatches notifications if the process crashes
+    // before they finish.
     const updated = await DatabaseService.withTransaction(async (client) => {
       // 1. Call the real Soroban escrow contract's resolve_dispute
       await SorobanEscrowService.resolveDispute({
@@ -257,6 +284,27 @@ export class DisputeService {
          WHERE id = $2 RETURNING *`,
         [notes, disputeId],
       );
+
+      if (!result.rows[0]) {
+        throw new Error("Failed to update dispute status");
+      }
+
+      // 3. Outbox event committed atomically with dispute status + escrow call.
+      await emitDisputeResolved(
+        {
+          disputeId,
+          filedById: dispute.filed_by_id,
+          respondentId:
+            booking.mentor_id === dispute.filed_by_id
+              ? booking.mentee_id
+              : booking.mentor_id,
+          bookingId: dispute.session_id,
+          mentorPct,
+          notes,
+        },
+        { client, userId: adminId },
+      );
+
       return result.rows[0];
     });
 
@@ -268,32 +316,9 @@ export class DisputeService {
       entity_type: "dispute",
       entity_id: disputeId,
       metadata: { mentorPct, notes },
-      ip_address: null,
-      user_agent: null,
+      ip_address: ipAddress,
+      user_agent: userAgent,
     });
-
-    await NotificationService.sendNotification({
-      userId: dispute.filed_by_id,
-      type: NotificationType.SYSTEM_ALERT,
-      channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
-      priority: NotificationPriority.HIGH,
-      data: { disputeId, event: "dispute_resolved", mentorPct },
-    });
-
-    // Notify the other party (mentor or mentee)
-    const resolveOtherPartyId =
-      booking.mentor_id === dispute.filed_by_id
-        ? booking.mentee_id
-        : booking.mentor_id;
-    if (resolveOtherPartyId) {
-      await NotificationService.sendNotification({
-        userId: resolveOtherPartyId,
-        type: NotificationType.SYSTEM_ALERT,
-        channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
-        priority: NotificationPriority.HIGH,
-        data: { disputeId, event: "dispute_resolved", mentorPct },
-      });
-    }
 
     return updated;
   }
