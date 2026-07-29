@@ -15,6 +15,7 @@ import { Worker, Job } from 'bullmq';
 import { queueConnection } from '../queues/queue.config';
 import { logger } from '../utils/logger';
 import { CacheService } from '../services/cache.service';
+import { RealtimeAnalyticsService } from '../services/realtime-analytics.service';
 import pool from '../config/database';
 
 // Analytics event types
@@ -62,6 +63,10 @@ export const CacheInvalidationService = {
   // Invalidate on materialized view refresh
   onViewsRefreshed: async () => {
     await CacheService.invalidate('analytics:*');
+    // Also flush realtime caches so the next read goes back to base-table queries
+    await RealtimeAnalyticsService.invalidateRealtimeCache('all').catch((err) =>
+      logger.warn('RealtimeAnalytics: failed to flush realtime cache on view refresh', { err }),
+    );
     logger.info('All analytics cache invalidated after view refresh');
   },
 };
@@ -131,6 +136,11 @@ async function processTransactionEvent(operation: string, id: string): Promise<v
       if (transaction.status === 'completed') {
         await CacheInvalidationService.onTransactionCompleted(transaction);
       }
+
+      // Push incremental realtime aggregate to Redis
+      await RealtimeAnalyticsService.updateRealtimeRevenueAggregate(id).catch((err) =>
+        logger.warn('RealtimeAnalytics: failed to update revenue aggregate', { err, id }),
+      );
     }
   }
 }
@@ -148,6 +158,11 @@ async function processBookingEvent(operation: string, id: string): Promise<void>
       const booking = rows[0];
       await CacheInvalidationService.onBookingStatusChanged(booking);
     }
+
+    // Push incremental realtime session aggregate to Redis
+    await RealtimeAnalyticsService.updateRealtimeSessionAggregate(id).catch((err) =>
+      logger.warn('RealtimeAnalytics: failed to update session aggregate', { err, id }),
+    );
   }
 }
 
@@ -164,6 +179,11 @@ async function processUserEvent(operation: string, id: string): Promise<void> {
       const user = rows[0];
       await CacheInvalidationService.onUserRegistered(user);
     }
+
+    // Push incremental realtime user growth aggregate to Redis
+    await RealtimeAnalyticsService.updateRealtimeUserAggregate(id).catch((err) =>
+      logger.warn('RealtimeAnalytics: failed to update user aggregate', { err, id }),
+    );
   }
 }
 
@@ -266,6 +286,14 @@ export class AnalyticsEventListener {
             removeOnComplete: { count: 100 },
             removeOnFail: { count: 50 },
           });
+
+          // Invalidate realtime cache for this table so next read is fresh
+          await RealtimeAnalyticsService.invalidateRealtimeCache(event.table).catch((err) =>
+            logger.warn('RealtimeAnalytics: failed to invalidate cache on notification', {
+              err,
+              table: event.table,
+            }),
+          );
           
           logger.debug('Analytics event queued for processing', { 
             table: event.table, 
