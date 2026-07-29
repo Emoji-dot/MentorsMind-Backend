@@ -11,6 +11,7 @@ import { SocketService } from "./socket.service";
 import { db } from "../config/database";
 import { CalendarService } from "./calendar.service";
 import { SorobanEscrowService } from "./sorobanEscrow.service";
+import { AssetExchangeService } from "./assetExchange.service";
 import { QueueService } from "./queue.service";
 import {
   NotificationService,
