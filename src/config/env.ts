@@ -218,13 +218,19 @@ const envSchema = z.object({
   CDN_FASTLY_SERVICE_ID: z.string().optional(),
   CDN_FASTLY_API_KEY: z.string().optional(),
 
-  // Elasticsearch
+  // Elasticsearch / ELK Stack (issue #740)
   ELASTICSEARCH_URL: z.string().url().default("http://localhost:9200"),
   ELASTICSEARCH_USERNAME: z.string().optional(),
   ELASTICSEARCH_PASSWORD: z.string().optional(),
   ELASTICSEARCH_API_KEY: z.string().optional(),
   ELASTICSEARCH_ENABLED: z.enum(["true", "false"]).default("true"),
   ELASTICSEARCH_INDEX_PREFIX: z.string().default("mentorminds"),
+  /** Max log documents to buffer before flushing to Elasticsearch */
+  ELK_BATCH_SIZE: z.string().regex(/^\d+$/).default("100"),
+  /** Flush interval in ms for the ELK batch transport */
+  ELK_FLUSH_INTERVAL_MS: z.string().regex(/^\d+$/).default("5000"),
+  /** Max retry attempts for failed ELK bulk requests */
+  ELK_MAX_RETRIES: z.string().regex(/^\d+$/).default("3"),
 
   // Stellar (additional keys)
   STELLAR_FUNDING_SECRET: z.string().optional(),
