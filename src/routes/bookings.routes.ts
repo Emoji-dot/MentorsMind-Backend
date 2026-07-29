@@ -3,13 +3,17 @@ import { BookingsController } from "../controllers/bookings.controller";
 import { CollaborationController } from "../controllers/collaboration.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { requireRole } from "../middleware/rbac.middleware";
-import { idempotency } from "../middleware/idempotency.middleware";
+import { requireIdempotency } from "../middleware/idempotency.middleware";
 import { validate } from "../middleware/validation.middleware";
 import { createBookingSchema } from "../validators/schemas/bookings.schemas";
 import {
   getMeetingLink,
   regenerateMeetingLink,
 } from "../controllers/meetingLink.controller";
+import {
+  joinSession,
+  getSessionPresence,
+} from "../controllers/session-presence.controller";
 
 const router = Router();
 
@@ -41,7 +45,7 @@ const router = Router();
 router.post(
   "/",
   authenticate,
-  idempotency,
+  requireIdempotency,
   validate(createBookingSchema),
   BookingsController.createBooking,
 );
@@ -234,7 +238,12 @@ router.delete("/:id/cancel", authenticate, BookingsController.cancelBooking);
  *                       type: string
  *                       example: Meeting room creation failed. Manual intervention required.
  */
-router.post("/:id/confirm", authenticate, BookingsController.confirmBooking);
+router.post(
+  "/:id/confirm",
+  authenticate,
+  requireIdempotency,
+  BookingsController.confirmBooking,
+);
 
 /**
  * @swagger
@@ -304,5 +313,122 @@ router.patch(
   authenticate,
   CollaborationController.updateCollaborationState,
 );
+
+/**
+ * @swagger
+ * /api/v1/bookings/{id}/join:
+ *   post:
+ *     summary: Mark user as having joined the session
+ *     description: Records join timestamp and prevents no-show detection. Called when user enters meeting room.
+ *     tags: [Bookings]
+ *     security:
+ *       - bearerAuth: true
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Session/Booking ID
+ *     responses:
+ *       200:
+ *         description: Successfully joined session
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Successfully joined session
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     sessionId:
+ *                       type: string
+ *                       format: uuid
+ *                     role:
+ *                       type: string
+ *                       enum: [mentor, mentee]
+ *                     joinedAt:
+ *                       type: string
+ *                       format: date-time
+ *                     isFirstJoin:
+ *                       type: boolean
+ *       403:
+ *         description: Not a participant of this session
+ *       404:
+ *         description: Session not found
+ */
+router.post("/:id/join", authenticate, joinSession);
+
+/**
+ * @swagger
+ * /api/v1/bookings/{id}/presence:
+ *   get:
+ *     summary: Get session presence information
+ *     description: Shows join timestamps and current online status for both participants
+ *     tags: [Bookings]
+ *     security:
+ *       - bearerAuth: true
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Session/Booking ID
+ *     responses:
+ *       200:
+ *         description: Session presence information
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     sessionId:
+ *                       type: string
+ *                       format: uuid
+ *                     mentor:
+ *                       type: object
+ *                       properties:
+ *                         userId:
+ *                           type: string
+ *                           format: uuid
+ *                         joinedAt:
+ *                           type: string
+ *                           format: date-time
+ *                           nullable: true
+ *                         online:
+ *                           type: boolean
+ *                     mentee:
+ *                       type: object
+ *                       properties:
+ *                         userId:
+ *                           type: string
+ *                           format: uuid
+ *                         joinedAt:
+ *                           type: string
+ *                           format: date-time
+ *                           nullable: true
+ *                         online:
+ *                           type: boolean
+ *       403:
+ *         description: Not a participant of this session
+ *       404:
+ *         description: Session not found
+ */
+router.get("/:id/presence", authenticate, getSessionPresence);
 
 export default router;

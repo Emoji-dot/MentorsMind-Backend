@@ -3,11 +3,28 @@ import { ModerationController } from "../controllers/moderation.controller";
 import { asyncHandler } from "../utils/asyncHandler.utils";
 import { authenticate } from "../middleware/auth.middleware";
 import { requireAdmin } from "../middleware/admin-auth.middleware";
+import { validate } from "../middleware/validation.middleware";
+import {
+  moderationFlagIdParamSchema,
+  getModerationQueueSchema,
+  getAIQueueSchema,
+  triggerAIScanSchema,
+  approveContentSchema,
+  rejectContentSchema,
+  escalateFlagSchema,
+  deleteFlagSchema,
+  getAppealsSchema,
+  resolveAppealSchema,
+} from "../validators/schemas/moderation.schemas";
 
 const router = Router();
 
 // Add DELETE endpoint for flag deletion
-router.delete("/:id", asyncHandler(ModerationController.deleteFlag));
+router.delete(
+  "/:id",
+  validate(deleteFlagSchema),
+  asyncHandler(ModerationController.deleteFlag),
+);
 
 // ── All moderation routes require authentication + admin role ─────────────────
 router.use(authenticate, requireAdmin);
@@ -31,7 +48,7 @@ router.use(authenticate, requireAdmin);
  *       200:
  *         description: Paginated moderation queue
  */
-router.get("/queue", asyncHandler(ModerationController.getQueue));
+router.get("/queue", validate(getModerationQueueSchema), asyncHandler(ModerationController.getQueue));
 
 /**
  * @swagger
@@ -42,7 +59,7 @@ router.get("/queue", asyncHandler(ModerationController.getQueue));
  *     security:
  *       - bearerAuth: []
  */
-router.get("/ai-queue", asyncHandler(ModerationController.getAIQueue));
+router.get("/ai-queue", validate(getAIQueueSchema), asyncHandler(ModerationController.getAIQueue));
 
 /**
  * @swagger
@@ -75,7 +92,7 @@ router.get("/stats", asyncHandler(ModerationController.getStats));
  *               contentType: { type: string, enum: [profile, review, message] }
  *               text:       { type: string }
  */
-router.post("/scan", asyncHandler(ModerationController.triggerAIScan));
+router.post("/scan", validate(triggerAIScanSchema), asyncHandler(ModerationController.triggerAIScan));
 
 /**
  * @swagger
@@ -91,7 +108,7 @@ router.post("/scan", asyncHandler(ModerationController.triggerAIScan));
  *         required: true
  *         schema: { type: string }
  */
-router.put("/:id/approve", asyncHandler(ModerationController.approveContent));
+router.put("/:id/approve", validate(approveContentSchema), asyncHandler(ModerationController.approveContent));
 
 /**
  * @swagger
@@ -102,7 +119,7 @@ router.put("/:id/approve", asyncHandler(ModerationController.approveContent));
  *     security:
  *       - bearerAuth: []
  */
-router.put("/:id/reject", asyncHandler(ModerationController.rejectContent));
+router.put("/:id/reject", validate(rejectContentSchema), asyncHandler(ModerationController.rejectContent));
 
 /**
  * @swagger
@@ -113,7 +130,7 @@ router.put("/:id/reject", asyncHandler(ModerationController.rejectContent));
  *     security:
  *       - bearerAuth: []
  */
-router.put("/:id/escalate", asyncHandler(ModerationController.escalateFlag));
+router.put("/:id/escalate", validate(escalateFlagSchema), asyncHandler(ModerationController.escalateFlag));
 
 /**
  * @swagger
@@ -124,7 +141,7 @@ router.put("/:id/escalate", asyncHandler(ModerationController.escalateFlag));
  *     security:
  *       - bearerAuth: []
  */
-router.delete("/:id", asyncHandler(ModerationController.deleteFlag));
+router.delete("/:id", validate(deleteFlagSchema), asyncHandler(ModerationController.deleteFlag));
 
 // ── Appeals ──────────────────────────────────────────────────────────────────
 
@@ -150,7 +167,7 @@ router.delete("/:id", asyncHandler(ModerationController.deleteFlag));
  *       200:
  *         description: Paginated appeals queue
  */
-router.get("/appeals", asyncHandler(ModerationController.getAppeals));
+router.get("/appeals", validate(getAppealsSchema), asyncHandler(ModerationController.getAppeals));
 
 /**
  * @swagger
@@ -173,6 +190,7 @@ router.get("/appeals", asyncHandler(ModerationController.getAppeals));
  */
 router.put(
   "/appeals/:id/resolve",
+  validate(resolveAppealSchema),
   asyncHandler(ModerationController.resolveAppeal),
 );
 

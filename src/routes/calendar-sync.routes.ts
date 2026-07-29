@@ -2,6 +2,12 @@ import { Router } from "express";
 import { CalendarSyncController } from "../controllers/calendar-sync.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
+import { validate } from "../middleware/validation.middleware";
+import {
+  providerParamSchema,
+  toggleSyncSchema,
+  appleConnectSchema,
+} from "../validators/schemas/calendar-sync.schemas";
 
 const router = Router();
 
@@ -52,6 +58,7 @@ router.get(
 router.patch(
   "/:provider/toggle",
   authenticate,
+  validate(toggleSyncSchema),
   asyncHandler(CalendarSyncController.toggleSync),
 );
 
@@ -75,6 +82,7 @@ router.patch(
 router.delete(
   "/:provider",
   authenticate,
+  validate(providerParamSchema),
   asyncHandler(CalendarSyncController.disconnect),
 );
 
@@ -142,6 +150,7 @@ router.get(
 router.post(
   "/apple/connect",
   authenticate,
+  validate(appleConnectSchema),
   asyncHandler(CalendarSyncController.appleConnect),
 );
 

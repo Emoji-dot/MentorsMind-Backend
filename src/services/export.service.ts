@@ -25,7 +25,10 @@ function toExportSafeRecord(user: any): any {
 }
 
 export const ExportService = {
-  async requestExport(userId: string): Promise<string> {
+  async requestExport(
+    userId: string,
+    format: import("../models/export-job.model").ExportFormat = "json",
+  ): Promise<string> {
     // Check if user already has a pending or processing export job
     const existing = await ExportJobModel.findPendingByUserId(userId);
     if (existing) {
@@ -36,12 +39,10 @@ export const ExportService = {
     }
 
     // Check cooldown: prevent new requests within 24 hours of last completed export
-    const lastCompleted =
-      await ExportJobModel.findLastCompletedByUserId(userId);
+    const lastCompleted = await ExportJobModel.findLastCompletedByUserId(userId);
     if (lastCompleted && lastCompleted.created_at) {
       const hoursSinceLastExport =
-        (Date.now() - new Date(lastCompleted.created_at).getTime()) /
-        (1000 * 60 * 60);
+        (Date.now() - new Date(lastCompleted.created_at).getTime()) / (1000 * 60 * 60);
       if (hoursSinceLastExport < 24) {
         const hoursRemaining = Math.ceil(24 - hoursSinceLastExport);
         throw createError(
@@ -51,8 +52,16 @@ export const ExportService = {
       }
     }
 
-    const job = await ExportJobModel.create(userId);
-    await exportQueue.add("process-export", { userId, jobId: job.id });
+    const dbJob = await ExportJobModel.create(userId, { format });
+    const bullJob = await exportQueue.add("process-export", {
+      userId,
+      jobId: dbJob.id,
+      format,
+      type: "data-export",
+    });
+
+    // Persist BullMQ ID immediately so /progress can query job state
+    await ExportJobModel.setBullmqJobId(dbJob.id, bullJob.id!);
 
     await AuditLoggerService.logEvent({
       level: LogLevel.INFO,
@@ -60,11 +69,11 @@ export const ExportService = {
       message: `User ${userId} requested data export`,
       userId: userId,
       entityType: "export_job",
-      entityId: job.id,
-      metadata: {},
+      entityId: dbJob.id,
+      metadata: { format },
     });
 
-    return job.id;
+    return dbJob.id;
   },
 
   async processExport(userId: string, jobId: string): Promise<void> {
@@ -276,6 +285,34 @@ export const ExportService = {
     });
 
     return { data: csv, fileName };
+  },
+
+  /**
+   * Delete S3 objects and export_jobs rows older than `days` (GDPR retention limit).
+   */
+  async cleanupExpiredExports(days: number = 30): Promise<number> {
+    const expired = await ExportJobModel.findExpiredOlderThan(days);
+    const keys = expired
+      .map((job) => job.storage_key)
+      .filter((key): key is string => Boolean(key));
+
+    if (keys.length > 0) {
+      await StorageService.deleteFiles(keys);
+    }
+
+    const deletedCount = await ExportJobModel.deleteOlderThan(days);
+
+    if (deletedCount > 0) {
+      await AuditLoggerService.logEvent({
+        level: LogLevel.INFO,
+        action: "DATA_EXPORT_CLEANUP",
+        message: `Cleaned up ${deletedCount} expired export job(s)`,
+        entityType: "export_job",
+        metadata: { deletedCount, s3ObjectsDeleted: keys.length, days },
+      });
+    }
+
+    return deletedCount;
   },
 
   async getJobStatus(jobId: string, userId: string) {

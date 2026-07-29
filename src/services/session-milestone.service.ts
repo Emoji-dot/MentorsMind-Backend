@@ -282,6 +282,7 @@ export const SessionMilestoneService = {
         status: row.status,
         amount: row.amount,
         currency: row.currency,
+        usd_equivalent: row.usd_equivalent,
         payment_status: row.payment_status,
         stellar_tx_hash: row.stellar_tx_hash,
         transaction_id: row.transaction_id,

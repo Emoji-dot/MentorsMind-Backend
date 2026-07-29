@@ -1,12 +1,10 @@
-import { traceStore } from '../middleware/tracing.middleware';
 import type { EmailRequest } from '../services/email.service';
 import { createManagedQueue, buildJobOptions, JobConfig } from './queue.manager';
 import { JOB_RATE_LIMITS, QUEUE_NAMES } from './queue.config';
+import { captureJobTraceData, JobTraceData } from '../utils/trace-context.utils';
 
-export interface EmailJobData extends EmailRequest {
+export interface EmailJobData extends EmailRequest, JobTraceData {
   jobType: 'send-email';
-  requestId?: string;
-  correlationId?: string;
 }
 
 export const emailQueue = createManagedQueue<EmailJobData>(QUEUE_NAMES.EMAIL, {
@@ -27,14 +25,12 @@ export async function enqueueEmail(
       ? { priority: priorityOrConfig }
       : priorityOrConfig ?? {};
 
-  const context = traceStore.getStore();
   await emailQueue.add(
     options.name ?? 'send-email',
     {
       ...data,
       jobType: 'send-email',
-      requestId: context?.requestId,
-      correlationId: context?.correlationId,
+      ...captureJobTraceData(),
     },
     buildJobOptions(options),
   );

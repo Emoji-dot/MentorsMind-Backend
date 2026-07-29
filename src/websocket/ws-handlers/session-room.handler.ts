@@ -3,10 +3,15 @@ import { AuthenticatedWebSocket } from "../ws-auth.middleware";
 import { SessionModel } from "../../models/session.model";
 import { logger } from "../../utils/logger.utils";
 import { sanitizeString } from "../../utils/sanitization.utils";
+import { PresenceService } from "../../services/presence.service";
+import { redisClient } from "../../config/redis";
+import { cancelNoShowCheck } from "../../queues/session-no-show.queue";
 
 const NOTES_MAX_BYTES = 50_000;
 const NOTES_RATE_LIMIT = 10; // max events per second per client
 const notesSyncTimestamps = new Map<string, number[]>();
+
+const presenceService = new PresenceService(redisClient);
 
 // ─── Session room map ────────────────────────────────────────────────────────
 
@@ -101,6 +106,41 @@ async function handleJoin(
   const isMentee = session.mentee_id === client.userId;
   if (!isMentor && !isMentee) {
     return sendError(client, "Not a participant of this session");
+  }
+
+  // Determine role
+  const role = isMentor ? 'mentor' : 'mentee';
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PERSIST JOIN TIME: Record when mentor/mentee joins to prevent no-show
+  // ═══════════════════════════════════════════════════════════════════════════
+  try {
+    const joinedAt = await presenceService.markSessionJoined(
+      sessionId,
+      client.userId,
+      role
+    );
+
+    logger.info('Session join time recorded', {
+      sessionId,
+      userId: client.userId,
+      role,
+      joinedAt,
+    });
+
+    // Cancel no-show check if mentor joined (mentee joining doesn't cancel)
+    if (isMentor) {
+      await cancelNoShowCheck(sessionId);
+      logger.info('No-show check cancelled — mentor joined', { sessionId });
+    }
+  } catch (error) {
+    logger.error('Failed to record session join time', {
+      sessionId,
+      userId: client.userId,
+      role,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+    // Continue with WebSocket join even if persistence fails
   }
 
   // Add to room

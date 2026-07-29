@@ -14,7 +14,7 @@ import { Router } from "express";
 import { PaymentsController } from "../controllers/payments.controller";
 import { PaymentQuoteController } from "../controllers/paymentQuote.controller";
 import { authenticate } from "../middleware/auth.middleware";
-import { idempotency } from "../middleware/idempotency.middleware";
+import { requireIdempotency } from "../middleware/idempotency.middleware";
 import { validate } from "../middleware/validation.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
 import {
@@ -115,7 +115,7 @@ router.use(authenticate);
  */
 router.post(
   "/",
-  idempotency,
+  requireIdempotency,
   validate(initiatePaymentSchema),
   asyncHandler(PaymentsController.initiatePayment),
 );
@@ -314,6 +314,7 @@ router.get(
  */
 router.post(
   "/:id/confirm",
+  requireIdempotency,
   validate(confirmPaymentSchema),
   asyncHandler(PaymentsController.confirmPayment),
 );

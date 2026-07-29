@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { TaxReportingController } from "../controllers/tax-reporting.controller";
 import { authenticate } from "../middleware/auth.middleware";
+import { validate } from "../middleware/validation.middleware";
+import { taxYearParamSchema } from "../validators/schemas/tax.schemas";
 
 const router = Router();
 
@@ -15,12 +17,18 @@ const router = Router();
 router.get("/reports", authenticate, TaxReportingController.listReports);
 
 /** GET /api/v1/tax/reports/:year */
-router.get("/reports/:year", authenticate, TaxReportingController.getReport);
+router.get(
+  "/reports/:year",
+  authenticate,
+  validate(taxYearParamSchema),
+  TaxReportingController.getReport,
+);
 
 /** POST /api/v1/tax/reports/:year/generate */
 router.post(
   "/reports/:year/generate",
   authenticate,
+  validate(taxYearParamSchema),
   TaxReportingController.generateReport,
 );
 

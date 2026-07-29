@@ -35,6 +35,7 @@ export const SmartSchedulingService = {
     durationMinutes: number = 60,
     startDate?: Date,
     endDate?: Date,
+    excludeBookingId?: string,
   ): Promise<SchedulingSuggestion[]> {
     // 1. Fetch mentor and mentee profiles
     const { rows: users } = await pool.query<UserSchedulingInfo>(
@@ -51,31 +52,71 @@ export const SmartSchedulingService = {
     const mentorTz = mentor.timezone || "UTC";
     const menteeTz = mentee.timezone || "UTC";
 
-    // 2. Setup dates
+    // 2. Setup dates — cap the suggestion horizon at 30 days out so we never
+    // suggest times far in the future regardless of the requested endDate.
     const start = startDate
       ? DateTime.fromJSDate(startDate)
       : DateTime.now().plus({ days: 1 }).startOf("day");
-    const end = endDate
+    const maxEnd = start.plus({ days: 30 }).endOf("day");
+    const requestedEnd = endDate
       ? DateTime.fromJSDate(endDate)
       : start.plus({ days: 7 }).endOf("day");
+    const end = requestedEnd > maxEnd ? maxEnd : requestedEnd;
 
-    // 3. Fetch mentor's existing bookings in the date range to prevent conflicts
-    const { rows: existingBookings } = await pool.query(
-      `SELECT id, scheduled_start, scheduled_end FROM bookings 
-       WHERE mentor_id = $1 
+    // 3. Fetch mentor's existing bookings in the date range to prevent conflicts.
+    // Exclude the booking being rescheduled — otherwise its own original slot
+    // is treated as a conflict with itself when regenerating candidate times.
+    const existingBookingsParams: any[] = [
+      mentorId,
+      start.toJSDate(),
+      end.toJSDate(),
+    ];
+    let existingBookingsQuery = `SELECT id, scheduled_start, scheduled_end FROM bookings
+       WHERE mentor_id = $1
          AND status NOT IN ('cancelled', 'no_show')
-         AND scheduled_start >= $2 
-         AND scheduled_end <= $3`,
-      [mentorId, start.toJSDate(), end.toJSDate()],
+         AND scheduled_start >= $2
+         AND scheduled_end <= $3`;
+    if (excludeBookingId) {
+      existingBookingsQuery += ` AND id != $4`;
+      existingBookingsParams.push(excludeBookingId);
+    }
+    const { rows: existingBookings } = await pool.query(
+      existingBookingsQuery,
+      existingBookingsParams,
     );
 
-    // 4. Fetch historical bookings for both to analyze patterns
-    const { rows: history } = await pool.query(
-      `SELECT status, scheduled_start FROM bookings 
-       WHERE (mentor_id = $1 OR mentee_id = $2)
-         AND status IN ('completed', 'cancelled')`,
-      [mentorId, menteeId],
+    // 3b. Fetch the mentee's existing bookings in the same range so suggested
+    // times don't conflict with the mentee's own schedule either.
+    const menteeBookingsParams: any[] = [
+      menteeId,
+      start.toJSDate(),
+      end.toJSDate(),
+    ];
+    let menteeBookingsQuery = `SELECT id, scheduled_start, scheduled_end FROM bookings
+       WHERE mentee_id = $1
+         AND status NOT IN ('cancelled', 'no_show')
+         AND scheduled_start >= $2
+         AND scheduled_end <= $3`;
+    if (excludeBookingId) {
+      menteeBookingsQuery += ` AND id != $4`;
+      menteeBookingsParams.push(excludeBookingId);
+    }
+    const { rows: menteeBookings } = await pool.query(
+      menteeBookingsQuery,
+      menteeBookingsParams,
     );
+
+    // 4. Fetch historical bookings for both to analyze patterns. Exclude the
+    // booking being rescheduled so it doesn't skew its own historical score.
+    const historyParams: any[] = [mentorId, menteeId];
+    let historyQuery = `SELECT status, scheduled_start FROM bookings
+       WHERE (mentor_id = $1 OR mentee_id = $2)
+         AND status IN ('completed', 'cancelled')`;
+    if (excludeBookingId) {
+      historyQuery += ` AND id != $3`;
+      historyParams.push(excludeBookingId);
+    }
+    const { rows: history } = await pool.query(historyQuery, historyParams);
 
     // 5. Build candidate slots (30-minute intervals)
     const suggestions: {
@@ -98,8 +139,8 @@ export const SmartSchedulingService = {
       // Avoid slot generation outside range
       if (slotEnd > end) break;
 
-      // Filter A: Check against existing bookings for conflicts
-      const conflict = existingBookings.some((b) =>
+      // Filter A: Check against the mentor's existing bookings for conflicts
+      const mentorConflict = existingBookings.some((b) =>
         doTimeSlotsOverlap(
           { start: jsStart, end: jsEnd },
           {
@@ -109,7 +150,23 @@ export const SmartSchedulingService = {
         ),
       );
 
-      if (conflict) {
+      if (mentorConflict) {
+        current = current.plus({ minutes: 30 });
+        continue;
+      }
+
+      // Filter A2: Check against the mentee's existing bookings for conflicts
+      const menteeConflict = menteeBookings.some((b) =>
+        doTimeSlotsOverlap(
+          { start: jsStart, end: jsEnd },
+          {
+            start: new Date(b.scheduled_start),
+            end: new Date(b.scheduled_end),
+          },
+        ),
+      );
+
+      if (menteeConflict) {
         current = current.plus({ minutes: 30 });
         continue;
       }
@@ -279,6 +336,7 @@ export const SmartSchedulingService = {
       booking.duration_minutes,
       startDate,
       endDate,
+      bookingId,
     );
   },
 };

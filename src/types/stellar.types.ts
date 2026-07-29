@@ -12,6 +12,7 @@ export interface StellarBalance {
   assetType: string;
   assetCode?: string;
   assetIssuer?: string;
+  liquidityPoolId?: string;
   balance: string;
   limit?: string;
 }

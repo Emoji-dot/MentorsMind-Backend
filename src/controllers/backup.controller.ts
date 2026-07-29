@@ -3,6 +3,40 @@ import { BackupService } from "../services/backup.service";
 import { asyncHandler } from "../utils/asyncHandler.utils";
 
 export const BackupController = {
+  /** GET /admin/backups — durable backup history (backup_log table) */
+  listBackups: asyncHandler(async (req: Request, res: Response) => {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const offset = parseInt(req.query.offset as string) || 0;
+    const result = await BackupService.listBackups(limit, offset);
+    res.json({
+      success: true,
+      data: result.data,
+      total: result.total,
+      limit,
+      offset,
+    });
+  }),
+
+  /** POST /admin/backups/restore */
+  restoreToPoint: asyncHandler(async (req: Request, res: Response) => {
+    const { targetTime } = req.body;
+    if (!targetTime) {
+      res
+        .status(400)
+        .json({ success: false, message: "targetTime is required (ISO 8601)" });
+      return;
+    }
+    const target = new Date(targetTime);
+    if (isNaN(target.getTime())) {
+      res
+        .status(400)
+        .json({ success: false, message: "Invalid targetTime format" });
+      return;
+    }
+    const result = await BackupService.restoreToPoint(target);
+    res.json({ success: true, data: result });
+  }),
+
   /** POST /admin/backup/full */
   triggerFullBackup: asyncHandler(async (_req: Request, res: Response) => {
     const job = await BackupService.runFullBackup();

@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "escrow",
+    "contracts/oracle",
+    "contracts/reputation",
+    "contracts/staking",
+    "contracts/vesting",
+]
+resolver = "2"
+
+[workspace.dependencies]
+soroban-sdk = "21.1.1"
+soroban-token-sdk = "21.1.1"

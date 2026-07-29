@@ -1,7 +1,57 @@
 import { Router } from "express";
 import { BackupController } from "../../controllers/backup.controller";
+import { authenticate } from "../../middleware/auth.middleware";
+import { requireAdmin } from "../../middleware/admin-auth.middleware";
 
 const router = Router();
+
+router.use(authenticate, requireAdmin);
+
+/**
+ * @swagger
+ * /admin/backup:
+ *   get:
+ *     summary: List all backups from the durable backup_log (survives restarts)
+ *     tags: [Admin, Backup]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50 }
+ *       - in: query
+ *         name: offset
+ *         schema: { type: integer, default: 0 }
+ *     responses:
+ *       200:
+ *         description: Paginated backup history
+ */
+router.get("/", BackupController.listBackups);
+
+/**
+ * @swagger
+ * /admin/backup/restore:
+ *   post:
+ *     summary: Resolve the best backup candidate for a point-in-time restore
+ *     tags: [Admin, Backup]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [targetTime]
+ *             properties:
+ *               targetTime: { type: string, format: date-time }
+ *     responses:
+ *       200:
+ *         description: PITR candidate and runbook instructions
+ *       404:
+ *         description: No suitable backup found
+ */
+router.post("/restore", BackupController.restoreToPoint);
 
 /**
  * @swagger

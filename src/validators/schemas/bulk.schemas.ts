@@ -1,4 +1,9 @@
 import { z } from "zod";
+import { uuidSchema } from "./common.schemas";
+
+export const bulkJobIdParamSchema = z.object({
+  params: z.object({ jobId: uuidSchema }),
+});
 
 export const bulkPaymentsSchema = z.object({
   body: z.object({

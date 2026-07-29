@@ -509,6 +509,23 @@ The MentorMinds Team
       throw error;
     }
 
+    // Appeals must be submitted within 30 days of the moderation decision
+    const APPEAL_WINDOW_DAYS = 30;
+    const reviewedAt = flags[0].reviewed_at
+      ? new Date(flags[0].reviewed_at)
+      : null;
+    if (reviewedAt) {
+      const daysSinceDecision =
+        (Date.now() - reviewedAt.getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSinceDecision > APPEAL_WINDOW_DAYS) {
+        const error: any = new Error(
+          `The appeal window (${APPEAL_WINDOW_DAYS} days) for this decision has expired`,
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
     // Verify user owns the content or is the one who flagged (usually author appeals)
     // For simplicity, we just allow the user to appeal, the frontend will only show their own rejected items.
 
@@ -592,6 +609,41 @@ The MentorMinds Team
     };
     cache.set(cacheKey, result, 300);
     return result;
+  },
+
+  /**
+   * Get appeals submitted by a specific user (self-service "my appeals" view)
+   */
+  async getMyAppeals(
+    userId: string,
+    limit = 50,
+    offset = 0,
+  ): Promise<{ data: AppealWithDetails[]; total: number }> {
+    const query = `
+      SELECT
+        ca.*,
+        f.entity_type as flag_entity_type,
+        f.reason as flag_reason
+      FROM content_appeals ca
+      JOIN flags f ON ca.flag_id = f.id
+      WHERE ca.user_id = $1
+      ORDER BY ca.created_at DESC
+      LIMIT $2 OFFSET $3
+    `;
+
+    const countQuery = `
+      SELECT COUNT(*) FROM content_appeals WHERE user_id = $1
+    `;
+
+    const [dataResult, countResult] = await Promise.all([
+      pool.query<AppealWithDetails>(query, [userId, limit, offset]),
+      pool.query(countQuery, [userId]),
+    ]);
+
+    return {
+      data: dataResult.rows,
+      total: parseInt(countResult.rows[0].count, 10),
+    };
   },
 
   /**
@@ -842,6 +894,38 @@ The MentorMinds Team
       await this.hideContent(contentType as string, contentId).catch(
         () => undefined,
       );
+    }
+
+    return result;
+  },
+
+  /**
+   * Screen content before publishing without mutating the target entity.
+   * Returns the moderation result unless the content is blocked.
+   */
+  async screenContent(
+    contentId: string,
+    contentType: ContentType,
+    text: string,
+    _authorId?: string,
+  ): Promise<ModerationResult> {
+    const result = await AIModerationService.scan(contentId, contentType, text);
+
+    this.persistAIResult(result).catch((err) =>
+      logger.error("ModerationService: failed to persist AI result", {
+        err,
+        contentId,
+      }),
+    );
+
+    if (result.action === "block") {
+      const error: any = new Error(
+        "Your content was blocked by our automated moderation system. " +
+          "Please review our community guidelines.",
+      );
+      error.statusCode = 422;
+      error.moderationResult = result;
+      throw error;
     }
 
     return result;

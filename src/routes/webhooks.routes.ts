@@ -36,16 +36,6 @@ router.post('/:id/test', validate(webhookIdParamSchema),       WebhooksControlle
 // Publicly accessible but API Key protected
 router.post('/incoming', webhookAuth, WebhooksController.receive);
 
-// All other webhook routes require JWT authentication
-router.use(authenticate);
-
-router.post('/', WebhooksController.create);
-router.get('/', WebhooksController.list);
-router.get('/:id', WebhooksController.getOne);
-router.put('/:id', WebhooksController.update);
-router.delete('/:id', WebhooksController.remove);
-router.get('/:id/deliveries', WebhooksController.deliveries);
-router.post('/:id/test', WebhooksController.test);
-router.post('/:id/rotate-api-key', WebhooksController.rotateKey);
+router.post('/:id/rotate-api-key', validate(webhookIdParamSchema), WebhooksController.rotateKey);
 
 export default router;

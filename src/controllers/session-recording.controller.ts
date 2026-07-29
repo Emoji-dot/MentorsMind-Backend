@@ -1,26 +1,61 @@
-import { Response, Request } from 'express';
+import { Response } from 'express';
 import { SessionRecordingService } from '../services/session-recording.service';
 import recordingTranscriptionService from '../services/recording-transcription.service';
 import recordingBookmarkService from '../services/recording-bookmark.service';
 import { logger } from '../utils/logger';
-import pool from '../config/database';
+import { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { AuditLogService } from '../services/auditLog.service';
+import RecordingConsentService from '../services/recording-consent.service';
 
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    userId: string;
-    role: string;
-  };
-}
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+/** Resolve the canonical userId from the request user object. */
+const resolveUserId = (req: AuthenticatedRequest): string | undefined =>
+  req.user?.userId || req.user?.id;
+
+/** Extract client IP (first hop only). */
+const resolveIp = (req: AuthenticatedRequest): string | null =>
+  (typeof req.headers['x-forwarded-for'] === 'string'
+    ? req.headers['x-forwarded-for'].split(',')[0].trim()
+    : req.ip) ?? null;
+
+/** Log a recording-access audit event (non-blocking). */
+const auditRecordingAccess = (
+  req: AuthenticatedRequest,
+  action: string,
+  resourceId: string,
+  metadata: Record<string, unknown> = {},
+) => {
+  const userId = resolveUserId(req) ?? null;
+  AuditLogService.log({
+    userId,
+    action,
+    resourceType: 'session_recording',
+    resourceId,
+    ipAddress: resolveIp(req),
+    userAgent: req.headers['user-agent'] ?? null,
+    metadata,
+  }).catch((err) =>
+    logger.error('Failed to write recording audit log', { err, action, resourceId }),
+  );
+};
 
 export const SessionRecordingController = {
   /**
    * POST /api/v1/sessions/:sessionId/recordings/start
-   * Start recording a session
+   * Start recording a session.
+   *
+   * Guards (applied in routes):
+   *   - authenticate
+   *   - requireSessionParticipant   → populates req.sessionParticipants
+   *
+   * Additional business rule enforced here:
+   *   Both mentor and mentee must have granted explicit consent before the
+   *   recording can start (recording_consent table).
    */
   async startRecording(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -28,13 +63,35 @@ export const SessionRecordingController = {
       const { sessionId } = req.params as Record<string, string>;
       const { format } = req.body as { format?: string };
 
-      // TODO: Verify user is part of the session (mentor or mentee)
-      // For now, we'll assume the session exists and user is authorized
+      // Participant data was attached by requireSessionParticipant middleware
+      const participants = req.sessionParticipants;
+      if (!participants) {
+        return res.status(403).json({ success: false, error: 'Session participant data missing' });
+      }
+
+      // Consent gate: both parties must have explicitly consented
+      const consented = await RecordingConsentService.bothParticipantsConsented(sessionId);
+      if (!consented) {
+        const status = await RecordingConsentService.getSessionConsentStatus(sessionId);
+        return res.status(403).json({
+          success: false,
+          error: 'Recording cannot start: both participants must grant consent first',
+          data: {
+            mentorConsented: status.mentorConsented,
+            menteeConsented: status.menteeConsented,
+          },
+        });
+      }
 
       const result = await SessionRecordingService.startRecording({
         sessionId,
-        mentorId: userId, // This should be determined from session data
-        menteeId: userId, // This should be determined from session data
+        mentorId: participants.mentorId,
+        menteeId: participants.menteeId,
+        format,
+      });
+
+      auditRecordingAccess(req, 'RECORDING_STARTED', result.recordingId, {
+        sessionId,
         format,
       });
 
@@ -57,7 +114,7 @@ export const SessionRecordingController = {
    */
   async uploadRecording(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -87,7 +144,7 @@ export const SessionRecordingController = {
    */
   async completeRecording(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -120,12 +177,162 @@ export const SessionRecordingController = {
   },
 
   /**
+   * POST /api/v1/sessions/:sessionId/recording/consent
+   * Grant recording consent for the current user in this session.
+   *
+   * Guards (applied in routes):
+   *   - authenticate
+   *   - requireSessionParticipant
+   */
+  async grantRecordingConsent(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = resolveUserId(req);
+      if (!userId) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+
+      const { sessionId } = req.params as Record<string, string>;
+      const participants = req.sessionParticipants;
+      if (!participants) {
+        return res.status(403).json({ success: false, error: 'Session participant data missing' });
+      }
+
+      const userRole = userId === participants.mentorId ? 'mentor' : 'mentee';
+
+      const record = await RecordingConsentService.grantConsent({
+        sessionId,
+        userId,
+        userRole,
+        ipAddress: resolveIp(req),
+        userAgent: req.headers['user-agent'] ?? null,
+      });
+
+      // Return updated overall status so the client knows if recording can start
+      const status = await RecordingConsentService.getSessionConsentStatus(sessionId);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Consent granted',
+        data: {
+          record,
+          sessionStatus: {
+            mentorConsented: status.mentorConsented,
+            menteeConsented: status.menteeConsented,
+            bothConsented: status.bothConsented,
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('Error granting recording consent:', error);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to grant consent',
+      });
+    }
+  },
+
+  /**
+   * DELETE /api/v1/sessions/:sessionId/recording/consent
+   * Revoke recording consent for the current user.
+   *
+   * If a recording is currently active on this session it will be stopped.
+   *
+   * Guards (applied in routes):
+   *   - authenticate
+   *   - requireSessionParticipant
+   */
+  async revokeRecordingConsent(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = resolveUserId(req);
+      if (!userId) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+
+      const { sessionId } = req.params as Record<string, string>;
+
+      const record = await RecordingConsentService.revokeConsent({
+        sessionId,
+        userId,
+        ipAddress: resolveIp(req),
+        userAgent: req.headers['user-agent'] ?? null,
+      });
+
+      if (!record) {
+        return res.status(404).json({
+          success: false,
+          error: 'No consent record found for this session',
+        });
+      }
+
+      // Stop any active recording because consent was revoked
+      const stoppedRecordingId = await RecordingConsentService.stopActiveRecordingOnRevocation(
+        sessionId,
+        userId,
+      );
+
+      if (stoppedRecordingId) {
+        auditRecordingAccess(req, 'RECORDING_STOPPED_CONSENT_REVOKED', stoppedRecordingId, {
+          sessionId,
+          revokedByUserId: userId,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'Consent revoked',
+        data: {
+          record,
+          recordingStopped: stoppedRecordingId !== null,
+          stoppedRecordingId,
+        },
+      });
+    } catch (error) {
+      logger.error('Error revoking recording consent:', error);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to revoke consent',
+      });
+    }
+  },
+
+  /**
+   * GET /api/v1/sessions/:sessionId/recording/consent
+   * Get the current consent status for both participants.
+   *
+   * Guards (applied in routes):
+   *   - authenticate
+   *   - requireSessionParticipant
+   */
+  async getRecordingConsentStatus(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = resolveUserId(req);
+      if (!userId) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+
+      const { sessionId } = req.params as Record<string, string>;
+      const status = await RecordingConsentService.getSessionConsentStatus(sessionId);
+
+      return res.status(200).json({
+        success: true,
+        data: status,
+      });
+    } catch (error) {
+      logger.error('Error fetching consent status:', error);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to fetch consent status',
+      });
+    }
+  },
+
+  /**
    * POST /api/v1/recordings/:recordingId/consent
-   * Update consent for a recording
+   * Update consent for a recording (legacy endpoint — kept for backward compat)
    */
   async updateConsent(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -159,11 +366,15 @@ export const SessionRecordingController = {
 
   /**
    * GET /api/v1/recordings/:recordingId/playback-url
-   * Generate a playback URL for a recording
+   * Generate a playback URL for a recording.
+   *
+   * Guards (applied in routes):
+   *   - authenticate
+   *   - requireRecordingParticipant (or requireRole admin)
    */
   async generatePlaybackUrl(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -175,6 +386,10 @@ export const SessionRecordingController = {
         recordingId,
         expiresIn ? parseInt(expiresIn, 10) : 3600,
       );
+
+      auditRecordingAccess(req, 'RECORDING_PLAYBACK_URL_GENERATED', recordingId, {
+        expiresIn: expiresIn ?? 3600,
+      });
 
       return res.status(200).json({
         success: true,
@@ -191,11 +406,15 @@ export const SessionRecordingController = {
 
   /**
    * GET /api/v1/recordings/:recordingId
-   * Get recording details
+   * Get recording details.
+   *
+   * Guards (applied in routes):
+   *   - authenticate
+   *   - requireRecordingParticipant (or requireRole admin)
    */
   async getRecording(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -203,6 +422,8 @@ export const SessionRecordingController = {
       const { recordingId } = req.params as Record<string, string>;
 
       const recording = await SessionRecordingService.getRecording(recordingId, userId);
+
+      auditRecordingAccess(req, 'RECORDING_ACCESSED', recordingId, {});
 
       return res.status(200).json({
         success: true,
@@ -223,7 +444,7 @@ export const SessionRecordingController = {
    */
   async getUserRecordings(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -249,7 +470,7 @@ export const SessionRecordingController = {
    */
   async deleteRecording(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -257,6 +478,8 @@ export const SessionRecordingController = {
       const { recordingId } = req.params as Record<string, string>;
 
       await SessionRecordingService.deleteRecording(recordingId, userId);
+
+      auditRecordingAccess(req, 'RECORDING_DELETED', recordingId, {});
 
       return res.status(200).json({
         success: true,
@@ -277,7 +500,7 @@ export const SessionRecordingController = {
    */
   async startTranscription(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -289,6 +512,8 @@ export const SessionRecordingController = {
         recordingId,
         language,
       });
+
+      auditRecordingAccess(req, 'RECORDING_TRANSCRIPTION_STARTED', recordingId, { language });
 
       return res.status(200).json({
         success: true,
@@ -305,11 +530,15 @@ export const SessionRecordingController = {
 
   /**
    * GET /api/v1/recordings/:recordingId/transcription
-   * Get transcription for a recording
+   * Get transcription for a recording.
+   *
+   * Guards (applied in routes):
+   *   - authenticate
+   *   - requireRecordingParticipant (or requireRole admin)
    */
   async getTranscription(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -318,23 +547,10 @@ export const SessionRecordingController = {
 
       const transcriptions = await recordingTranscriptionService.getTranscriptionsByRecording(recordingId);
 
-      // Verify user has access to the recording
-      if (transcriptions.length > 0) {
-        const recordingQuery = `
-          SELECT mentor_id, mentee_id FROM session_recordings WHERE id = $1
-        `;
-        const { rows } = await pool.query(recordingQuery, [recordingId]);
-        
-        if (rows.length > 0) {
-          const recording = rows[0];
-          if (recording.mentor_id !== userId && recording.mentee_id !== userId) {
-            return res.status(403).json({
-              success: false,
-              error: 'Not authorized to access this transcription',
-            });
-          }
-        }
-      }
+      // Access is already enforced by requireRecordingParticipant middleware;
+      // no inline DB check needed here.
+
+      auditRecordingAccess(req, 'RECORDING_TRANSCRIPT_ACCESSED', recordingId, {});
 
       return res.status(200).json({
         success: true,
@@ -355,7 +571,7 @@ export const SessionRecordingController = {
    */
   async searchTranscriptions(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -390,7 +606,7 @@ export const SessionRecordingController = {
    */
   async createBookmark(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -437,7 +653,7 @@ export const SessionRecordingController = {
    */
   async getBookmarks(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -465,7 +681,7 @@ export const SessionRecordingController = {
    */
   async getUserBookmarks(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -491,7 +707,7 @@ export const SessionRecordingController = {
    */
   async updateBookmark(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -525,7 +741,7 @@ export const SessionRecordingController = {
    */
   async deleteBookmark(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
@@ -553,7 +769,7 @@ export const SessionRecordingController = {
    */
   async exportBookmarks(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user?.userId || (req as any).user?.id;
+      const userId = resolveUserId(req);
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }

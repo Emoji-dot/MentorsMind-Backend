@@ -153,7 +153,7 @@ async function findOrCreateUser(profile: OAuthProfile): Promise<{ userId: string
         const firstName = nameParts[0] || 'User';
         const lastName = nameParts.slice(1).join(' ') || '';
 
-        const userResult = await client.query(insertUserQuery, [
+        const newUserResult = await client.query(insertUserQuery, [
             profile.email,
             passwordHash,
             firstName,
@@ -163,7 +163,7 @@ async function findOrCreateUser(profile: OAuthProfile): Promise<{ userId: string
             'mentee', // default role
         ]);
 
-        const userId = userResult.rows[0].id;
+        const userId = newUserResult.rows[0].id;
 
         // Create OAuth account
         const insertOAuthQuery = `

@@ -1,11 +1,76 @@
 /**
  * Audit Log Service
- * Provides tamper-evident logging for all sensitive actions
+ * Provides tamper-evident logging with HMAC-SHA256 hash chaining.
+ *
+ * Each audit log entry includes:
+ *   - record_hash: HMAC-SHA256 of the record's key fields + previous entry's hash
+ *   - previous_hash: hash of the chronologically preceding entry
+ *
+ * This creates a linked chain that detects tampering: any modification to a
+ * historical entry breaks the chain and is detected by verifyChainIntegrity().
+ *
+ * SOC 2 Type II compliance requirement.
  */
 
+import crypto from "crypto";
 import pool from "../config/database";
 import { Request } from "express";
 import { anonymizeIp } from "../utils/sanitization.utils";
+import { logger } from "../utils/logger.utils";
+
+// ── Hash configuration ──────────────────────────────────────────────────────
+
+/**
+ * HMAC secret loaded from environment variable.
+ * In production, set AUDIT_HMAC_SECRET to a strong random value (>= 32 bytes).
+ * Example: openssl rand -hex 32
+ */
+function getHmacSecret(): string {
+  const secret = process.env.AUDIT_HMAC_SECRET;
+  if (!secret || secret.length < 16) {
+    logger.warn(
+      "AUDIT_HMAC_SECRET is not set or too short — using insecure default. " +
+        "Set a strong AUDIT_HMAC_SECRET in production for SOC 2 compliance.",
+    );
+    return "insecure-default-audit-hmac-secret-change-me";
+  }
+  return secret;
+}
+
+/**
+ * Compute HMAC-SHA256 of the audit entry's canonical form.
+ * The canonical form is a pipe-delimited string of all significant fields.
+ */
+function computeRecordHmac(fields: {
+  userId: string | null;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  oldValue: Record<string, any> | null;
+  newValue: Record<string, any> | null;
+  ipAddress: string | null;
+  createdAt: string;
+  previousHash: string | null;
+}): string {
+  const canonical = [
+    fields.userId ?? "",
+    fields.action,
+    fields.resourceType,
+    fields.resourceId ?? "",
+    fields.oldValue ? JSON.stringify(fields.oldValue) : "",
+    fields.newValue ? JSON.stringify(fields.newValue) : "",
+    fields.ipAddress ?? "",
+    fields.createdAt,
+    fields.previousHash ?? "",
+  ].join("|");
+
+  return crypto
+    .createHmac("sha256", getHmacSecret())
+    .update(canonical, "utf8")
+    .digest("hex");
+}
+
+// ── Interfaces ───────────────────────────────────────────────────────────────
 
 export interface AuditLogEntry {
   id: string;
@@ -21,6 +86,7 @@ export interface AuditLogEntry {
   created_at: Date;
   record_hash: string | null;
   previous_hash: string | null;
+  hash_algorithm: string | null;
 }
 
 export interface LogAuditParams {
@@ -53,6 +119,13 @@ export interface PaginatedAuditLogs {
   totalPages: number;
 }
 
+export interface ChainIntegrityResult {
+  valid: boolean;
+  errors: string[];
+  checkedCount: number;
+  verifiedAt: string;
+}
+
 /**
  * Extract client IP from request
  */
@@ -65,39 +138,89 @@ export const extractIpAddress = (req: Request): string => {
   return anonymizeIp(raw);
 };
 
+// ── Service ──────────────────────────────────────────────────────────────────
+
 export const AuditLogService = {
   /**
-   * Log a sensitive action to the audit log
-   * This is the primary method for recording audit events
+   * Log a sensitive action to the audit log with HMAC-SHA256 hash chaining.
+   *
+   * The method:
+   *   1. Fetches the hash of the most recent audit log entry (the "head" of the chain)
+   *   2. Computes an HMAC over the new entry's fields + the previous hash
+   *   3. Inserts the entry with both previous_hash and record_hash populated
+   *
+   * This is the primary method for recording audit events.
    */
   async log(params: LogAuditParams): Promise<AuditLogEntry> {
-    const query = `
-      INSERT INTO audit_logs (
-        user_id, action, resource_type, resource_id,
-        old_value, new_value, ip_address, user_agent, metadata
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING *
-    `;
+    const createdAt = new Date();
+    const createdAtIso = createdAt.toISOString();
 
-    const values = [
-      params.userId || null,
-      params.action,
-      params.resourceType,
-      params.resourceId || null,
-      params.oldValue ? JSON.stringify(params.oldValue) : null,
-      params.newValue ? JSON.stringify(params.newValue) : null,
-      params.ipAddress || null,
-      params.userAgent || null,
-      JSON.stringify(params.metadata || {}),
-    ];
+    // Step 1: Fetch the most recent record's hash to link the chain.
+    // We use a transaction to ensure no concurrent insert races between
+    // fetching the previous hash and inserting the new record.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
 
-    const { rows } = await pool.query<AuditLogEntry>(query, values);
-    return rows[0];
+      // Lock the table briefly to prevent race conditions on hash chain
+      const prevResult = await client.query<{ record_hash: string | null }>(
+        `SELECT record_hash FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE SKIP LOCKED`,
+      );
+      const previousHash = prevResult.rows[0]?.record_hash ?? null;
+
+      // Step 2: Compute HMAC for this entry
+      const recordHash = computeRecordHmac({
+        userId: params.userId,
+        action: params.action,
+        resourceType: params.resourceType,
+        resourceId: params.resourceId ?? null,
+        oldValue: params.oldValue ?? null,
+        newValue: params.newValue ?? null,
+        ipAddress: params.ipAddress ?? null,
+        createdAt: createdAtIso,
+        previousHash,
+      });
+
+      // Step 3: Insert the entry with hashes
+      const query = `
+        INSERT INTO audit_logs (
+          user_id, action, resource_type, resource_id,
+          old_value, new_value, ip_address, user_agent, metadata,
+          created_at, previous_hash, record_hash, hash_algorithm
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        RETURNING *
+      `;
+
+      const values = [
+        params.userId || null,
+        params.action,
+        params.resourceType,
+        params.resourceId || null,
+        params.oldValue ? JSON.stringify(params.oldValue) : null,
+        params.newValue ? JSON.stringify(params.newValue) : null,
+        params.ipAddress || null,
+        params.userAgent || null,
+        JSON.stringify(params.metadata || {}),
+        createdAt,
+        previousHash,
+        recordHash,
+        "hmac-sha256",
+      ];
+
+      const { rows } = await client.query<AuditLogEntry>(query, values);
+      await client.query("COMMIT");
+      return rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   /**
-   * Convenience method to log from Express request context
+   * Convenience method to log from an Express request context.
    */
   async logFromRequest(
     req: Request,
@@ -128,7 +251,7 @@ export const AuditLogService = {
   },
 
   /**
-   * Query audit logs with filtering and pagination
+   * Query audit logs with filtering and pagination.
    */
   async query(filters: AuditLogFilters): Promise<PaginatedAuditLogs> {
     const conditions: string[] = [];
@@ -163,14 +286,12 @@ export const AuditLogService = {
     const whereClause =
       conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    // Get total count
     const countQuery = `SELECT COUNT(*) FROM audit_logs ${whereClause}`;
     const countResult = await pool.query(countQuery, values);
     const total = parseInt(countResult.rows[0].count, 10);
 
-    // Get paginated results
     const page = filters.page || 1;
-    const limit = filters.limit || 50;
+    const limit = Math.min(filters.limit || 50, 200);
     const offset = (page - 1) * limit;
 
     const dataQuery = `
@@ -193,12 +314,11 @@ export const AuditLogService = {
   },
 
   /**
-   * Export audit logs as CSV for compliance reporting
+   * Export audit logs as CSV for compliance reporting.
    */
   async exportToCSV(filters: AuditLogFilters): Promise<string> {
     const result = await this.query({ ...filters, limit: 10000, page: 1 });
 
-    // CSV header
     const headers = [
       "ID",
       "User ID",
@@ -212,11 +332,12 @@ export const AuditLogService = {
       "Metadata",
       "Created At",
       "Record Hash",
+      "Previous Hash",
+      "Hash Algorithm",
     ];
 
     const csvRows = [headers.join(",")];
 
-    // CSV data rows
     for (const log of result.logs) {
       const row = [
         log.id,
@@ -231,9 +352,9 @@ export const AuditLogService = {
         JSON.stringify(log.metadata).replace(/"/g, '""'),
         log.created_at.toISOString(),
         log.record_hash || "",
+        log.previous_hash || "",
+        log.hash_algorithm || "",
       ];
-
-      // Wrap fields in quotes and escape internal quotes
       csvRows.push(row.map((field) => `"${field}"`).join(","));
     }
 
@@ -241,14 +362,19 @@ export const AuditLogService = {
   },
 
   /**
-   * Verify audit log chain integrity
+   * Verify the integrity of the audit log hash chain.
+   *
+   * Checks:
+   *   1. Each record's previous_hash matches the preceding record's record_hash
+   *   2. Each record's record_hash matches the recomputed HMAC over its fields
+   *
+   * Returns a list of any broken links (tampering evidence).
    */
-  async verifyChainIntegrity(
-    limit = 1000,
-  ): Promise<{ valid: boolean; errors: string[] }> {
+  async verifyChainIntegrity(limit = 1000): Promise<ChainIntegrityResult> {
     const query = `
       SELECT id, user_id, action, resource_type, resource_id,
-             old_value, new_value, created_at, previous_hash, record_hash
+             old_value, new_value, ip_address, created_at,
+             previous_hash, record_hash, hash_algorithm
       FROM audit_logs
       ORDER BY created_at ASC, id ASC
       LIMIT $1
@@ -260,11 +386,35 @@ export const AuditLogService = {
     for (let i = 0; i < rows.length; i++) {
       const current = rows[i];
 
+      // Check 1: Chain link — previous_hash must match predecessor's record_hash
       if (i > 0) {
         const previous = rows[i - 1];
         if (current.previous_hash !== previous.record_hash) {
           errors.push(
-            `Chain break at record ${current.id}: previous_hash mismatch`,
+            `Chain break at record ${current.id}: ` +
+              `expected previous_hash=${previous.record_hash ?? "null"}, ` +
+              `got ${current.previous_hash ?? "null"}`,
+          );
+        }
+      }
+
+      // Check 2: HMAC integrity — recompute the hash and compare
+      if (current.record_hash && current.hash_algorithm === "hmac-sha256") {
+        const recomputed = computeRecordHmac({
+          userId: current.user_id,
+          action: current.action,
+          resourceType: current.resource_type,
+          resourceId: current.resource_id,
+          oldValue: current.old_value,
+          newValue: current.new_value,
+          ipAddress: current.ip_address,
+          createdAt: new Date(current.created_at).toISOString(),
+          previousHash: current.previous_hash,
+        });
+
+        if (recomputed !== current.record_hash) {
+          errors.push(
+            `HMAC mismatch at record ${current.id}: record content may have been tampered with`,
           );
         }
       }
@@ -273,11 +423,13 @@ export const AuditLogService = {
     return {
       valid: errors.length === 0,
       errors,
+      checkedCount: rows.length,
+      verifiedAt: new Date().toISOString(),
     };
   },
 
   /**
-   * Get audit log statistics
+   * Get audit log statistics for dashboard/reporting.
    */
   async getStats(startDate?: string, endDate?: string): Promise<any> {
     let whereClause = "";
@@ -304,6 +456,8 @@ export const AuditLogService = {
         COUNT(*) FILTER (WHERE action LIKE '%LOGIN%') as auth_events,
         COUNT(*) FILTER (WHERE action LIKE '%PAYMENT%' OR action LIKE '%ESCROW%') as payment_events,
         COUNT(*) FILTER (WHERE action LIKE '%ADMIN%') as admin_events,
+        COUNT(*) FILTER (WHERE record_hash IS NOT NULL) as hashed_entries,
+        COUNT(*) FILTER (WHERE record_hash IS NULL) as unhashed_entries,
         MIN(created_at) as oldest_log,
         MAX(created_at) as newest_log
       FROM audit_logs

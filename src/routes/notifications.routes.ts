@@ -3,6 +3,13 @@ import { NotificationsController } from "../controllers/notifications.controller
 import { NotificationPreferencesController } from "../controllers/notificationPreferences.controller";
 import { PushController } from "../controllers/push.controller";
 import { authenticate } from "../middleware/auth.middleware";
+import { validate } from "../middleware/validation.middleware";
+import {
+  listNotificationsSchema,
+  notificationIdParamSchema,
+  updateNotificationPreferencesSchema,
+  pushUnsubscribeSchema,
+} from "../validators/schemas/notifications.schemas";
 
 const router = Router();
 
@@ -63,7 +70,12 @@ const router = Router();
  *                         hasMore:
  *                           type: boolean
  */
-router.get("/", authenticate, NotificationsController.getNotifications);
+router.get(
+  "/",
+  authenticate,
+  validate(listNotificationsSchema),
+  NotificationsController.getNotifications,
+);
 
 /**
  * @swagger
@@ -150,7 +162,12 @@ router.put("/read-all", authenticate, NotificationsController.markAllAsRead);
  *       404:
  *         description: Notification not found
  */
-router.put("/:id/read", authenticate, NotificationsController.markAsRead);
+router.put(
+  "/:id/read",
+  authenticate,
+  validate(notificationIdParamSchema),
+  NotificationsController.markAsRead,
+);
 
 /**
  * @swagger
@@ -174,7 +191,12 @@ router.put("/:id/read", authenticate, NotificationsController.markAsRead);
  *       404:
  *         description: Notification not found
  */
-router.delete("/:id", authenticate, NotificationsController.deleteNotification);
+router.delete(
+  "/:id",
+  authenticate,
+  validate(notificationIdParamSchema),
+  NotificationsController.deleteNotification,
+);
 
 /**
  * @swagger
@@ -214,6 +236,7 @@ router.get(
 router.put(
   "/preferences",
   authenticate,
+  validate(updateNotificationPreferencesSchema),
   NotificationPreferencesController.updatePreferences,
 );
 
@@ -295,7 +318,12 @@ router.post("/push/subscribe", authenticate, PushController.subscribe);
  *       404:
  *         description: Token not found
  */
-router.delete("/push/unsubscribe", authenticate, PushController.unsubscribe);
+router.delete(
+  "/push/unsubscribe",
+  authenticate,
+  validate(pushUnsubscribeSchema),
+  PushController.unsubscribe,
+);
 
 /**
  * @swagger

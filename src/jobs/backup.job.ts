@@ -9,6 +9,25 @@
 
 import { BackupService } from "../services/backup.service";
 import { logInfo, logWarning, logError } from "../utils/error.utils";
+import { emailService } from "../services/email.service";
+
+/**
+ * Fire-and-forget admin alert email for backup/integrity failures.
+ * logError() already forwards to Sentry (src/utils/error.utils.ts), so this
+ * only needs to add the email leg of the alert per issue #690.
+ */
+function alertAdmins(subject: string, message: string): void {
+  const to = process.env.ADMIN_ALERT_EMAIL;
+  if (!to) return;
+  emailService
+    .sendEmail({
+      to: [to],
+      subject: `[MentorsMind] ${subject}`,
+      htmlContent: `<p>${message}</p>`,
+      textContent: message,
+    })
+    .catch((err) => logWarning("Failed to send backup alert email", { err }));
+}
 
 declare const require: any;
 
@@ -36,14 +55,25 @@ class BackupJob {
             size: result.size,
             duration: result.duration,
           });
-          await BackupService.verifyBackup(result.id);
+          const verification = await BackupService.verifyBackup(result.id);
+          if (!verification.valid) {
+            const err = new Error(
+              `Backup integrity check failed: ${verification.error ?? "unknown"}`,
+            );
+            logError(err, "critical", { jobId: result.id });
+            alertAdmins(
+              "Backup integrity check failed",
+              `Integrity verification failed for backup ${result.id}: ${verification.error ?? "unknown"}`,
+            );
+          }
         } else {
-          logError(
-            new Error(`Daily full backup failed: ${result.error ?? "unknown"}`),
-            "high",
-            {
-              jobId: result.id,
-            },
+          const err = new Error(
+            `Daily full backup failed: ${result.error ?? "unknown"}`,
+          );
+          logError(err, "high", { jobId: result.id });
+          alertAdmins(
+            "Daily backup failed",
+            `Daily full backup job ${result.id} failed: ${result.error ?? "unknown"}`,
           );
         }
       });
@@ -66,12 +96,13 @@ class BackupJob {
         logInfo("Running scheduled WAL backup");
         const result = await BackupService.runWALBackup();
         if (result.status === "failed") {
-          logError(
-            new Error(`WAL backup failed: ${result.error ?? "unknown"}`),
-            "high",
-            {
-              jobId: result.id,
-            },
+          const err = new Error(
+            `WAL backup failed: ${result.error ?? "unknown"}`,
+          );
+          logError(err, "high", { jobId: result.id });
+          alertAdmins(
+            "WAL backup failed",
+            `WAL backup job ${result.id} failed: ${result.error ?? "unknown"}`,
           );
         }
       });

@@ -18,10 +18,17 @@ export const bulkQueue = new Queue("bulk-queue", { connection });
 export const bulkWorker = new Worker(
   "bulk-queue",
   async (job: Job) => {
-    const { jobId, jobType, payload } = job.data;
-    await BulkService.processJob(jobId, jobType, payload);
+    const { jobId, jobType, payload, requestedBy } = job.data;
+    await BulkService.processJob(jobId, jobType, payload, requestedBy);
   },
-  { connection, concurrency: 2 },
+  { 
+    connection, 
+    concurrency: 2,
+    limiter: {
+      max: 100,
+      duration: 1000,
+    }
+  },
 );
 
 bulkWorker.on("completed", (job) => {

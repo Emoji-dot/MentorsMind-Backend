@@ -322,6 +322,29 @@ export const ModerationController = {
   },
 
   /**
+   * GET /api/v1/moderation/appeals/my-appeals
+   * Get appeals submitted by the authenticated user
+   */
+  async getMyAppeals(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const userId = req.user?.id;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const offset = parseInt(req.query.offset as string) || 0;
+
+    if (!userId) {
+      ResponseUtil.unauthorized(res, "Authentication required");
+      return;
+    }
+
+    const result = await ModerationService.getMyAppeals(userId, limit, offset);
+
+    ResponseUtil.success(res, result.data, "Your appeals retrieved", 200, {
+      total: result.total,
+      limit,
+      offset,
+    } as any);
+  },
+
+  /**
    * GET /api/v1/admin/moderation/appeals
    * Get appeals queue
    */

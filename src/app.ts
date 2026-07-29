@@ -9,7 +9,7 @@ import {
 } from "./middleware/security.middleware";
 import { tracingMiddleware } from "./middleware/tracing.middleware";
 import { requestLoggerMiddleware } from "./middleware/request-logger.middleware";
-import { generalLimiter } from "./middleware/rate-limit.middleware";
+import { distributedGeneralLimiter } from "./middleware/distributed-rate-limit.middleware";
 import { errorHandler } from "./middleware/errorHandler";
 import { notFoundHandler } from "./middleware/notFoundHandler";
 import { swaggerOptions } from "./config/swagger";
@@ -61,8 +61,8 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 app.use(sanitizeInput);
-app.use(generalLimiter);
-app.use(metricsMiddleware);
+    app.use(distributedGeneralLimiter);
+    app.use(metricsMiddleware);
 app.use(versioningMiddleware);
 app.set("trust proxy", 1);
 

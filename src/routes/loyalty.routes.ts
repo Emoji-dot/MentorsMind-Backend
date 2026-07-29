@@ -5,6 +5,11 @@ import {
 } from "../middleware/auth.middleware";
 import { LoyaltyService } from "../services/loyalty.service";
 import { asyncHandler } from "../utils/asyncHandler.utils";
+import { validate } from "../middleware/validation.middleware";
+import {
+  earnTokensSchema,
+  redeemTokensSchema,
+} from "../validators/schemas/loyalty.schemas";
 
 const router = Router();
 
@@ -67,6 +72,27 @@ router.get(
 
 /**
  * @swagger
+ * /loyalty/status:
+ *   get:
+ *     summary: Get current user's loyalty status (points, tier, next tier, discount)
+ *     tags: [Loyalty]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Loyalty status
+ */
+router.get(
+  "/status",
+  authenticate,
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const status = await LoyaltyService.getStatus(req.user!.userId);
+    res.json({ success: true, data: status });
+  }),
+);
+
+/**
+ * @swagger
  * /loyalty/earn:
  *   post:
  *     summary: Earn loyalty tokens for an action
@@ -89,6 +115,7 @@ router.get(
 router.post(
   "/earn",
   authenticate,
+  validate(earnTokensSchema),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { action } = req.body;
     const account = await LoyaltyService.earnTokens(req.user!.userId, action);
@@ -120,6 +147,7 @@ router.post(
 router.post(
   "/redeem",
   authenticate,
+  validate(redeemTokensSchema),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { tokens } = req.body;
     const account = await LoyaltyService.redeemTokens(

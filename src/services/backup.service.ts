@@ -8,6 +8,7 @@ import { logger } from "../utils/logger.utils";
 import { EncryptionUtil } from "../utils/encryption.utils";
 import { StorageService } from "./storage.service";
 import { env } from "../config/env";
+import pool from "../config/database";
 
 const execAsync = promisify(exec);
 const gzipAsync = promisify(zlib.gzip);
@@ -87,6 +88,68 @@ async function dumpDatabase(): Promise<Buffer> {
 
 async function compressBuffer(data: Buffer): Promise<Buffer> {
   return gzipAsync(data);
+}
+
+/**
+ * Persists a backup job to the durable backup_log table. The in-memory
+ * jobRegistry remains the fast path for the current process, but backup_log
+ * is the source of truth across restarts (GET /api/v1/admin/backups).
+ */
+async function persistBackupLog(job: BackupJob): Promise<void> {
+  const s3Key = job.location.startsWith("s3://")
+    ? job.location.replace(`s3://${env.AWS_S3_BUCKET}/`, "")
+    : null;
+
+  await pool
+    .query(
+      `INSERT INTO backup_log
+         (id, backup_type, status, s3_key, size_bytes, duration_ms,
+          integrity_verified, error, started_at, completed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (id) DO UPDATE SET
+         status = EXCLUDED.status,
+         s3_key = EXCLUDED.s3_key,
+         size_bytes = EXCLUDED.size_bytes,
+         duration_ms = EXCLUDED.duration_ms,
+         integrity_verified = EXCLUDED.integrity_verified,
+         error = EXCLUDED.error,
+         completed_at = EXCLUDED.completed_at`,
+      [
+        job.id,
+        job.type,
+        job.status,
+        s3Key,
+        job.size,
+        job.duration,
+        false,
+        job.error ?? null,
+        job.startedAt,
+        job.completedAt ?? null,
+      ],
+    )
+    .catch((err) => {
+      logger.error("Failed to persist backup_log entry", {
+        err,
+        jobId: job.id,
+      });
+    });
+}
+
+async function markIntegrityVerified(
+  jobId: string,
+  verified: boolean,
+): Promise<void> {
+  await pool
+    .query(
+      `UPDATE backup_log SET integrity_verified = $2 WHERE id = $1`,
+      [jobId, verified],
+    )
+    .catch((err) => {
+      logger.error("Failed to update backup_log integrity flag", {
+        err,
+        jobId,
+      });
+    });
 }
 
 async function storeBackup(
@@ -184,6 +247,7 @@ export const BackupService = {
     }
 
     jobRegistry.set(job.id, job);
+    await persistBackupLog(job);
     return job;
   },
 
@@ -229,7 +293,45 @@ export const BackupService = {
     }
 
     jobRegistry.set(job.id, job);
+    await persistBackupLog(job);
     return job;
+  },
+
+  /**
+   * Durable backup history from backup_log, independent of the in-memory
+   * registry (survives process restarts). Backs GET /api/v1/admin/backups.
+   */
+  async listBackups(limit = 50, offset = 0): Promise<{
+    data: Array<{
+      id: string;
+      backup_type: string;
+      status: string;
+      s3_key: string | null;
+      size_bytes: number;
+      duration_ms: number;
+      integrity_verified: boolean;
+      error: string | null;
+      started_at: Date;
+      completed_at: Date | null;
+    }>;
+    total: number;
+  }> {
+    const [dataResult, countResult] = await Promise.all([
+      pool.query(
+        `SELECT id, backup_type, status, s3_key, size_bytes, duration_ms,
+                integrity_verified, error, started_at, completed_at
+           FROM backup_log
+          ORDER BY started_at DESC
+          LIMIT $1 OFFSET $2`,
+        [limit, offset],
+      ),
+      pool.query(`SELECT COUNT(*) FROM backup_log`),
+    ]);
+
+    return {
+      data: dataResult.rows,
+      total: parseInt(countResult.rows[0].count, 10),
+    };
   },
 
   async verifyBackup(jobId: string): Promise<BackupVerificationResult> {
@@ -254,12 +356,47 @@ export const BackupService = {
       }
 
       logger.info("Backup verification passed", { jobId });
+      await markIntegrityVerified(jobId, true);
       return { jobId, valid: true, checkedAt: new Date() };
     } catch (err) {
       const error = (err as Error).message;
       logger.error("Backup verification failed", { jobId, error });
+      await markIntegrityVerified(jobId, false);
       return { jobId, valid: false, checkedAt: new Date(), error };
     }
+  },
+
+  /**
+   * Admin-facing PITR entry point. Resolves the best backup candidate for a
+   * target restore point; actual restore execution is an operator action
+   * per the disaster-recovery runbook (docs/disaster-recovery.md) since it
+   * requires taking the primary offline.
+   */
+  async restoreToPoint(timestamp: Date): Promise<{
+    candidate: BackupJob;
+    instructions: string;
+  }> {
+    const candidate = BackupService.getPITRCandidate(timestamp);
+    if (!candidate) {
+      const err: any = new Error(
+        "No suitable backup found for the given target time",
+      );
+      err.statusCode = 404;
+      throw err;
+    }
+
+    logger.warn("PITR restore requested", {
+      targetTime: timestamp,
+      candidateJobId: candidate.id,
+    });
+
+    return {
+      candidate,
+      instructions:
+        "See docs/disaster-recovery.md for the PITR runbook. Restore " +
+        `backup ${candidate.id} (${candidate.location}), then replay WAL ` +
+        "segments up to the target time.",
+    };
   },
 
   async applyRetentionPolicy(

@@ -126,10 +126,19 @@ export const ComplianceController = {
 
   async enforceRetentionPolicies(_req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const result = await ComplianceService.enforceRetentionPolicies();
+      const result = await ComplianceService.enforceRetentionPolicies(false);
       ResponseUtil.success(res, result, "Retention enforcement completed successfully");
     } catch (error) {
       ResponseUtil.error(res, "Failed to enforce retention policies", 500, (error as Error).message);
+    }
+  },
+
+  async previewRetentionPolicies(_req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const result = await ComplianceService.enforceRetentionPolicies(true);
+      ResponseUtil.success(res, result, "Retention preview completed successfully");
+    } catch (error) {
+      ResponseUtil.error(res, "Failed to preview retention policies", 500, (error as Error).message);
     }
   },
 

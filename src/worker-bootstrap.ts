@@ -13,6 +13,11 @@ async function startWorkers() {
   // Load secrets (AWS / Vault / env) before any queue/worker modules are imported
   await loadSecrets();
 
+  // Initialise OTel before queue/worker modules are imported so auto-
+  // instrumentations (pg, ioredis, http) patch modules at load time.
+  const { initTracing } = await import("./config/tracing");
+  initTracing();
+
   // Dynamic import ensures config/env.ts is validated AFTER secrets are merged
   const { logger } = await import("./utils/logger.utils");
 
@@ -31,11 +36,15 @@ async function startWorkers() {
     maintenanceWorker,
     webhookDeliveryWorker,
     transcriptionWorker,
+    qualityScoreWorker,
     startScheduler,
     stopScheduler,
+    startOutboxWorker,
+    stopOutboxWorker,
   } = await import("./workers");
 
   await startScheduler();
+  await startOutboxWorker();
 
   logger.info("[WorkerProcess] All workers and scheduler started", {
     workers: [
@@ -51,6 +60,7 @@ async function startWorkers() {
       "maintenance",
       "webhookDelivery",
       "transcription",
+      "qualityScore",
     ],
   });
 
@@ -71,6 +81,7 @@ async function startWorkers() {
       maintenanceWorker.close(),
       webhookDeliveryWorker.close(),
       transcriptionWorker.close(),
+      qualityScoreWorker.close(),
       stopScheduler(),
     ]);
 

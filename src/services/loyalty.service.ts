@@ -1,4 +1,5 @@
 import pool from "../config/database";
+import { logger } from "../utils/logger.utils";
 
 export interface LoyaltyToken {
   symbol: string;
@@ -23,6 +24,14 @@ export interface EarnRule {
   cooldown?: number;
   maxPerDay?: string;
 }
+
+// bps discount applied to the platform fee per tier (1.5% for platinum, per issue #680)
+const TIER_DISCOUNT_BPS: Record<string, number> = {
+  bronze: 0,
+  silver: 50,
+  gold: 100,
+  platinum: 150,
+};
 
 const TIER_THRESHOLDS = { bronze: 0, silver: 100, gold: 500, platinum: 2000 };
 const TIER_BENEFITS: Record<string, string[]> = {
@@ -145,5 +154,109 @@ export const LoyaltyService = {
       [userId],
     );
     return rows;
+  },
+
+  /**
+   * Award loyalty points when a session completes. 10 points per hour
+   * (rounded up), 10 points per session floor. Idempotent: the DB unique
+   * index on (user_id, action, reference_id) rejects a second award for the
+   * same bookingId, so completing a booking twice never double-awards.
+   */
+  async accruePointsForCompletion(
+    menteeId: string,
+    bookingId: string,
+    durationMinutes: number,
+  ): Promise<LoyaltyAccount | null> {
+    const points = Math.ceil(durationMinutes / 60) * 10;
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const inserted = await client.query(
+        `INSERT INTO loyalty_transactions (user_id, action, tokens, type, reference_id)
+         VALUES ($1, 'complete_session', $2, 'earn', $3)
+         ON CONFLICT (user_id, action, reference_id) WHERE reference_id IS NOT NULL DO NOTHING
+         RETURNING id`,
+        [menteeId, points, bookingId],
+      );
+
+      if (inserted.rows.length === 0) {
+        // Already accrued for this booking — no-op.
+        await client.query("ROLLBACK");
+        logger.debug("Loyalty points already accrued for booking", {
+          bookingId,
+          menteeId,
+        });
+        return null;
+      }
+
+      await client.query(
+        `INSERT INTO loyalty_accounts (user_id, balance, earned, redeemed)
+         VALUES ($1, $2, $2, 0)
+         ON CONFLICT (user_id) DO UPDATE
+         SET balance = loyalty_accounts.balance + $2,
+             earned = loyalty_accounts.earned + $2,
+             updated_at = CURRENT_TIMESTAMP`,
+        [menteeId, points],
+      );
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    logger.info("Loyalty points accrued for session completion", {
+      menteeId,
+      bookingId,
+      points,
+    });
+
+    return this.getOrCreateAccount(menteeId);
+  },
+
+  /** Platform-fee discount in basis points for the user's current tier. */
+  async getDiscountBps(userId: string): Promise<number> {
+    const account = await this.getOrCreateAccount(userId);
+    return TIER_DISCOUNT_BPS[account.tier] ?? 0;
+  },
+
+  /** GET /api/v1/loyalty/status payload: points, tier, next tier, discount. */
+  async getStatus(userId: string): Promise<{
+    points: number;
+    tier: LoyaltyAccount["tier"];
+    nextTier: LoyaltyAccount["tier"] | null;
+    nextTierThreshold: number | null;
+    discountBps: number;
+    discountPercent: number;
+  }> {
+    const account = await this.getOrCreateAccount(userId);
+    const balance = parseFloat(account.balance);
+
+    const tiersInOrder: Array<keyof typeof TIER_THRESHOLDS> = [
+      "bronze",
+      "silver",
+      "gold",
+      "platinum",
+    ];
+    const currentIndex = tiersInOrder.indexOf(account.tier);
+    const nextTier =
+      currentIndex < tiersInOrder.length - 1
+        ? tiersInOrder[currentIndex + 1]
+        : null;
+
+    const discountBps = TIER_DISCOUNT_BPS[account.tier] ?? 0;
+
+    return {
+      points: balance,
+      tier: account.tier,
+      nextTier,
+      nextTierThreshold: nextTier ? TIER_THRESHOLDS[nextTier] : null,
+      discountBps,
+      discountPercent: discountBps / 100,
+    };
   },
 };
