@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 export enum BookingEventType {
   BookingCreated = 'BookingCreated',
+  BookingStatusChanged = 'BookingStatusChanged',
   BookingConfirmed = 'BookingConfirmed',
   BookingCompleted = 'BookingCompleted',
   BookingCancelled = 'BookingCancelled',
