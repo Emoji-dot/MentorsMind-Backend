@@ -2,6 +2,25 @@ import { EventStoreModel, DomainEvent, Snapshot } from '../models';
 import { db } from '../config/database';
 import { logger } from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
+import { ProjectionService } from './projection.service';
+import {
+  applyBookingEvent,
+  BOOKING_AGGREGATE_TYPE,
+  normalizeBookingEvent,
+} from '../events/booking.reducer';
+
+function normalizeEvent(row: any): DomainEvent {
+  if (!row) return row;
+  // Reuse booking normalizer — it handles snake_case/camelCase for any aggregate
+  return normalizeBookingEvent(row);
+}
+
+function applyEventForAggregate(aggregateType: string) {
+  if (aggregateType === BOOKING_AGGREGATE_TYPE) {
+    return applyBookingEvent;
+  }
+  return undefined;
+}
 
 export class EventStoreService {
   private static readonly SNAPSHOT_THRESHOLD = 10;
@@ -30,10 +49,29 @@ export class EventStoreService {
         }
       };
 
-      const savedEvent = await EventStoreModel.append(event);
-      
-      if (savedEvent && newVersion % this.SNAPSHOT_THRESHOLD === 0) {
-        await this.createSnapshot(aggregateId, aggregateType);
+      const savedRow = await EventStoreModel.append(event);
+      if (!savedRow) {
+        return null;
+      }
+
+      const savedEvent = normalizeEvent(savedRow);
+
+      // Drive registered projections (BookingCreated / StatusChanged / Cancelled, etc.)
+      try {
+        await ProjectionService.handleEvent(savedEvent);
+      } catch (projErr) {
+        logger.error(
+          { projErr, eventType, aggregateId },
+          'Projection handling failed after publishEvent'
+        );
+      }
+
+      if (newVersion % this.SNAPSHOT_THRESHOLD === 0) {
+        await this.createSnapshot(
+          aggregateId,
+          aggregateType,
+          applyEventForAggregate(aggregateType),
+        );
       }
 
       logger.info({ eventType, aggregateId, aggregateType, version: newVersion }, 'Event published successfully');
@@ -67,10 +105,13 @@ export class EventStoreService {
     initialState: Record<string, any> = {}
   ): Promise<Snapshot | null> {
     try {
-      const state = applyEvent 
-        ? await this.getAggregateState(aggregateId, aggregateType, applyEvent, initialState)
+      const reducer =
+        applyEvent ?? applyEventForAggregate(aggregateType);
+
+      const state = reducer
+        ? await this.getAggregateState(aggregateId, aggregateType, reducer, initialState)
         : {};
-      
+
       const latestVersion = await EventStoreModel.getLatestVersion(aggregateId);
 
       const snapshot = await EventStoreModel.createSnapshot({
@@ -89,7 +130,7 @@ export class EventStoreService {
   }
 
   static async getEvents(aggregateId: string, fromVersion = 1, toVersion?: number): Promise<DomainEvent[]> {
-    const events = await EventStoreModel.getEvents(aggregateId, fromVersion);
+    const events = (await EventStoreModel.getEvents(aggregateId, fromVersion)).map(normalizeEvent);
     if (toVersion !== undefined) {
       return events.filter(e => e.version <= toVersion);
     }
@@ -146,7 +187,7 @@ export class EventStoreService {
       if (!rows[0]) {
         throw new Error('Event append returned no rows');
       }
-      savedEvent = rows[0] as DomainEvent;
+      savedEvent = normalizeEvent(rows[0]);
     } catch (error: any) {
       // pg unique-violation on (aggregate_id, version) — concurrent write detected
       if (error?.code === '23505') {
@@ -163,10 +204,23 @@ export class EventStoreService {
       'Event appended with optimistic lock'
     );
 
+    try {
+      await ProjectionService.handleEvent(savedEvent);
+    } catch (projErr) {
+      logger.error(
+        { projErr, eventType, aggregateId },
+        'Projection handling failed after optimistic-lock append'
+      );
+    }
+
     // Trigger snapshot creation at every SNAPSHOT_THRESHOLD boundary
     if (newVersion % EventStoreService.SNAPSHOT_THRESHOLD === 0) {
       // Fire-and-forget; snapshot failure must not roll back the already-persisted event
-      this.createSnapshot(aggregateId, aggregateType).catch(err =>
+      this.createSnapshot(
+        aggregateId,
+        aggregateType,
+        applyEventForAggregate(aggregateType),
+      ).catch(err =>
         logger.error({ err, aggregateId, aggregateType }, 'Snapshot creation failed after optimistic-lock append')
       );
     }
@@ -179,7 +233,7 @@ export class EventStoreService {
     limit = 100,
     offset = 0
   ): Promise<{ events: DomainEvent[], total: number }> {
-    const events = await EventStoreModel.getEvents(aggregateId);
+    const events = await this.getEvents(aggregateId);
     const total = events.length;
 
     return {

@@ -24,6 +24,35 @@ import { MentorsService } from "./mentors.service";
 import { LoyaltyService } from "./loyalty.service";
 import { scheduleNoShowCheck } from "../queues/session-no-show.queue";
 import config from "../config";
+import { EventStoreService } from "./event-store.service";
+import {
+  BOOKING_AGGREGATE_TYPE,
+  BookingProjectionEventType,
+} from "../events/booking.reducer";
+
+/** Dual-write helper — never fails the primary booking mutation. */
+async function publishBookingDomainEvent(
+  bookingId: string,
+  eventType: string,
+  data: Record<string, unknown>,
+  userId: string,
+): Promise<void> {
+  try {
+    await EventStoreService.publishEvent(
+      bookingId,
+      BOOKING_AGGREGATE_TYPE,
+      eventType,
+      data,
+      { userId },
+    );
+  } catch (error) {
+    logger.warn("Booking event dual-write failed (non-fatal)", {
+      bookingId,
+      eventType,
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+}
 
 export interface CreateBookingData {
   menteeId: string;
@@ -175,6 +204,25 @@ export const BookingsService = {
       currency: "XLM",
       usdEquivalent,
     });
+
+    // Dual-write: domain event alongside direct DB write (migration period)
+    await publishBookingDomainEvent(
+      booking.id,
+      BookingProjectionEventType.BookingCreated,
+      {
+        menteeId: booking.mentee_id,
+        mentorId: booking.mentor_id,
+        scheduledAt: booking.scheduled_at,
+        durationMinutes: booking.duration_minutes,
+        topic: booking.topic,
+        notes: booking.notes,
+        amount: booking.amount,
+        currency: booking.currency,
+        status: booking.status,
+        paymentStatus: booking.payment_status,
+      },
+      data.menteeId,
+    );
 
     return booking;
   },
@@ -363,6 +411,19 @@ export const BookingsService = {
     await CacheService.del(CacheKeys.sessionList(booking.mentor_id));
     logger.debug("Booking cache invalidated on confirmation", { bookingId });
 
+    await publishBookingDomainEvent(
+      bookingId,
+      BookingProjectionEventType.BookingStatusChanged,
+      {
+        previousStatus: booking.status,
+        status: "confirmed",
+        paymentStatus: booking.payment_status,
+        escrowId: onChainEscrow?.escrowId,
+        escrowContractAddress: onChainEscrow?.contractAddress,
+      },
+      userId,
+    );
+
     CalendarService.createGoogleCalendarEvent(bookingId).catch((err) =>
       logger.error("Calendar create failed", { bookingId, error: err }),
     );
@@ -470,6 +531,19 @@ export const BookingsService = {
     await LearnerService.invalidateCache(booking.mentee_id);
 
     logger.debug("Booking cache invalidated on completion", { bookingId });
+
+    await publishBookingDomainEvent(
+      bookingId,
+      BookingProjectionEventType.BookingStatusChanged,
+      {
+        previousStatus: booking.status,
+        status: "completed",
+        paymentStatus: updated.payment_status,
+        sessionId: booking.session_id,
+      },
+      userId,
+    );
+
     // Emit session:updated event to both mentor and mentee
     SocketService.emitToUser(booking.mentor_id, "session:updated", {
       bookingId,
@@ -585,17 +659,37 @@ export const BookingsService = {
     await CacheService.del(CacheKeys.sessionList(booking.mentor_id));
     logger.debug("Booking cache invalidated on cancellation", { bookingId });
 
-    if (!sorobanRefunded && refundInfo.eligible && booking.transaction_id) {
-      await QueueService.submitStellarTx({
-        type: "refund",
-        paymentId: booking.transaction_id,
-        amount: String(
-          parseFloat(booking.amount) * (refundInfo.refundPercentage / 100),
-        ),
+    await publishBookingDomainEvent(
+      bookingId,
+      BookingProjectionEventType.BookingCancelled,
+      {
+        previousStatus: booking.status,
+        cancellationReason: reason || "No reason provided",
+        refundEligible: refundInfo.eligible,
+        refundPercentage: refundInfo.refundPercentage,
+        paymentStatus: updated.payment_status,
+        transactionId: booking.transaction_id,
+        amount: booking.amount,
         currency: booking.currency,
-        userId: booking.mentee_id,
-        description: refundInfo.reason,
-      });
+        menteeId: booking.mentee_id,
+      },
+      userId,
+    );
+
+    if (!sorobanRefunded && refundInfo.eligible && booking.transaction_id) {
+      await QueueService.submitStellarTx(
+        {
+          type: "refund",
+          paymentId: booking.transaction_id,
+          amount: String(
+            parseFloat(booking.amount) * (refundInfo.refundPercentage / 100),
+          ),
+          currency: booking.currency,
+          userId: booking.mentee_id,
+          description: refundInfo.reason,
+        },
+        `refund:booking:${bookingId}`,
+      );
       logger.info("Refund job enqueued", { bookingId, refundInfo });
     }
 

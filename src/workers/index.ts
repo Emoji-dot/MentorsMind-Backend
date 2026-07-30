@@ -21,6 +21,7 @@ const REQUIRED_QUEUE_NAMES = [
     'DOMAIN_EVENTS',
     'RECORDING_CLEANUP',
     'ANALYTICS_REFRESH',
+    'INSIGHT_GENERATION',
 ] as const;
 
 for (const queueKey of REQUIRED_QUEUE_NAMES) {
@@ -54,3 +55,4 @@ export { qualityScoreWorker } from './quality-score.worker';
 export { startRetentionEnforcementWorker, stopRetentionEnforcementWorker } from './retention-enforcement.worker';
 export { recordingCleanupWorker } from './recordingCleanup.worker';
 export { analyticsRefreshWorker } from './analyticsRefresh.worker';
+export { insightGenerationWorker } from './insight-generation.worker';

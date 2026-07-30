@@ -6,6 +6,7 @@ import { pushTokenCleanupQueue } from "../queues/pushTokenCleanup.queue";
 import { maintenanceQueue } from "../queues/maintenance.queue";
 import { recordingCleanupQueue } from "../queues/recordingCleanup.queue";
 import { analyticsRefreshQueue } from "../queues/analyticsRefresh.queue";
+import { insightGenerationQueue } from "../queues/insightGeneration.queue";
 import { qualityScoreQueue } from "../queues/quality-score.queue";
 import { VerificationService } from "../services/verification.service";
 import { BackgroundCheckService } from "../services/background-check.service";
@@ -193,20 +194,20 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
-  // Recommendation collaborative stats refresh — daily at 03:00 UTC
-  // Recomputes per-mentor CTR + 48h booking conversion into mentor_recommendation_stats
+  // Personalized insight generation — every 6 hours
+  // Dispatches admin platform insights + one BullMQ job per active user
   await addRepeatableJobIfNotExists(
-    maintenanceQueue,
-    "recommendation-stats-scheduled",
-    { jobType: "recommendation-stats-refresh" },
+    insightGenerationQueue,
+    "insight-generation-scheduled",
+    { jobType: "insight-generation-dispatch" },
     {
-      repeat: { pattern: "0 3 * * *" }, // cron: daily 03:00 UTC
-      jobId: "recommendation-stats-recurring",
+      repeat: { pattern: "0 */6 * * *" }, // cron: every 6 hours
+      jobId: "insight-generation-recurring",
     },
   );
 
   logger.info(
-    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, audit log archival, key rotation, and recommendation stats refresh registered",
+    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, audit log archival, key rotation, and insight generation registered",
   );
 
   if (!backgroundCheckPollingTimer) {

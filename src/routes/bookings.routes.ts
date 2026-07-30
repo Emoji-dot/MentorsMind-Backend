@@ -15,6 +15,7 @@ import {
   getSessionPresence,
 } from "../controllers/session-presence.controller";
 
+const requireAdmin = requireRole("admin");
 const router = Router();
 
 /**
@@ -180,6 +181,46 @@ router.get("/:id", authenticate, BookingsController.getSession);
  *         description: Session not found
  */
 router.delete("/:id/cancel", authenticate, BookingsController.cancelBooking);
+
+/**
+ * @swagger
+ * /api/v1/bookings/{id}/events:
+ *   get:
+ *     summary: Get booking domain event history (Admin only)
+ *     tags: [Bookings]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 100
+ *       - in: query
+ *         name: offset
+ *         schema:
+ *           type: integer
+ *           default: 0
+ *     responses:
+ *       200:
+ *         description: Event log for the booking aggregate in version order
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin only
+ */
+router.get(
+  "/:id/events",
+  authenticate,
+  requireAdmin,
+  BookingsController.getBookingEvents,
+);
 
 /**
  * @swagger

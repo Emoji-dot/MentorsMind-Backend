@@ -169,3 +169,30 @@ function connect() {
 When `REDIS_URL` is set, all published events go through the `mm:ws:events` Redis channel. This allows multiple server instances to deliver messages to the correct client regardless of which instance holds the connection.
 
 If Redis is unavailable, delivery falls back to in-process routing (single-instance only).
+
+---
+
+## Socket.IO — `insight:new`
+
+Emitted by `InsightGeneratorService` when a new analytics insight is stored (see `docs/analytics-insights.md`).
+
+| Recipient | Room |
+|-----------|------|
+| Personalized mentor/learner insight | `user:{userId}` |
+| Platform admin insight | `admin` |
+
+```json
+{
+  "id": "uuid",
+  "type": "trend",
+  "severity": "warning",
+  "title": "Your session completion declined",
+  "description": "Your sessions declined 20% this month (65% vs 85% last month)",
+  "metricName": "mentor_session_completion",
+  "metricValue": -20,
+  "targetAudience": "mentor",
+  "userId": "uuid",
+  "entityId": "uuid",
+  "createdAt": "2026-07-29T20:00:00.000Z"
+}
+```

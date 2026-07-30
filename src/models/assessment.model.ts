@@ -6,6 +6,8 @@ export interface Question {
   options: string[];
   correctAnswer: number;
   points: number;
+  /** IRT 1-PL difficulty parameter (β, logit scale). Default 0 = medium. */
+  difficulty_parameter: number;
 }
 
 export interface Answer {
@@ -38,6 +40,22 @@ export interface AssessmentResult {
   skill_level: number;
   recommendations: string[];
   completed_at: Date;
+  /** IRT ability estimate θ at completion (null for non-adaptive). */
+  ability_estimate?: number | null;
+}
+
+/** Per-question response record stored for IRT model calibration. */
+export interface AssessmentResponse {
+  id: string;
+  user_id: string;
+  assessment_id: string;
+  question_id: string;
+  selected_option: number;
+  is_correct: boolean;
+  difficulty_parameter: number;
+  /** θ estimate after this response (null for non-adaptive). */
+  ability_estimate_after: number | null;
+  answered_at: Date;
 }
 
 export const AssessmentModel = {
@@ -89,8 +107,9 @@ export const AssessmentModel = {
     data: Omit<AssessmentResult, "id">,
   ): Promise<AssessmentResult> {
     const { rows } = await pool.query<AssessmentResult>(
-      `INSERT INTO assessment_results (user_id, assessment_id, score, passed, answers, skill_level, recommendations, completed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      `INSERT INTO assessment_results
+         (user_id, assessment_id, score, passed, answers, skill_level, recommendations, completed_at, ability_estimate)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
       [
         data.user_id,
         data.assessment_id,
@@ -100,6 +119,7 @@ export const AssessmentModel = {
         data.skill_level,
         JSON.stringify(data.recommendations),
         data.completed_at,
+        data.ability_estimate ?? null,
       ],
     );
     return rows[0];
@@ -109,6 +129,41 @@ export const AssessmentModel = {
     const { rows } = await pool.query<AssessmentResult>(
       "SELECT * FROM assessment_results WHERE user_id=$1 ORDER BY completed_at DESC",
       [userId],
+    );
+    return rows;
+  },
+
+  /** Persist a per-question response for IRT calibration. */
+  async saveResponse(
+    data: Omit<AssessmentResponse, "id" | "answered_at">,
+  ): Promise<AssessmentResponse> {
+    const { rows } = await pool.query<AssessmentResponse>(
+      `INSERT INTO assessment_responses
+         (user_id, assessment_id, question_id, selected_option, is_correct, difficulty_parameter, ability_estimate_after)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [
+        data.user_id,
+        data.assessment_id,
+        data.question_id,
+        data.selected_option,
+        data.is_correct,
+        data.difficulty_parameter,
+        data.ability_estimate_after,
+      ],
+    );
+    return rows[0];
+  },
+
+  /** Fetch all per-question responses for a user+assessment session. */
+  async findResponsesBySession(
+    userId: string,
+    assessmentId: string,
+  ): Promise<AssessmentResponse[]> {
+    const { rows } = await pool.query<AssessmentResponse>(
+      `SELECT * FROM assessment_responses
+       WHERE user_id=$1 AND assessment_id=$2
+       ORDER BY answered_at ASC`,
+      [userId, assessmentId],
     );
     return rows;
   },
