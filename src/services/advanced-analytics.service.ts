@@ -71,6 +71,9 @@ export interface Insight {
   metricValue?: number;
   createdAt: string;
   isRead: boolean;
+  targetAudience?: "admin" | "mentor" | "learner" | "all";
+  userId?: string | null;
+  entityId?: string | null;
 }
 
 export interface CurrencyBreakdown {
