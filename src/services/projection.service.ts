@@ -18,6 +18,19 @@ export class ProjectionService {
     this.handlers.push({ aggregateType, eventType, handler });
   }
 
+  /** Number of registered projection handlers (for startup assertions / tests). */
+  static getHandlerCount(): number {
+    return this.handlers.length;
+  }
+
+  /** Snapshot of registered handler keys for diagnostics. */
+  static listHandlers(): Array<{ aggregateType: string; eventType: string }> {
+    return this.handlers.map(({ aggregateType, eventType }) => ({
+      aggregateType,
+      eventType,
+    }));
+  }
+
   static async handleEvent(event: DomainEvent): Promise<void> {
     const relevantHandlers = this.handlers.filter(
       h => h.aggregateType === event.aggregateType && h.eventType === event.eventType

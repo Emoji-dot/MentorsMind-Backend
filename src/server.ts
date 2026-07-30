@@ -60,6 +60,8 @@ import { logger } from "./utils/logger.utils";
 import { validateRequiredTables } from "./utils/table-validator.utils";
 import { startPoolMonitor, stopPoolMonitor } from "./utils/pool-monitor.utils";
 import { JwksService } from "./services/jwks.service";
+import { registerBookingProjectionHandlers } from "./events/booking.projections";
+import { ProjectionService } from "./services/projection.service";
 
 // Import queues for side effects
 import "./queues/bulk.queue";
@@ -69,6 +71,13 @@ const { port: PORT, apiVersion: API_VERSION } = config.server;
 const NODE_ENV = config.env;
 
 const server = http.createServer(app);
+
+// Register booking event-sourcing projection handlers before accepting traffic.
+registerBookingProjectionHandlers();
+logger.info("Booking projection handlers registered at startup", {
+  handlerCount: ProjectionService.getHandlerCount(),
+  handlers: ProjectionService.listHandlers(),
+});
 
 // Validate that all required tables exist (from migrations)
 // This replaces the anti-pattern of creating tables at runtime via DDL
