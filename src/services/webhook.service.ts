@@ -356,8 +356,9 @@ export const WebhookService = {
     payload: Record<string, unknown>,
     attemptNumber: number,
   ): Promise<{ success: boolean }> {
+    const startTime = Date.now(); // Move outside try block for error handling access
+    
     try {
-      const startTime = Date.now();
       const signature = this.generateSignature(payload as any, secret);
 
       const response = await axios.post(url, payload, {
@@ -393,7 +394,7 @@ export const WebhookService = {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
     } catch (error: any) {
-      const durationMs = Date.now() - Date.now() + 1;
+      const durationMs = Date.now() - startTime; // BUGFIX: Calculate actual duration on error
       const errorMessage = error.message || 'Unknown error';
       const responseStatus = error.response?.status;
 

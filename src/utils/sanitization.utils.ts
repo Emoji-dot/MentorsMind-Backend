@@ -84,16 +84,180 @@ export function detectAndLogSqlInjection(
   input: string,
   fieldName: string,
   requestId?: string,
+  clientIP?: string,
 ): boolean {
   if (containsSqlInjection(input)) {
     logger.warn("Potential SQL injection attempt detected", {
       field: fieldName,
       requestId,
+      clientIP: clientIP ? anonymizeIp(clientIP) : undefined,
       sample: input.slice(0, validationConfig.logging.maxLogFieldLength),
+      inputLength: input.length,
+      timestamp: new Date().toISOString(),
     });
     return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// XSS detection (enhanced)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect XSS attempts in input string.
+ * Returns true if XSS patterns are found.
+ */
+export function detectXSSAttempts(
+  input: string,
+  fieldName: string,
+  requestId?: string,
+  clientIP?: string,
+): boolean {
+  const xssPatterns = [
+    /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
+    /<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi,
+    /javascript:/gi,
+    /on\w+\s*=/gi,
+    /<img[^>]+src[^>]*=\s*["\']javascript:/gi,
+    /<svg[^>]*>[\s\S]*<script[\s\S]*<\/script>[\s\S]*<\/svg>/gi,
+  ];
+
+  for (const pattern of xssPatterns) {
+    if (pattern.test(input)) {
+      logger.warn("Potential XSS attempt detected", {
+        field: fieldName,
+        requestId,
+        clientIP: clientIP ? anonymizeIp(clientIP) : undefined,
+        sample: input.slice(0, validationConfig.logging.maxLogFieldLength),
+        patternMatched: pattern.toString(),
+        inputLength: input.length,
+        timestamp: new Date().toISOString(),
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Command injection detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect command injection attempts in input string.
+ * Returns true if command injection patterns are found.
+ */
+export function detectCommandInjection(
+  input: string,
+  fieldName: string,
+  requestId?: string,
+  clientIP?: string,
+): boolean {
+  const cmdPatterns = validationConfig.security.commandInjectionPatterns || [
+    /[;&|`$(){}[\]<>]/g,
+    /\b(cat|ls|pwd|id|whoami|uname|ps|netstat|ifconfig|ping|nslookup|curl|wget|rm|mv|cp|chmod|sudo)\b/gi,
+  ];
+
+  for (const pattern of cmdPatterns) {
+    if (pattern.test(input)) {
+      logger.warn("Potential command injection attempt detected", {
+        field: fieldName,
+        requestId,
+        clientIP: clientIP ? anonymizeIp(clientIP) : undefined,
+        sample: input.slice(0, validationConfig.logging.maxLogFieldLength),
+        patternMatched: pattern.toString(),
+        inputLength: input.length,
+        timestamp: new Date().toISOString(),
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// NoSQL injection detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect NoSQL injection attempts (MongoDB-style).
+ * Returns true if NoSQL injection patterns are found.
+ */
+export function detectNoSQLInjection(
+  input: string,
+  fieldName: string,
+  requestId?: string,
+  clientIP?: string,
+): boolean {
+  const nosqlPatterns = validationConfig.security.nosqlInjectionPatterns || [
+    /\$where/gi,
+    /\$ne/gi,
+    /\$gt/gi,
+    /\$lt/gi,
+    /\$or/gi,
+    /\$and/gi,
+    /\$regex/gi,
+    /\$exists/gi,
+  ];
+
+  for (const pattern of nosqlPatterns) {
+    if (pattern.test(input)) {
+      logger.warn("Potential NoSQL injection attempt detected", {
+        field: fieldName,
+        requestId,
+        clientIP: clientIP ? anonymizeIp(clientIP) : undefined,
+        sample: input.slice(0, validationConfig.logging.maxLogFieldLength),
+        patternMatched: pattern.toString(),
+        inputLength: input.length,
+        timestamp: new Date().toISOString(),
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Input validation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if input contains an excessive ratio of special characters
+ * (potential encoding attack or obfuscation attempt)
+ */
+export function hasExcessiveSpecialChars(input: string, maxRatio: number = 0.3): boolean {
+  if (input.length === 0) return false;
+  
+  const specialChars = input.match(/[^a-zA-Z0-9\s]/g) || [];
+  const ratio = specialChars.length / input.length;
+  
+  return ratio > maxRatio;
+}
+
+/**
+ * Validate and sanitize file name for uploads
+ */
+export function sanitizeFileName(fileName: string): string {
+  return fileName
+    .replace(/[^a-zA-Z0-9.-]/g, '_') // Replace special chars with underscore
+    .replace(/_{2,}/g, '_') // Replace multiple underscores with single
+    .replace(/^_+|_+$/g, '') // Remove leading/trailing underscores
+    .toLowerCase();
+}
+
+/**
+ * Check for path traversal attempts in file paths
+ */
+export function containsPathTraversal(path: string): boolean {
+  const dangerousPatterns = [
+    /\.\./g,
+    /\.\.\/|\.\.\\|\/\.\./g,
+    /~\//g,
+    /\/root\/|C:\\|\\Windows\\/gi,
+  ];
+  
+  return dangerousPatterns.some(pattern => pattern.test(path));
 }
 
 // ---------------------------------------------------------------------------

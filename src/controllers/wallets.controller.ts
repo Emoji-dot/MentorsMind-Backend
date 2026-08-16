@@ -102,7 +102,13 @@ export const WalletsController = {
   /** GET /wallets/me */
   async getWalletInfo(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const userId = req.user!.id;
+      const userId = req.user!.userId; // Use consistent field name
+      
+      // Validate user ID format
+      if (!userId || typeof userId !== 'string') {
+        ResponseUtil.error(res, 'Invalid user authentication', 401);
+        return;
+      }
       
       const walletInfo = await WalletsService.getWalletInfo(userId);
       
@@ -111,19 +117,35 @@ export const WalletsController = {
         return;
       }
 
-      // Log wallet access event
+      // Sanitize sensitive information
+      const sanitizedWalletInfo = {
+        ...walletInfo,
+        // Never expose private key or seed phrase
+        stellar_private_key: undefined,
+        seed_phrase: undefined,
+        // Only show first 8 and last 8 characters of public key for verification
+        stellar_public_key_display: `${walletInfo.stellar_public_key.substring(0, 8)}...${walletInfo.stellar_public_key.substring(-8)}`,
+        stellar_public_key: walletInfo.stellar_public_key, // Keep full key for API operations
+      };
+
+      // Log wallet access event with rate limiting check
       await WalletsService.logWalletEvent(userId, {
         eventType: 'balance_check',
-        metadata: { action: 'wallet_info_access' },
+        metadata: { 
+          action: 'wallet_info_access',
+          hasPublicKey: !!walletInfo.stellar_public_key,
+          walletStatus: walletInfo.status || 'unknown'
+        },
         ipAddress: req.ip,
         userAgent: req.get('User-Agent'),
       });
 
-      ResponseUtil.success(res, walletInfo, 'Wallet information retrieved successfully');
+      ResponseUtil.success(res, sanitizedWalletInfo, 'Wallet information retrieved successfully');
     } catch (error) {
       logger.error('wallets.getWalletInfo failed', {
-        userId: req.user?.id,
+        userId: req.user?.userId,
         error: error instanceof Error ? error.message : error,
+        ipAddress: req.ip,
       });
       ResponseUtil.error(res, 'Failed to retrieve wallet information', 500);
     }

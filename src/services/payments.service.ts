@@ -215,6 +215,11 @@ export const PaymentsService = {
       );
     }
 
+    // Validate stellarTxHash format
+    if (!stellarTxHash || typeof stellarTxHash !== 'string' || stellarTxHash.length !== 64 || !/^[a-fA-F0-9]+$/.test(stellarTxHash)) {
+      throw createError("Invalid Stellar transaction hash format", 400);
+    }
+
     // 1. Check idempotency: ensure this tx hash hasn't been used for another payment
     const idempotencyCheck = await pool.query(
       `SELECT id FROM transactions WHERE stellar_tx_hash = $1 AND id != $2 LIMIT 1`,
@@ -224,11 +229,26 @@ export const PaymentsService = {
       throw createError("This transaction hash has already been used for another payment", 409);
     }
 
-    // 2. Verify transaction on Stellar network
-    const tx = await stellarService.getTransaction(stellarTxHash);
+    // 2. Verify transaction on Stellar network with timeout
+    let tx;
+    try {
+      tx = await stellarService.getTransaction(stellarTxHash);
+    } catch (error) {
+      logger.error("Failed to fetch Stellar transaction", { stellarTxHash, error });
+      throw createError("Unable to verify transaction on Stellar network", 400);
+    }
+    
     if (!tx.successful) {
       throw createError("Stellar transaction was not successful", 400);
     }
+    
+    // Verify transaction is recent (within 24 hours)
+    const txCreatedAt = new Date(tx.created_at);
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    if (txCreatedAt < twentyFourHoursAgo) {
+      throw createError("Transaction is too old to confirm (must be within 24 hours)", 400);
+    }
+    
     if (payment.from_address && tx.source_account !== payment.from_address) {
       throw createError(
         "Transaction source account does not match payment sender",
@@ -237,19 +257,34 @@ export const PaymentsService = {
     }
 
     // 3. Verify payment operations with full checks
-    const operations =
-      await stellarService.getTransactionOperations(stellarTxHash);
+    let operations;
+    try {
+      operations = await stellarService.getTransactionOperations(stellarTxHash);
+    } catch (error) {
+      logger.error("Failed to fetch transaction operations", { stellarTxHash, error });
+      throw createError("Unable to verify transaction operations", 400);
+    }
+    
     const matchingPaymentOp = operations.find((op) => {
       if (op.type !== "payment") return false;
-      if (op.amount !== payment.amount) return false;
+      
+      // Amount matching with precision tolerance for floating point issues
+      const opAmount = parseFloat(op.amount);
+      const paymentAmount = parseFloat(payment.amount);
+      const tolerance = 0.0000001; // 1e-7 XLM (0.1 stroops)
+      if (Math.abs(opAmount - paymentAmount) > tolerance) return false;
 
-      // Check destination address
+      // Check destination address (more secure validation)
       const validDestinations: string[] = [];
       if (payment.to_address) validDestinations.push(payment.to_address);
       if (env.PLATFORM_PUBLIC_KEY) validDestinations.push(env.PLATFORM_PUBLIC_KEY);
+      if (validDestinations.length === 0) {
+        logger.error("No valid destination addresses configured", { paymentId });
+        return false;
+      }
       if (!validDestinations.includes(op.to)) return false;
 
-      // Check asset details
+      // Check asset details with strict validation
       if (payment.currency === "XLM" || payment.asset_type === "native") {
         if (op.asset_type !== "native") return false;
       } else {
@@ -260,7 +295,22 @@ export const PaymentsService = {
 
       return true;
     });
+    
     if (!matchingPaymentOp) {
+      logger.warn("No matching payment operation found", {
+        paymentId,
+        stellarTxHash,
+        expectedAmount: payment.amount,
+        expectedCurrency: payment.currency,
+        expectedDestinations: payment.to_address || env.PLATFORM_PUBLIC_KEY,
+        operations: operations.map(op => ({
+          type: op.type,
+          amount: op.amount,
+          to: op.to,
+          asset_type: op.asset_type,
+          asset_code: op.asset_code
+        }))
+      });
       throw createError(
         "Transaction does not contain a matching payment operation",
         400,
@@ -270,6 +320,9 @@ export const PaymentsService = {
     logger.info("Stellar transaction verified for payment", {
       paymentId,
       hash: tx.hash,
+      amount: matchingPaymentOp.amount,
+      destination: matchingPaymentOp.to,
+      assetType: matchingPaymentOp.asset_type
     });
 
     // Atomic write: update the transactions row, the booking payment

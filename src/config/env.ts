@@ -45,26 +45,26 @@ const envSchema = z.object({
   DB_CIRCUIT_BREAKER_ENABLED: z.enum(["true", "false"]).default("true"),
 
   // JWT — supports dual secrets for zero-downtime rotation
-  JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
-  JWT_EXPIRES_IN: z.string().default("7d"),
+  JWT_SECRET: z.string().min(64, "JWT_SECRET must be at least 64 characters"), // Increased from 32
+  JWT_EXPIRES_IN: z.string().default("15m"), // Reduced from 7d for better security
   JWT_REFRESH_SECRET: z
     .string()
-    .min(32, "JWT_REFRESH_SECRET must be at least 32 characters"),
-  JWT_REFRESH_EXPIRES_IN: z.string().default("30d"),
+    .min(64, "JWT_REFRESH_SECRET must be at least 64 characters"), // Increased from 32
+  JWT_REFRESH_EXPIRES_IN: z.string().default("7d"), // Reduced from 30d
   /** Previous JWT secret — accepted during rotation window, then removed. */
   JWT_SECRET_PREVIOUS: z.string().optional(),
-  PII_ENCRYPTION_KEYS: z.string().optional(),
-  PII_ENCRYPTION_CURRENT_KEY_VERSION: z.string().optional(),
+  PII_ENCRYPTION_KEYS: z.string().min(1, "PII_ENCRYPTION_KEYS is required for production").optional(),
+  PII_ENCRYPTION_CURRENT_KEY_VERSION: z.string().default("1"),
 
   // File Signing — separate secret for file access tokens (prevents conflation with JWT_SECRET)
   FILE_SIGNING_SECRET: z
     .string()
-    .min(32, "FILE_SIGNING_SECRET must be at least 32 characters"),
+    .min(64, "FILE_SIGNING_SECRET must be at least 64 characters"), // Increased from 32
 
   // Cache Key Signing (issue #716) — HMACs the userId component of authenticated
   // cache keys so keys can't be guessed/enumerated. Falls back to FILE_SIGNING_SECRET
   // when unset so existing deployments don't need a new required secret.
-  CACHE_KEY_HMAC_SECRET: z.string().min(32).optional(),
+  CACHE_KEY_HMAC_SECRET: z.string().min(64).optional(), // Increased from 32
 
   // Stellar
   STELLAR_NETWORK: z.enum(["testnet", "mainnet"]).default("testnet"),
@@ -165,12 +165,38 @@ const envSchema = z.object({
   // Logging
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 
-  // Security
-  BCRYPT_ROUNDS: z.string().regex(/^\d+$/).default("10"),
+  // Security (Enhanced)
+  BCRYPT_ROUNDS: z.string().regex(/^\d+$/).default("12"), // Increased from 10
   ENCRYPTION_KEY: z
     .string()
-    .min(32, "ENCRYPTION_KEY must be at least 32 characters"),
+    .min(64, "ENCRYPTION_KEY must be at least 64 characters"), // Increased from 32
   MFA_TOTP_ISSUER: z.string().default("MentorMinds"),
+  
+  // Session Security
+  SESSION_TIMEOUT_MINUTES: z.string().regex(/^\d+$/).default("30"),
+  MAX_LOGIN_ATTEMPTS: z.string().regex(/^\d+$/).default("5"),
+  ACCOUNT_LOCKOUT_DURATION_MINUTES: z.string().regex(/^\d+$/).default("15"),
+  
+  // Password Policy
+  PASSWORD_HISTORY_COUNT: z.string().regex(/^\d+$/).default("12"),
+  PASSWORD_EXPIRY_DAYS: z.string().regex(/^\d+$/).default("90"),
+  
+  // API Security
+  API_KEY_ROTATION_INTERVAL_DAYS: z.string().regex(/^\d+$/).default("30"),
+  WEBHOOK_SIGNATURE_TOLERANCE_SECONDS: z.string().regex(/^\d+$/).default("300"),
+  
+  // Security Headers
+  SECURITY_HEADERS_ENABLED: z.enum(["true", "false"]).default("true"),
+  CONTENT_SECURITY_POLICY_STRICT: z.enum(["true", "false"]).default("true"),
+  
+  // IP Security
+  TRUSTED_PROXIES: z.string().default(""), // Comma-separated list of trusted proxy IPs
+  MAX_REQUEST_SIZE_MB: z.string().regex(/^\d+$/).default("10"),
+  
+  // Audit & Compliance
+  AUDIT_LOG_RETENTION_DAYS: z.string().regex(/^\d+$/).default("2555"), // 7 years
+  PCI_COMPLIANCE_MODE: z.enum(["true", "false"]).default("false"),
+  GDPR_COMPLIANCE_MODE: z.enum(["true", "false"]).default("true"),
 
   // Platform
   PLATFORM_FEE_PERCENTAGE: z.string().regex(/^\d+$/).default("10"),
@@ -298,7 +324,75 @@ const SENSITIVE_KEYS = new Set([
   "AGORA_APP_CERTIFICATE",
   "CDN_CLOUDFLARE_API_TOKEN",
   "CDN_FASTLY_API_KEY",
+  "STRIPE_SECRET_KEY",
+  "STRIPE_WEBHOOK_SECRET",
+  "STELLAR_FUNDING_SECRET",
 ]);
+
+// Additional security validations for production
+function performSecurityValidation(env: Record<string, any>) {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  
+  // Production-specific validations
+  if (env.NODE_ENV === 'production') {
+    // Ensure strong secrets in production
+    const requiredSecrets = ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'ENCRYPTION_KEY', 'FILE_SIGNING_SECRET'];
+    for (const secret of requiredSecrets) {
+      if (env[secret] && env[secret].length < 64) {
+        errors.push(`${secret} must be at least 64 characters in production`);
+      }
+    }
+    
+    // Check for default/weak values
+    const weakValues = ['password', 'secret', 'key', 'changeme', 'default'];
+    for (const [key, value] of Object.entries(env)) {
+      if (SENSITIVE_KEYS.has(key) && typeof value === 'string') {
+        const lowerValue = value.toLowerCase();
+        if (weakValues.some(weak => lowerValue.includes(weak))) {
+          errors.push(`${key} appears to contain weak/default values`);
+        }
+      }
+    }
+    
+    // Ensure HTTPS URLs in production
+    const urlFields = ['APP_BASE_URL', 'APP_CLIENT_URL', 'FRONTEND_URL'];
+    for (const field of urlFields) {
+      if (env[field] && !env[field].startsWith('https://')) {
+        warnings.push(`${field} should use HTTPS in production`);
+      }
+    }
+    
+    // Check for development/localhost URLs
+    const developmentPatterns = [/localhost/, /127\.0\.0\.1/, /0\.0\.0\.0/, /\.local$/];
+    for (const field of urlFields) {
+      if (env[field] && developmentPatterns.some(pattern => pattern.test(env[field]))) {
+        warnings.push(`${field} contains development URL in production environment`);
+      }
+    }
+    
+    // Database security
+    if (env.DATABASE_URL && !env.DATABASE_URL.includes('ssl=true') && !env.DATABASE_URL.includes('sslmode=require')) {
+      warnings.push('DATABASE_URL should enforce SSL in production');
+    }
+    
+    // Redis security
+    if (env.REDIS_URL && !env.REDIS_URL.startsWith('rediss://') && env.REDIS_TLS_ENABLED !== 'true') {
+      warnings.push('Redis should use TLS in production');
+    }
+  }
+  
+  // Log warnings
+  if (warnings.length > 0) {
+    process.stderr.write(`\nSecurity warnings:\n${warnings.map(w => `  - ${w}`).join('\n')}\n\n`);
+  }
+  
+  // Fail on errors
+  if (errors.length > 0) {
+    process.stderr.write(`\nSecurity validation errors:\n${errors.map(e => `  - ${e}`).join('\n')}\n\n`);
+    process.exit(1);
+  }
+}
 
 function validateEnv() {
   const result = envSchema.safeParse(process.env);
@@ -319,6 +413,9 @@ function validateEnv() {
     );
     process.exit(1);
   }
+
+  // Perform additional security validation
+  performSecurityValidation(result.data);
 
   return result.data;
 }

@@ -190,31 +190,54 @@ async function generateDailyToken(
   roomName: string,
   participantName: string
 ): Promise<GenerateTokenResult> {
+  const apiKey = meetingConfig.apiKey;
+  
+  if (!apiKey) {
+    throw new Error('Daily.co API key is not configured. Set MEETING_API_KEY.');
+  }
+
   // Token valid for 2 hours by default
   const tokenExpiry = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
 
-  const response = await axios.post(
-    `${meetingConfig.baseUrl}/meeting-tokens`,
-    {
-      properties: {
-        room_name: roomName,
-        user_name: participantName,
-        is_owner: false,
-        exp: tokenExpiry,
+  try {
+    const response = await axios.post(
+      `${meetingConfig.baseUrl}/meeting-tokens`,
+      {
+        properties: {
+          room_name: roomName,
+          user_name: participantName,
+          is_owner: false,
+          exp: tokenExpiry,
+        },
       },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${meetingConfig.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    }
-  );
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
 
-  return {
-    token: response.data.token as string,
-    tokenExpiry,
-  };
+    const token = response.data?.token;
+    
+    if (!token || typeof token !== 'string' || token.trim() === '') {
+      throw new Error('Daily.co API returned empty or invalid token');
+    }
+
+    logger.info(`Generated Daily.co token for ${participantName} in room ${roomName}`);
+    
+    return {
+      token: token.trim(),
+      tokenExpiry,
+    };
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const message = error.response?.data?.info || error.message;
+      throw new Error(`Daily.co token generation failed (${status}): ${message}`);
+    }
+    throw error;
+  }
 }
 
 /**
