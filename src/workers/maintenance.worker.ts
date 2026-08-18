@@ -5,6 +5,8 @@ import { VerificationService } from "../services/verification.service";
 import { AuditLogArchivalJob } from "../jobs/auditLog.job";
 import keyRotationJob from "../jobs/keyRotation.job";
 import recommendationStatsJob from "../jobs/recommendationStats.job";
+import { runLeaderboardPrecompute } from "../jobs/leaderboardPrecompute.job";
+import { runStreakTracking } from "../jobs/streakTracking.job";
 import { logger } from "../utils/logger.utils";
 
 async function processMaintenanceJob(job: Job): Promise<void> {
@@ -37,6 +39,24 @@ async function processMaintenanceJob(job: Job): Promise<void> {
       jobId: job.id,
     });
     await recommendationStatsJob.refresh();
+    return;
+  }
+
+  if (job.name === "leaderboard-precompute-scheduled") {
+    logger.info("[MaintenanceWorker] Running nightly leaderboard pre-computation", {
+      jobId: job.id,
+    });
+    const result = await runLeaderboardPrecompute();
+    logger.info("[MaintenanceWorker] Leaderboard pre-computation complete", result);
+    return;
+  }
+
+  if (job.name === "streak-tracking-scheduled") {
+    logger.info("[MaintenanceWorker] Running daily streak tracking", {
+      jobId: job.id,
+    });
+    const result = await runStreakTracking();
+    logger.info("[MaintenanceWorker] Streak tracking complete", result);
     return;
   }
 

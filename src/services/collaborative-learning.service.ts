@@ -1,5 +1,6 @@
 import pool from "../config/database";
 import { CacheService } from "./cache.service";
+import { redis } from "../config/redis";
 import { CacheKeys, CacheTTL } from "../utils/cache-key.utils";
 import { logger } from "../utils/logger.utils";
 import { createError } from "../middleware/errorHandler";
@@ -541,7 +542,11 @@ export const CollaborativeLearningService = {
   },
 
   /**
-   * Create peer review for milestone submission
+   * Create peer review for milestone submission.
+   *
+   * Anti-gaming: enforces max 5 reviews per reviewer per learning path per
+   * 24-hour window at the DB level (rate-limiting happens in the route layer
+   * too, but this service-level guard is the authoritative enforcement point).
    */
   async createPeerReview(
     milestoneId: string,
@@ -556,10 +561,12 @@ export const CollaborativeLearningService = {
   ): Promise<PeerReview> {
     // Verify milestone and get submission details
     const { rows: submissionRows } = await pool.query(
-      `SELECT ms.*, pe.student_id as submitter_id, u.first_name, u.last_name
+      `SELECT ms.*, pe.student_id as submitter_id, u.first_name, u.last_name,
+              m.learning_path_id
        FROM milestone_submissions ms
        JOIN path_enrollments pe ON ms.enrollment_id = pe.id
        JOIN users u ON pe.student_id = u.id
+       JOIN milestones m ON ms.milestone_id = m.id
        WHERE ms.id = $1 AND ms.milestone_id = $2`,
       [submissionId, milestoneId]
     );
@@ -584,7 +591,33 @@ export const CollaborativeLearningService = {
       throw createError("Reviewer not enrolled in learning path", 403);
     }
 
+    // Prevent self-review
+    if (submission.submitter_id === reviewerId) {
+      throw createError("Cannot review your own submission", 403);
+    }
+
     const reviewer = reviewerRows[0];
+
+    // Anti-gaming: max 5 reviews per reviewer per learning path per 24 hours
+    const { rows: recentReviews } = await pool.query(
+      `SELECT COUNT(*) as review_count
+       FROM peer_reviews pr
+       JOIN milestone_submissions ms ON pr.submission_id = ms.id
+       JOIN path_enrollments pe ON ms.enrollment_id = pe.id
+       JOIN milestones m ON ms.milestone_id = m.id
+       WHERE pr.reviewer_id = $1
+         AND m.learning_path_id = $2
+         AND pr.created_at >= NOW() - INTERVAL '24 hours'`,
+      [reviewerId, submission.learning_path_id]
+    );
+
+    const reviewCount = parseInt(recentReviews[0].review_count, 10);
+    if (reviewCount >= 5) {
+      throw createError(
+        "Rate limit exceeded: maximum 5 peer reviews per learning path per 24 hours",
+        429
+      );
+    }
 
     // Check if review already exists
     const { rows: existingRows } = await pool.query(
@@ -635,7 +668,48 @@ export const CollaborativeLearningService = {
   },
 
   /**
-   * Get leaderboard for learning path or milestone
+   * Vote (like) a peer review.
+   * A review only counts toward the reviewer's helpfulReviews score once it
+   * receives at least one liked vote from another user.
+   */
+  async votePeerReview(
+    reviewId: string,
+    voterId: string
+  ): Promise<{ success: boolean }> {
+    // Verify the review exists and voter is not the reviewer
+    const { rows: reviewRows } = await pool.query(
+      `SELECT id, reviewer_id FROM peer_reviews WHERE id = $1`,
+      [reviewId]
+    );
+
+    if (reviewRows.length === 0) {
+      throw createError("Review not found", 404);
+    }
+
+    if (reviewRows[0].reviewer_id === voterId) {
+      throw createError("Cannot vote on your own review", 403);
+    }
+
+    // Upsert vote — ignore duplicate if already voted
+    await pool.query(
+      `INSERT INTO peer_review_votes (review_id, voter_id)
+       VALUES ($1, $2)
+       ON CONFLICT (review_id, voter_id) DO NOTHING`,
+      [reviewId, voterId]
+    );
+
+    logger.info("Peer review vote recorded", { reviewId, voterId });
+    return { success: true };
+  },
+
+  /**
+   * Get leaderboard for learning path or milestone.
+   *
+   * Serves from leaderboard_snapshots (pre-computed nightly) for fast responses.
+   * Applies real-time Redis increments to streak_days so leaderboard reflects
+   * the current day's activity without waiting for the next nightly run.
+   *
+   * If no snapshot exists yet, falls back to live query (first-run scenario).
    */
   async getLeaderboard(
     type: 'milestone' | 'path' | 'global',
@@ -643,31 +717,120 @@ export const CollaborativeLearningService = {
     period: 'week' | 'month' | 'quarter' | 'all' = 'month'
   ): Promise<Leaderboard> {
     const cacheKey = `leaderboard:${type}:${targetId || 'global'}:${period}`;
-    
-    // Try cache first
+
+    // ── 1. Try L1 short-lived cache (serves repeated bursts in < 50ms) ──────
     const cached = await CacheService.get<Leaderboard>(cacheKey);
     if (cached !== null) {
-      return cached;
+      return this.applyRedisStreakIncrements(cached);
     }
 
+    // ── 2. Serve from pre-computed snapshot ──────────────────────────────────
+    const { rows: snapshotRows } = await pool.query(
+      `SELECT entries, computed_at
+       FROM leaderboard_snapshots
+       WHERE type = $1
+         AND COALESCE(target_id::text, '') = $2
+         AND period = $3
+       ORDER BY computed_at DESC
+       LIMIT 1`,
+      [type, targetId ?? '', period]
+    );
+
+    if (snapshotRows.length > 0) {
+      const snapshot = snapshotRows[0];
+      const entries: LeaderboardEntry[] = snapshot.entries;
+
+      const leaderboard: Leaderboard = {
+        type,
+        period,
+        entries,
+        lastUpdated: (snapshot.computed_at as Date).toISOString()
+      };
+
+      // Apply live Redis streak increments
+      const enriched = await this.applyRedisStreakIncrements(leaderboard);
+
+      // Cache for 60 seconds to absorb request bursts
+      await CacheService.set(cacheKey, enriched, 60);
+      return enriched;
+    }
+
+    // ── 3. Fallback: live query (no snapshot available yet) ──────────────────
+    logger.warn('No leaderboard snapshot found — computing live', { type, targetId, period });
+    const leaderboard = await this.computeLeaderboardLive(type, targetId, period);
+
+    // Cache for 10 minutes (original behaviour)
+    await CacheService.set(cacheKey, leaderboard, CacheTTL.medium * 2);
+    return leaderboard;
+  },
+
+  /**
+   * Apply real-time Redis streak increments to leaderboard entries.
+   * Reads current streak_days overrides from Redis (written by streak cron)
+   * so the displayed value is always fresh even between nightly snapshots.
+   */
+  async applyRedisStreakIncrements(leaderboard: Leaderboard): Promise<Leaderboard> {
+    if (!leaderboard.entries.length) return leaderboard;
+
+    const pipeline = redis.pipeline();
+    for (const entry of leaderboard.entries) {
+      pipeline.get(`streak:current:${entry.userId}`);
+    }
+
+    const results = await pipeline.exec();
+
+    const entries = leaderboard.entries.map((entry, i) => {
+      const redisDays = results?.[i]?.[1];
+      return {
+        ...entry,
+        streakDays: redisDays != null ? parseInt(redisDays as string, 10) : entry.streakDays
+      };
+    });
+
+    // Re-sort by score + streak (streak is a secondary signal in display order)
+    entries.sort((a, b) => b.score - a.score || b.streakDays - a.streakDays);
+
+    // Re-assign ranks after sort
+    const ranked = entries.map((e, i) => ({ ...e, rank: i + 1 }));
+
+    return { ...leaderboard, entries: ranked };
+  },
+
+  /**
+   * Live leaderboard computation — used for first-run or admin-triggered
+   * refresh before the first nightly snapshot exists.
+   *
+   * FIX: removed pe.progress_percentage from GROUP BY.
+   * Uses MAX(pe.progress_percentage) as an aggregate instead so each user
+   * appears exactly once even if their path progress changed mid-query.
+   *
+   * Anti-gaming: helpful_reviews only counts reviews that received at least
+   * one liked vote (joined via peer_review_votes).
+   */
+  async computeLeaderboardLive(
+    type: 'milestone' | 'path' | 'global',
+    targetId?: string,
+    period: 'week' | 'month' | 'quarter' | 'all' = 'month'
+  ): Promise<Leaderboard> {
     let query = '';
     let params: any[] = [];
 
-    // Build query based on type
     switch (type) {
       case 'milestone':
         query = `
-          SELECT 
-            u.id as user_id,
-            u.first_name || ' ' || u.last_name as user_name,
-            COUNT(mp.id) as completed_milestones,
-            AVG(mp.progress_percentage) as avg_progress,
-            COUNT(pr.id) as helpful_reviews,
-            COALESCE(MAX(mp.completed_at) - MIN(mp.started_at), INTERVAL '0') as total_time
+          SELECT
+            u.id                                        AS user_id,
+            u.first_name || ' ' || u.last_name         AS user_name,
+            COUNT(DISTINCT mp.id)                       AS completed_milestones,
+            COALESCE(MAX(mp.progress_percentage), 0)   AS avg_progress,
+            COUNT(DISTINCT pr.id)                       AS helpful_reviews
           FROM users u
-          JOIN path_enrollments pe ON u.id = pe.student_id
+          JOIN path_enrollments pe   ON u.id  = pe.student_id
           JOIN milestone_progress mp ON pe.id = mp.enrollment_id
-          LEFT JOIN peer_reviews pr ON u.id = pr.reviewer_id
+          LEFT JOIN peer_reviews pr  ON u.id  = pr.reviewer_id
+            AND EXISTS (
+              SELECT 1 FROM peer_review_votes prv WHERE prv.review_id = pr.id
+            )
           WHERE mp.milestone_id = $1 AND mp.status = 'completed'
         `;
         params = [targetId];
@@ -675,35 +838,43 @@ export const CollaborativeLearningService = {
 
       case 'path':
         query = `
-          SELECT 
-            u.id as user_id,
-            u.first_name || ' ' || u.last_name as user_name,
-            COUNT(mp.id) as completed_milestones,
-            AVG(mp.progress_percentage) as avg_progress,
-            COUNT(pr.id) as helpful_reviews,
-            pe.progress_percentage as path_progress
+          SELECT
+            u.id                                          AS user_id,
+            u.first_name || ' ' || u.last_name           AS user_name,
+            COUNT(DISTINCT mp.id)                         AS completed_milestones,
+            COALESCE(MAX(mp.progress_percentage), 0)     AS avg_progress,
+            COUNT(DISTINCT pr.id)                         AS helpful_reviews,
+            COALESCE(MAX(pe.progress_percentage), 0)     AS path_progress
           FROM users u
-          JOIN path_enrollments pe ON u.id = pe.student_id
+          JOIN path_enrollments pe   ON u.id  = pe.student_id
           JOIN milestone_progress mp ON pe.id = mp.enrollment_id
-          LEFT JOIN peer_reviews pr ON u.id = pr.reviewer_id
+          LEFT JOIN peer_reviews pr  ON u.id  = pr.reviewer_id
+            AND EXISTS (
+              SELECT 1 FROM peer_review_votes prv WHERE prv.review_id = pr.id
+            )
           WHERE pe.learning_path_id = $1
         `;
         params = [targetId];
         break;
 
       case 'global':
+      default:
         query = `
-          SELECT 
-            u.id as user_id,
-            u.first_name || ' ' || u.last_name as user_name,
-            COUNT(mp.id) as completed_milestones,
-            AVG(mp.progress_percentage) as avg_progress,
-            COUNT(pr.id) as helpful_reviews,
-            COUNT(DISTINCT pe.learning_path_id) as paths_enrolled
+          SELECT
+            u.id                                          AS user_id,
+            u.first_name || ' ' || u.last_name           AS user_name,
+            COUNT(DISTINCT mp.id)                         AS completed_milestones,
+            COALESCE(AVG(mp.progress_percentage), 0)     AS avg_progress,
+            COUNT(DISTINCT pr.id)                         AS helpful_reviews,
+            COUNT(DISTINCT pe.learning_path_id)           AS paths_enrolled
           FROM users u
-          JOIN path_enrollments pe ON u.id = pe.student_id
+          JOIN path_enrollments pe   ON u.id  = pe.student_id
           JOIN milestone_progress mp ON pe.id = mp.enrollment_id
-          LEFT JOIN peer_reviews pr ON u.id = pr.reviewer_id
+          LEFT JOIN peer_reviews pr  ON u.id  = pr.reviewer_id
+            AND EXISTS (
+              SELECT 1 FROM peer_review_votes prv WHERE prv.review_id = pr.id
+            )
+          WHERE 1=1
         `;
         break;
     }
@@ -715,8 +886,9 @@ export const CollaborativeLearningService = {
       params.push(timeFilter);
     }
 
+    // GROUP BY: u.id only — no pe.progress_percentage (was the bug)
     query += `
-      GROUP BY u.id, u.first_name, u.last_name, pe.progress_percentage
+      GROUP BY u.id, u.first_name, u.last_name
       ORDER BY completed_milestones DESC, avg_progress DESC, helpful_reviews DESC
       LIMIT 50
     `;
@@ -728,23 +900,18 @@ export const CollaborativeLearningService = {
       userId: row.user_id,
       userName: row.user_name,
       score: this.calculateLeaderboardScore(row),
-      achievements: [], // Would be populated from achievements system
-      streakDays: 0, // Would be calculated from activity data
+      achievements: [],
+      streakDays: 0, // populated by applyRedisStreakIncrements
       completedMilestones: parseInt(row.completed_milestones),
       helpfulReviews: parseInt(row.helpful_reviews)
     }));
 
-    const leaderboard: Leaderboard = {
+    return {
       type,
       period,
       entries,
       lastUpdated: new Date().toISOString()
     };
-
-    // Cache for 10 minutes
-    await CacheService.set(cacheKey, leaderboard, CacheTTL.medium * 2);
-
-    return leaderboard;
   },
 
   // Private helper methods
