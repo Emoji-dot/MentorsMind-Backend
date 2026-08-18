@@ -15,6 +15,8 @@ import { accountDeletionJob } from "../jobs/accountDeletion.job";
 import databaseMaintenanceJob from "../jobs/database-maintenance.job";
 import staleDataCleanupJob from "../jobs/stale-data-cleanup.job";
 import deprecationMaintenanceJob from "../jobs/deprecation-maintenance.job";
+import { runLeaderboardPrecompute } from "../jobs/leaderboardPrecompute.job";
+import { runStreakTracking } from "../jobs/streakTracking.job";
 import { logger } from "../utils/logger.utils";
 import config from "../config";
 import { AuditLogModel } from "../models/audit-log.model";
@@ -206,8 +208,32 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
+  // Nightly leaderboard pre-computation — daily at 02:30 UTC
+  // Writes fresh leaderboard_snapshots so the API can respond in < 50 ms.
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "leaderboard-precompute-scheduled",
+    { jobType: "leaderboard-precompute" },
+    {
+      repeat: { pattern: "30 2 * * *" }, // cron: daily 02:30 UTC
+      jobId: "leaderboard-precompute-recurring",
+    },
+  );
+
+  // Daily streak tracking — daily at 00:05 UTC
+  // Increments/resets user_activity_streaks and writes Redis streak keys.
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "streak-tracking-scheduled",
+    { jobType: "streak-tracking" },
+    {
+      repeat: { pattern: "5 0 * * *" }, // cron: daily 00:05 UTC
+      jobId: "streak-tracking-recurring",
+    },
+  );
+
   logger.info(
-    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, audit log archival, key rotation, and insight generation registered",
+    "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, audit log archival, key rotation, insight generation, leaderboard pre-computation, and streak tracking registered",
   );
 
   if (!backgroundCheckPollingTimer) {

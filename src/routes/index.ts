@@ -50,6 +50,7 @@ import { JwksController } from "../controllers/jwks.controller";
 import { metricsRegistry } from "../config/metrics";
 import { monitoringConfig } from "../config/monitoring.config";
 import adminAuditRoutes from "./admin/audit-logs.routes";
+import collaborativeLearningRoutes from "./collaborative-learning.routes";
 
 const router = Router();
 
@@ -103,6 +104,7 @@ router.use("/subscriptions", subscriptionRoutes);
 router.use("/tax", taxRoutes);
 router.use("/oracle", oracleRoutes);
 router.use("/admin/audit-logs", adminAuditRoutes);
+router.use("/collaborative-learning", collaborativeLearningRoutes);
 router.use("/", exportRoutes);
 
 // JWKS public endpoint — no auth required
