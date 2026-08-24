@@ -117,21 +117,35 @@ prefer-frozen-lockfile=true
 }
 
 // 6. Clean and reinstall dependencies
-console.log('\n6. Cleaning and reinstalling dependencies...');
+console.log('\n6. Fixing pnpm lockfile configuration and reinstalling...');
 try {
-  console.log('   🧹 Cleaning node_modules and lockfile...');
-  if (fs.existsSync('node_modules')) {
-    execSync('rm -rf node_modules', { stdio: 'inherit' });
-  }
-  if (fs.existsSync('pnpm-lock.yaml')) {
-    execSync('rm pnpm-lock.yaml', { stdio: 'inherit' });
-  }
+  console.log('   🔧 Setting pnpm configuration...');
+  execSync('pnpm config set auto-install-peers true', { stdio: 'inherit' });
+  execSync('pnpm config set strict-peer-dependencies false', { stdio: 'inherit' });
+  execSync('pnpm config set prefer-frozen-lockfile true', { stdio: 'inherit' });
   
-  console.log('   📦 Installing dependencies...');
-  execSync('pnpm install', { stdio: 'inherit' });
-  console.log('   ✅ Dependencies installed successfully');
+  console.log('   🔄 Attempting frozen lockfile install...');
+  try {
+    execSync('pnpm install --frozen-lockfile --prefer-offline', { stdio: 'pipe' });
+    console.log('   ✅ Installed with existing lockfile');
+  } catch (frozenError) {
+    console.log('   ⚠️  Lockfile config mismatch, regenerating...');
+    
+    // Clean installation
+    console.log('   🧹 Cleaning node_modules and lockfile...');
+    if (fs.existsSync('node_modules')) {
+      execSync('rm -rf node_modules', { stdio: 'inherit' });
+    }
+    if (fs.existsSync('pnpm-lock.yaml')) {
+      execSync('rm pnpm-lock.yaml', { stdio: 'inherit' });
+    }
+    
+    console.log('   📦 Installing with new lockfile...');
+    execSync('pnpm install', { stdio: 'inherit' });
+    console.log('   ✅ Installation completed with new lockfile');
+  }
 } catch (error) {
-  console.log('   ❌ Failed to install dependencies');
+  console.log('   ❌ Failed to fix pnpm configuration');
   console.error(error.message);
 }
 

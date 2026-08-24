@@ -23,7 +23,15 @@
 - Configured `.npmrc` with `node-options=--no-warnings`
 - The warning is from a transitive dependency (`uri-js -> punycode`) and cannot be directly fixed
 
-### 4. pnpm Store Path Issues ✅
+### 4. pnpm Lockfile Configuration Mismatch ✅
+**Problem**: `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH Cannot proceed with the frozen installation`
+**Solution**:
+- Updated `.npmrc` with correct `auto-install-peers=true` setting
+- Added configuration check steps in GitHub Actions workflow
+- Created fallback logic to regenerate lockfile if mismatch occurs
+- Added dedicated scripts for fixing lockfile issues locally
+
+### 5. pnpm Store Path Issues ✅
 **Problem**: pnpm store configuration errors in CI
 **Solution**:
 - Added explicit pnpm store path configuration in GitHub Actions
@@ -86,11 +94,19 @@ prefer-frozen-lockfile=true
 
 ### 1. Local Testing
 ```bash
-# Run the fix script
+# Option 1: Use the automated fix scripts
+./scripts/fix-pnpm-lockfile.sh
+# OR on Windows:
+./scripts/fix-pnpm-lockfile.ps1
+
+# Option 2: Manual fix
+pnpm config set auto-install-peers true
+pnpm install --no-frozen-lockfile
+
+# Option 3: Use the comprehensive fix script
 node scripts/fix-ci-issues.js
 
-# Verify pnpm works correctly
-pnpm install
+# Verify everything works
 pnpm run build:check
 pnpm run lint
 ```
