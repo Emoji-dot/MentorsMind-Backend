@@ -120,6 +120,8 @@ export async function getSessionPresence(
   try {
     const { id: sessionId } = req.params;
     const userId = req.user!.id;
+    const userIdParam = req.query.userId;
+    const userIdValue = Array.isArray(userIdParam) ? userIdParam[0] : userIdParam;
 
     // Verify session exists
     const booking = await BookingModel.findById(sessionId);
