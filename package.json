@@ -49,6 +49,10 @@
   "author": "MentorMinds Team",
   "license": "MIT",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
   "lint-staged": {
     "*.ts": [
       "node --max-old-space-size=4096 ./node_modules/eslint/bin/eslint.js --fix",
