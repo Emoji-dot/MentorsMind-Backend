@@ -52,6 +52,7 @@ import offlineRoutes from "../offline.routes";
 import syncRoutes from "../sync.routes";
 import searchRoutes from "../search.routes";
 import errorsRoutes from "../errors.routes";
+import developerRoutes from "../developer.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -146,6 +147,8 @@ router.use("/search", searchRoutes);
 
 // Error catalog endpoint
 router.use("/errors", errorsRoutes);
+// Developer API key management (issue #838)
+router.use("/developer", developerRoutes);
 
 // Verifiable Credentials (DID / W3C VC)
 router.use("/credentials", credentialsRoutes);
