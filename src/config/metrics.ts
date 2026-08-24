@@ -93,6 +93,8 @@ export const dbQueryDurationSeconds = new Histogram<string>({
   registers: [metricsRegistry],
 });
 
+export const dbQueryDurationMs = dbQueryDurationSeconds;
+
 export const dbPoolTotalConnections = new Gauge<string>({
   name: "db_pool_total_connections",
   help: "Total connections in the PostgreSQL pool",

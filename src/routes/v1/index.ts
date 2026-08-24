@@ -51,6 +51,8 @@ import featureFlagRoutes from "../feature-flag.routes";
 import offlineRoutes from "../offline.routes";
 import syncRoutes from "../sync.routes";
 import searchRoutes from "../search.routes";
+import gamificationRoutes from "../gamification.routes";
+
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -145,5 +147,8 @@ router.use("/search", searchRoutes);
 
 // Verifiable Credentials (DID / W3C VC)
 router.use("/credentials", credentialsRoutes);
+
+// Gamification & Achievement System
+router.use("/gamification", gamificationRoutes);
 
 export default router;
