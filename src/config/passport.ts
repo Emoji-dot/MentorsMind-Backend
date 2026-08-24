@@ -1,7 +1,9 @@
 import passport from 'passport';
 import { Strategy as GoogleStrategy, Profile as GoogleProfile } from 'passport-google-oauth20';
 import { Strategy as GitHubStrategy, Profile as GitHubProfile } from 'passport-github2';
+import { Strategy as OAuth2Strategy } from 'passport-oauth2';
 import pool from './database';
+import oauthConfig from './oauth.config';
 import { logger } from '../utils/logger';
 import { EncryptionUtil } from '../utils/encryption.utils';
 const fetch = require('node-fetch');
@@ -20,7 +22,23 @@ interface OAuthProfile {
     email: string | undefined;
     name: string | undefined;
     avatarUrl: string | undefined;
-    provider: 'google' | 'github';
+    provider: 'google' | 'github' | 'linkedin' | 'microsoft';
+}
+
+// Minimal shape for LinkedIn OpenID Connect userinfo response
+interface LinkedInUserInfo {
+    sub: string;
+    email?: string;
+    name?: string;
+    picture?: string;
+}
+
+// Minimal shape for Microsoft Graph /me response
+interface MicrosoftUserInfo {
+    id: string;
+    mail?: string;
+    userPrincipalName?: string;
+    displayName?: string;
 }
 
 // Type for GitHub email API response
@@ -75,6 +93,50 @@ async function extractGitHubProfileWithEmail(profile: GitHubProfile, accessToken
         name: profile.displayName || profile.username,
         avatarUrl: profile.photos?.[0]?.value,
         provider: 'github',
+    };
+}
+
+// Fetch LinkedIn userinfo (OpenID Connect) and build a shared OAuthProfile
+async function extractLinkedInProfile(accessToken: string): Promise<OAuthProfile> {
+    const response = await fetch(oauthConfig.linkedin.userInfoURL, {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+
+    if (!response.ok) {
+        logger.error('Failed to fetch LinkedIn userinfo', { status: response.status, statusText: response.statusText });
+        throw new Error('Failed to fetch LinkedIn profile');
+    }
+
+    const userInfo: LinkedInUserInfo = await response.json();
+
+    return {
+        id: userInfo.sub,
+        email: userInfo.email,
+        name: userInfo.name,
+        avatarUrl: userInfo.picture,
+        provider: 'linkedin',
+    };
+}
+
+// Fetch Microsoft Graph /me and build a shared OAuthProfile
+async function extractMicrosoftProfile(accessToken: string): Promise<OAuthProfile> {
+    const response = await fetch(oauthConfig.microsoft.userInfoURL, {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+
+    if (!response.ok) {
+        logger.error('Failed to fetch Microsoft profile', { status: response.status, statusText: response.statusText });
+        throw new Error('Failed to fetch Microsoft profile');
+    }
+
+    const userInfo: MicrosoftUserInfo = await response.json();
+
+    return {
+        id: userInfo.id,
+        email: userInfo.mail || userInfo.userPrincipalName,
+        name: userInfo.displayName,
+        avatarUrl: undefined,
+        provider: 'microsoft',
     };
 }
 
@@ -283,6 +345,102 @@ if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
     logger.info('GitHub OAuth strategy configured');
 } else {
     logger.warn('GitHub OAuth credentials not configured');
+}
+
+// Configure LinkedIn OAuth strategy (OpenID Connect via generic OAuth2Strategy)
+if (oauthConfig.linkedin.enabled) {
+    passport.use(
+        'linkedin',
+        new OAuth2Strategy(
+            {
+                authorizationURL: oauthConfig.linkedin.authorizationURL as string,
+                tokenURL: oauthConfig.linkedin.tokenURL as string,
+                clientID: oauthConfig.linkedin.clientId as string,
+                clientSecret: oauthConfig.linkedin.clientSecret as string,
+                callbackURL: oauthConfig.linkedin.callbackURL,
+                scope: oauthConfig.linkedin.scopes,
+            },
+            async (accessToken: string, refreshToken: string, _profile: any, done: any) => {
+                try {
+                    const oauthProfile = await extractLinkedInProfile(accessToken);
+                    if (!oauthProfile.email) {
+                        throw new EmailRequiredError();
+                    }
+                    const result = await findOrCreateUser(oauthProfile);
+
+                    if (accessToken || refreshToken) {
+                        const [encAccess, encRefresh, version] = await Promise.all([
+                            EncryptionUtil.encrypt(accessToken),
+                            EncryptionUtil.encrypt(refreshToken),
+                            EncryptionUtil.getCurrentKeyVersion(),
+                        ]);
+
+                        await pool.query(
+                            `UPDATE oauth_accounts
+               SET access_token = $1, refresh_token = $2, access_token_encrypted = $3, refresh_token_encrypted = $4, token_encryption_version = $5, updated_at = NOW()
+               WHERE provider = $6 AND provider_account_id = $7`,
+                            [accessToken, refreshToken, encAccess, encRefresh, version, 'linkedin', oauthProfile.id]
+                        );
+                    }
+
+                    return done(null, { userId: result.userId, isNew: result.isNew });
+                } catch (error) {
+                    return done(error, null);
+                }
+            }
+        )
+    );
+    logger.info('LinkedIn OAuth strategy configured');
+} else {
+    logger.warn('LinkedIn OAuth credentials not configured');
+}
+
+// Configure Microsoft OAuth strategy (Azure AD v2 via generic OAuth2Strategy)
+if (oauthConfig.microsoft.enabled) {
+    passport.use(
+        'microsoft',
+        new OAuth2Strategy(
+            {
+                authorizationURL: oauthConfig.microsoft.authorizationURL as string,
+                tokenURL: oauthConfig.microsoft.tokenURL as string,
+                clientID: oauthConfig.microsoft.clientId as string,
+                clientSecret: oauthConfig.microsoft.clientSecret as string,
+                callbackURL: oauthConfig.microsoft.callbackURL,
+                scope: oauthConfig.microsoft.scopes,
+            },
+            async (accessToken: string, refreshToken: string, _profile: any, done: any) => {
+                try {
+                    const oauthProfile = await extractMicrosoftProfile(accessToken);
+                    if (!oauthProfile.email) {
+                        throw new EmailRequiredError();
+                    }
+                    const result = await findOrCreateUser(oauthProfile);
+
+                    if (accessToken || refreshToken) {
+                        const [encAccess, encRefresh, version] = await Promise.all([
+                            EncryptionUtil.encrypt(accessToken),
+                            EncryptionUtil.encrypt(refreshToken),
+                            EncryptionUtil.getCurrentKeyVersion(),
+                        ]);
+
+                        await pool.query(
+                            `UPDATE oauth_accounts
+               SET access_token = $1, refresh_token = $2, access_token_encrypted = $3, refresh_token_encrypted = $4, token_encryption_version = $5, updated_at = NOW()
+               WHERE provider = $6 AND provider_account_id = $7`,
+                            [accessToken, refreshToken, encAccess, encRefresh, version, 'microsoft', oauthProfile.id]
+                        );
+                    }
+
+                    return done(null, { userId: result.userId, isNew: result.isNew });
+                } catch (error) {
+                    return done(error, null);
+                }
+            }
+        )
+    );
+    logger.info('Microsoft OAuth strategy configured');
+} else {
+    logger.warn('Microsoft OAuth credentials not configured');
 }
 
 // Serialize user for session (not used in JWT-based auth, but required by Passport)
