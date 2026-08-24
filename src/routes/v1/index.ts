@@ -51,6 +51,7 @@ import featureFlagRoutes from "../feature-flag.routes";
 import offlineRoutes from "../offline.routes";
 import syncRoutes from "../sync.routes";
 import searchRoutes from "../search.routes";
+import developerRoutes from "../developer.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -142,6 +143,9 @@ router.use("/sync", syncRoutes);
 
 // Unified global search across mentors, sessions, and messages (issue #738)
 router.use("/search", searchRoutes);
+
+// Developer API key management (issue #838)
+router.use("/developer", developerRoutes);
 
 // Verifiable Credentials (DID / W3C VC)
 router.use("/credentials", credentialsRoutes);
