@@ -43,7 +43,7 @@
 
 import promClient, { Counter, Gauge, Histogram, Registry } from "prom-client";
 
-// ─── Registry ─────────────────────────────────────────────────────────────────
+// ─── Registry ──────────────────────────────────────────────────────────[...]
 
 /**
  * A dedicated registry keeps our metrics isolated from any third-party library
@@ -57,7 +57,7 @@ promClient.collectDefaultMetrics({
   labels: { app: "mentorminds" },
 });
 
-// ─── HTTP ─────────────────────────────────────────────────────────────────────
+// ─── HTTP ───────────────────────────────────────────────────────────…[...]
 
 export const httpRequestsTotal = new Counter<string>({
   name: "http_requests_total",
@@ -75,7 +75,7 @@ export const httpRequestDurationSeconds = new Histogram<string>({
   registers: [metricsRegistry],
 });
 
-// ─── WebSocket ────────────────────────────────────────────────────────────────
+// ─── WebSocket ─────────────────────────────────────────────────────────…[...]
 
 export const activeWebsocketConnections = new Gauge<string>({
   name: "active_websocket_connections",
@@ -83,7 +83,7 @@ export const activeWebsocketConnections = new Gauge<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Database ─────────────────────────────────────────────────────────────────
+// ─── Database ──────────────────────────────────────────────────────────[...]
 
 export const dbQueryDurationSeconds = new Histogram<string>({
   name: "db_query_duration_seconds",
@@ -92,6 +92,9 @@ export const dbQueryDurationSeconds = new Histogram<string>({
   buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5],
   registers: [metricsRegistry],
 });
+
+// Alias for backward compatibility
+export const dbQueryDurationMs = dbQueryDurationSeconds;
 
 export const dbPoolTotalConnections = new Gauge<string>({
   name: "db_pool_total_connections",
@@ -136,7 +139,7 @@ export const dbTableSizeBytes = new Gauge<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Redis ────────────────────────────────────────────────────────────────────
+// ─── Redis ──────────────────────────────────────────────────────────…[...]
 
 export const redisCallDurationSeconds = new Histogram<string>({
   name: "redis_call_duration_seconds",
@@ -146,7 +149,7 @@ export const redisCallDurationSeconds = new Histogram<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Chatbot ─────────────────────────────────────────────────────────────────
+// ─── Chatbot ──────────────────────────────────────────────────────────[...]
 
 export const chatbotMessagesTotal = new Counter<string>({
   name: "chatbot_messages_total",
@@ -155,7 +158,7 @@ export const chatbotMessagesTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Queue / BullMQ ──────────────────────────────────────────────────────────
+// ─── Queue / BullMQ ───────────────────────────────────────────────────────…[...]
 
 export const queueJobDurationSeconds = new Histogram<string>({
   name: "queue_job_duration_seconds",
@@ -172,7 +175,7 @@ export const queueJobsTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Stellar ──────────────────────────────────────────────────────────────────
+// ─── Stellar ──────────────────────────────────────────────────────────[...]
 
 export const stellarApiCallDurationSeconds = new Histogram<string>({
   name: "stellar_api_call_duration_seconds",
@@ -205,7 +208,7 @@ export const mentorQualityScoreGauge = new Gauge<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Feature Flags ────────────────────────────────────────────────────────────
+// ─── Feature Flags ────────────────────────────────────────────────────────[...]
 
 export const featureFlagEvaluationsTotal = new Counter<string>({
   name: "feature_flag_evaluations_total",
@@ -214,7 +217,7 @@ export const featureFlagEvaluationsTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Rate Limiting ────────────────────────────────────────────────────────────
+// ─── Rate Limiting ────────────────────────────────────────────────────────[...]
 
 export const rateLimitExceededTotal = new Counter<string>({
   name: "rate_limit_exceeded_total",
@@ -223,7 +226,7 @@ export const rateLimitExceededTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Goals ────────────────────────────────────────────────────────────────────
+// ─── Goals ──────────────────────────────────────────────────────────…[...]
 
 export const goalRemindersSentTotal = new Counter<string>({
   name: "goal_reminders_sent_total",
@@ -232,7 +235,7 @@ export const goalRemindersSentTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Notifications ───────────────────────────────────────────────────────────
+// ─── Notifications ────────────────────────────────────────────────────────[...]
 
 export const notificationDeliveryAttemptsTotal = new Counter<string>({
   name: "notification_delivery_attempts_total",
@@ -241,7 +244,21 @@ export const notificationDeliveryAttemptsTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
-// ─── Webhooks ─────────────────────────────────────────────────────────────────
+export const pushTokenInvalidTotal = new Counter<string>({
+  name: "push_token_invalid_total",
+  help: "Total invalid push tokens encountered",
+  labelNames: ["reason"],
+  registers: [metricsRegistry],
+});
+
+export const pushNotificationsSentTotal = new Counter<string>({
+  name: "push_notifications_sent_total",
+  help: "Total push notifications sent",
+  labelNames: ["status"],
+  registers: [metricsRegistry],
+});
+
+// ─── Webhooks ─────────────────────────────────────────────────────────…[...]
 
 export const webhookCircuitBreakerState = new Gauge<string>({
   name: "webhook_circuit_breaker_state",
