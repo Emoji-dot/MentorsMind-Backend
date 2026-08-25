@@ -1,0 +1,44 @@
+# Prometheus alert rules for API sunset / deprecation monitoring.
+#
+# Metrics used:
+#   deprecated_api_calls_total{version} — counter incremented on every request
+#   resolved to a deprecated API version (including 410-blocked calls).
+#
+# Load with:
+#   rule_files:
+#     - /etc/prometheus/monitoring/prometheus-alerts.yml
+
+groups:
+  - name: api-sunset
+    rules:
+      # Migration progress: sustained high usage of a deprecated version
+      # means consumers are not migrating — escalate before sunsetAt.
+      - alert: HighDeprecatedApiUsage
+        expr: sum by (version) (rate(deprecated_api_calls_total[5m])) > 10
+        for: 15m
+        labels:
+          severity: warning
+          category: api-deprecation
+        annotations:
+          summary: "High traffic on deprecated API version {{ $labels.version }}"
+          description: >-
+            Deprecated API version {{ $labels.version }} is receiving
+            {{ $value | humanize }} req/s over the last 15 minutes. Reach out to
+            remaining consumers and point them at the migration guide before
+            the version sunsets.
+
+      # Blocked traffic spike: many 410s mean clients already failed over —
+      # check whether exemptions or an extension are needed.
+      - alert: SunsetBlockedRequestSpike
+        expr: sum by (version) (rate(deprecated_api_calls_total[5m])) > 100
+        for: 30m
+        labels:
+          severity: critical
+          category: api-deprecation
+        annotations:
+          summary: "Sustained heavy usage of sunset-bound version {{ $labels.version }}"
+          description: >-
+            Version {{ $labels.version }} still receives substantial traffic
+            ({{ $value | humanize }} req/s). If past its sunsetAt date these
+            clients are receiving HTTP 410 Gone. Grant targeted exemptions via
+            POST /admin/sunset-exemptions if migration is in progress.

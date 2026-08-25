@@ -158,6 +158,15 @@ app.get("/health", (_req, res) => res.redirect("/health/ready"));
 import { CredentialsController } from "./controllers/credentials.controller";
 app.get("/.well-known/did.json", CredentialsController.getDidDocument);
 
+// ─── Sunset Exemptions (admin, unversioned so it survives version sunsets) ───
+import sunsetExemptionsRouter from "./routes/admin/sunset-exemptions.routes";
+app.use(
+  "/admin/sunset-exemptions",
+  authenticate as any,
+  requireAdmin as any,
+  sunsetExemptionsRouter,
+);
+
 // ─── Metrics Route ───────────────────────────────────────────────────────────
 registerMetricsRoute(app);
 
