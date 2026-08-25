@@ -4,6 +4,8 @@ import { EncryptionUtil } from "../utils/encryption.utils";
 import { logger } from "../utils/logger.utils";
 import { JwksService } from "../services/jwks.service";
 import * as Sentry from "@sentry/node";
+// HSM-backed key management (integrated — does not break existing PII rotation)
+import keyManagementService from "../services/key-management.service";
 
 const ROTATION_BATCH_SIZE = 100;
 
@@ -37,6 +39,7 @@ class KeyRotationJob {
 
   initialize(): void {
     this.startPiiRotation();
+    this.startHsmRotation();
     logger.info("Key rotation jobs initialized", { jobCount: this.jobs.size });
   }
 
@@ -279,6 +282,35 @@ class KeyRotationJob {
     }
 
     return { scanned, rotated };
+  }
+
+  /** HSM key rotation — runs daily at 2 AM UTC (complements PII rotation) */
+  private startHsmRotation(): void {
+    try {
+      const { CronJob } = require("cron");
+      const job = new CronJob("0 2 * * *", async () => {
+        logger.info("Running scheduled HSM key rotation sweep");
+        try {
+          const summaries = await keyManagementService.runScheduledRotation();
+          logger.info(
+            { rotatedPurposes: summaries.length },
+            "HSM scheduled rotation sweep complete",
+          );
+        } catch (error) {
+          const err = error as Error;
+          logger.error("HSM key rotation failed", { error: err.message, stack: err.stack });
+          Sentry.captureException(err);
+        }
+      });
+
+      job.start();
+      this.jobs.set("hsm-rotation", job);
+      logger.info("HSM key rotation job started (daily at 2 AM UTC)");
+    } catch (error) {
+      logger.warn("Failed to start HSM key rotation job", {
+        error: (error as Error).message,
+      });
+    }
   }
 
   getStatus(): Record<string, { running: boolean }> {

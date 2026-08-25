@@ -58,6 +58,7 @@ export const QUEUE_NAMES = {
   CDN_INVALIDATION: "cdn-invalidation-queue",
   INSIGHT_GENERATION: "insight-generation-queue",
   SECURITY_ANALYSIS: "security-analysis-queue",
+  INCIDENT_RESPONSE: "incident-response-queue",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -118,4 +119,5 @@ export const CONCURRENCY = {
   /** Parallel per-user insight jobs — supports ~1k users within 10 minutes */
   INSIGHT_GENERATION: 20,
   SECURITY_ANALYSIS: 5,
+  INCIDENT_RESPONSE: 3,
 } as const;
