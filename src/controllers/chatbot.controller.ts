@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { z } from "zod";
 import { chatbotService, UserProfile } from "../services/chatbot.service";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 
 const ChatRequestSchema = z.object({
   message: z.string().min(1),
@@ -19,7 +20,7 @@ export const ChatbotController = {
   async chat(req: Request, res: Response): Promise<void> {
     const userId = req.user?.id;
     if (!userId) {
-      throw createError("Authentication required", 401);
+      throw createError(ErrorCode.AUTH_REQUIRED, 401);
     }
 
     const body = ChatRequestSchema.parse(req.body);
@@ -40,7 +41,7 @@ export const ChatbotController = {
   async history(req: Request, res: Response): Promise<void> {
     const userId = req.user?.id;
     if (!userId) {
-      throw createError("Authentication required", 401);
+      throw createError(ErrorCode.AUTH_REQUIRED, 401);
     }
 
     const limit = Math.min(Number(req.query.limit || 100), 100);
@@ -54,7 +55,7 @@ export const ChatbotController = {
   async clearHistory(req: Request, res: Response): Promise<void> {
     const userId = req.user?.id;
     if (!userId) {
-      throw createError("Authentication required", 401);
+      throw createError(ErrorCode.AUTH_REQUIRED, 401);
     }
 
     await chatbotService.clearHistory(userId);

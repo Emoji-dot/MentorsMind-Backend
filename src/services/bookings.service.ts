@@ -3,6 +3,7 @@ import { CacheService } from "./cache.service";
 import { CacheKeys, CacheTTL } from "../utils/cache-key.utils";
 import { logger } from "../utils/logger.utils";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 import {
   calculateEndTime,
   calculateRefundEligibility,
@@ -133,31 +134,25 @@ export const BookingsService = {
     const mentor = users.find((u: any) => u.id === data.mentorId);
 
     if (!mentee) {
-      throw createError("Mentee not found", 404);
+      throw createError(ErrorCode.BOOKING_MENTEE_NOT_FOUND, 404);
     }
     if (!mentor) {
-      throw createError("Mentor not found", 404);
+      throw createError(ErrorCode.BOOKING_MENTOR_NOT_FOUND, 404);
     }
 
     // Prevent suspended or banned users from booking
     if (mentee.status === "suspended") {
-      throw createError(
-        "Your account is suspended. You cannot create bookings at this time.",
-        403,
-      );
+      throw createError(ErrorCode.BOOKING_USER_SUSPENDED, 403);
     }
     if (mentee.status === "banned") {
-      throw createError("Your account has been permanently banned.", 403);
+      throw createError(ErrorCode.BOOKING_USER_BANNED, 403);
     }
     if (mentor.status === "suspended" || mentor.status === "banned") {
-      throw createError(
-        "This mentor is not currently available for bookings.",
-        400,
-      );
+      throw createError(ErrorCode.MENTOR_NOT_AVAILABLE, 400);
     }
 
     if (mentor.role !== "mentor") {
-      throw createError("User is not a mentor", 400);
+      throw createError(ErrorCode.BOOKING_USER_NOT_A_MENTOR, 400);
     }
 
     // Check for booking conflicts
@@ -168,13 +163,13 @@ export const BookingsService = {
     );
 
     if (hasConflict) {
-      throw createError("Mentor is not available at the requested time", 409);
+      throw createError(ErrorCode.BOOKING_CONFLICT, 409);
     }
 
     // Calculate amount from mentor profile
     const mentorProfile = await MentorsService.findById(data.mentorId);
     if (!mentorProfile || mentorProfile.hourly_rate === null) {
-      throw createError("Mentor profile or hourly rate not found", 404);
+      throw createError(ErrorCode.BOOKING_MENTOR_PROFILE_NOT_FOUND, 404);
     }
     const hourlyRate = mentorProfile.hourly_rate;
     const amount = ((data.durationMinutes / 60) * hourlyRate).toFixed(7);
@@ -234,12 +229,12 @@ export const BookingsService = {
     const booking = await BookingModel.findById(bookingId);
 
     if (!booking) {
-      throw createError("Booking not found", 404);
+      throw createError(ErrorCode.BOOKING_NOT_FOUND, 404);
     }
 
     // Verify user has access to this booking
     if (booking.mentee_id !== userId && booking.mentor_id !== userId) {
-      throw createError("Access denied", 403);
+      throw createError(ErrorCode.AUTHZ_FORBIDDEN, 403);
     }
 
     return booking;
@@ -279,12 +274,12 @@ export const BookingsService = {
 
     // Only allow updates if booking is pending or confirmed
     if (!["pending", "confirmed"].includes(booking.status)) {
-      throw createError("Cannot update booking in current status", 400);
+      throw createError(ErrorCode.BOOKING_INVALID_STATUS, 400);
     }
 
     // Only mentee can update booking details
     if (booking.mentee_id !== userId) {
-      throw createError("Only the mentee can update booking details", 403);
+      throw createError(ErrorCode.BOOKING_ONLY_MENTEE_CAN_UPDATE, 403);
     }
 
     // If rescheduling, check for conflicts
@@ -300,7 +295,7 @@ export const BookingsService = {
       );
 
       if (hasConflict) {
-        throw createError("Mentor is not available at the requested time", 409);
+      throw createError(ErrorCode.BOOKING_CONFLICT, 409);
       }
     }
 
@@ -312,7 +307,7 @@ export const BookingsService = {
     });
 
     if (!updated) {
-      throw createError("Failed to update booking", 500);
+      throw createError(ErrorCode.BOOKING_UPDATE_FAILED, 500);
     }
 
     // Invalidate session list cache for both mentee and mentor
@@ -331,15 +326,15 @@ export const BookingsService = {
 
     // Only mentor can confirm
     if (booking.mentor_id !== userId) {
-      throw createError("Only the mentor can confirm bookings", 403);
+      throw createError(ErrorCode.BOOKING_ONLY_MENTOR_CAN_CONFIRM, 403);
     }
 
     if (booking.status !== "pending") {
-      throw createError("Booking is not in pending status", 400);
+      throw createError(ErrorCode.BOOKING_NOT_PENDING, 400);
     }
 
     if (booking.payment_status !== "paid") {
-      throw createError("Payment must be completed before confirmation", 400);
+      throw createError(ErrorCode.BOOKING_PAYMENT_REQUIRED_BEFORE_CONFIRMATION, 400);
     }
 
     // Soroban escrow creation is a network call — keep it OUTSIDE the DB
@@ -368,7 +363,7 @@ export const BookingsService = {
         status: "confirmed",
       });
       if (!result) {
-        throw createError("Failed to confirm booking", 500);
+        throw createError(ErrorCode.BOOKING_CONFIRM_FAILED, 500);
       }
 
       if (onChainEscrow) {
@@ -469,11 +464,11 @@ export const BookingsService = {
 
     // Either mentor or mentee can mark as completed
     if (booking.mentor_id !== userId && booking.mentee_id !== userId) {
-      throw createError("Access denied", 403);
+      throw createError(ErrorCode.AUTHZ_FORBIDDEN, 403);
     }
 
     if (booking.status !== "confirmed") {
-      throw createError("Only confirmed bookings can be completed", 400);
+      throw createError(ErrorCode.BOOKING_NOT_CONFIRMED, 400);
     }
 
     // Verify session time has passed
@@ -482,7 +477,7 @@ export const BookingsService = {
       booking.duration_minutes,
     );
     if (sessionEnd > new Date()) {
-      throw createError("Cannot complete booking before session ends", 400);
+      throw createError(ErrorCode.BOOKING_SESSION_NOT_ENDED, 400);
     }
 
     if (SorobanEscrowService.isConfigured()) {
@@ -519,7 +514,7 @@ export const BookingsService = {
     });
 
     if (!updated) {
-      throw createError("Failed to complete booking", 500);
+      throw createError(ErrorCode.BOOKING_COMPLETION_FAILED, 500);
     }
 
     // Invalidate session list cache for both users
@@ -593,7 +588,7 @@ export const BookingsService = {
     const booking = await this.getBookingById(bookingId, userId);
 
     if (["cancelled", "completed"].includes(booking.status)) {
-      throw createError("Cannot cancel booking in current status", 400);
+      throw createError(ErrorCode.BOOKING_ALREADY_CANCELLED, 400);
     }
 
     // Calculate refund eligibility
@@ -651,7 +646,7 @@ export const BookingsService = {
     });
 
     if (!updated) {
-      throw createError("Failed to cancel booking", 500);
+      throw createError(ErrorCode.BOOKING_CANCELLATION_FAILED, 500);
     }
 
     // Invalidate session list cache for both users
@@ -772,7 +767,7 @@ export const BookingsService = {
     const booking = await this.getBookingById(bookingId, userId);
 
     if (!["pending", "confirmed"].includes(booking.status)) {
-      throw createError("Cannot reschedule booking in current status", 400);
+      throw createError(ErrorCode.BOOKING_RESCHEDULE_NOT_ALLOWED, 400);
     }
 
     // Check for conflicts at new time
@@ -784,7 +779,7 @@ export const BookingsService = {
     );
 
     if (hasConflict) {
-      throw createError("Mentor is not available at the requested time", 409);
+      throw createError(ErrorCode.BOOKING_CONFLICT, 409);
     }
 
     const updated = await BookingModel.update(bookingId, {
@@ -796,7 +791,7 @@ export const BookingsService = {
     });
 
     if (!updated) {
-      throw createError("Failed to reschedule booking", 500);
+      throw createError(ErrorCode.BOOKING_RESCHEDULE_FAILED, 500);
     }
 
     // Emit session:updated event to both mentor and mentee
@@ -855,7 +850,7 @@ export const BookingsService = {
     });
 
     if (!updated) {
-      throw createError("Failed to update payment status", 500);
+      throw createError(ErrorCode.PAYMENT_CONFIRM_FAILED, 500);
     }
 
     return updated;

@@ -10,7 +10,8 @@ import {
 } from "../validators/auth.validator";
 import { UserRecord } from "./users.service";
 import { TokenService } from "./token.service";
-import { logger } from "../utils/logger.utils";
+import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 
 const JWT_SECRET = env.JWT_SECRET;
 
@@ -34,7 +35,7 @@ export const AuthService = {
     const checkQuery = `SELECT id FROM users WHERE email = $1`;
     const checkResult = await pool.query(checkQuery, [email]);
     if (checkResult.rows.length > 0) {
-      throw new Error("Email is already registered.");
+      throw createError(ErrorCode.AUTH_EMAIL_ALREADY_REGISTERED, 409);
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -90,27 +91,23 @@ export const AuthService = {
 
     // Banned users receive a specific error and cannot log in at all
     if (user.status === 'banned') {
-      await this.logAuthAttempt(user.id, email, false, 'Account banned', ipAddress, userAgent);
-      throw new Error('Your account has been permanently banned. Please contact support if you believe this is an error.');
+      throw createError(ErrorCode.AUTH_ACCOUNT_BANNED, 403);
     }
 
     // Suspended users cannot log in
     if (user.status === 'suspended') {
-      await this.logAuthAttempt(user.id, email, false, 'Account suspended', ipAddress, userAgent);
-      throw new Error('Your account has been suspended. Please contact support for more information.');
+      throw createError(ErrorCode.AUTH_ACCOUNT_SUSPENDED, 403);
     }
 
     // Any other non-active status (inactive, pending_verification)
     if (user.status !== 'active') {
-      await this.logAuthAttempt(user.id, email, false, 'Account inactive', ipAddress, userAgent);
-      throw new Error('Invalid email or password.');
+      throw createError(ErrorCode.AUTH_INVALID_CREDENTIALS, 401);
     }
 
     const isMatch = await bcrypt.compare(password, user.password_hash);
 
     if (!isMatch) {
-      await this.logAuthAttempt(user.id, email, false, 'Invalid password', ipAddress, userAgent);
-      throw new Error('Invalid email or password.');
+      throw createError(ErrorCode.AUTH_INVALID_CREDENTIALS, 401);
     }
 
     // Perform adaptive authentication if request object is available
@@ -220,7 +217,7 @@ export const AuthService = {
     const { rows } = await pool.query(query, [resetTokenHash]);
 
     if (rows.length === 0) {
-      throw new Error('Invalid or expired reset token.');
+      throw createError(ErrorCode.AUTH_INVALID_RESET_TOKEN, 400);
     }
 
     const userId = rows[0].id;

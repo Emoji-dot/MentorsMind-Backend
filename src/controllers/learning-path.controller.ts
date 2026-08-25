@@ -12,6 +12,7 @@ import {
 } from "../models/learning-path.model";
 import { logger } from "../utils/logger.utils";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 import { z } from "zod";
 
 // Query parameter schemas
@@ -40,7 +41,7 @@ export const LearningPathController = {
     try {
       const userId = req.user?.id;
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       const validatedData = CreateLearningPathSchema.parse(req.body);
@@ -87,18 +88,18 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!pathId) {
-        throw createError("Path ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       const learningPath = await LearningPathService.getPath(pathId, userId);
       
       if (!learningPath) {
-        throw createError("Learning path not found", 404);
+        throw createError(ErrorCode.LEARNING_PATH_NOT_FOUND, 404);
       }
 
       // Check access permissions for unpublished paths
       if (!learningPath.is_published && learningPath.mentor_id !== userId) {
-        throw createError("Access denied", 403);
+        throw createError(ErrorCode.AUTH_FORBIDDEN, 403);
       }
 
       res.json({
@@ -125,11 +126,11 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!pathId) {
-        throw createError("Path ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       const validatedData = UpdateLearningPathSchema.parse(req.body);
@@ -177,11 +178,11 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!pathId) {
-        throw createError("Path ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       await LearningPathService.deletePath(pathId, userId);
@@ -278,11 +279,11 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!pathId) {
-        throw createError("Path ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       const publishedPath = await LearningPathService.publishPath(pathId, userId);
@@ -317,11 +318,11 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!pathId) {
-        throw createError("Path ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       const unpublishedPath = await LearningPathService.unpublishPath(pathId, userId);
@@ -356,21 +357,21 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!pathId) {
-        throw createError("Path ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       // Get the template path
       const templatePath = await LearningPathService.getPath(pathId);
       if (!templatePath) {
-        throw createError("Template path not found", 404);
+        throw createError(ErrorCode.LEARNING_PATH_NOT_FOUND, 404);
       }
 
       if (!templatePath.is_template && !templatePath.is_published) {
-        throw createError("Path is not available for cloning", 400);
+        throw createError(ErrorCode.LEARNING_PATH_INVALID_STATUS, 400);
       }
 
       // Create new path based on template
@@ -419,11 +420,11 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!pathId) {
-        throw createError("Path ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       const enrollmentData = CreateEnrollmentSchema.parse(req.body);
@@ -471,11 +472,11 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!pathId) {
-        throw createError("Path ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       await EnrollmentService.unenrollStudent(pathId, userId);
@@ -509,17 +510,17 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!pathId) {
-        throw createError("Path ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       // Verify user is the mentor of this path
       const learningPath = await LearningPathService.getPath(pathId);
       if (!learningPath || learningPath.mentor_id !== userId) {
-        throw createError("Access denied", 403);
+        throw createError(ErrorCode.AUTH_FORBIDDEN, 403);
       }
 
       const filters = EnrollmentFiltersSchema.parse(req.query);
@@ -563,7 +564,7 @@ export const LearningPathController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       const filters = EnrollmentFiltersSchema.parse(req.query);
