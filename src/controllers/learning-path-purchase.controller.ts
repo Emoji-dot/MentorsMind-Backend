@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { EnrollmentService } from "../services/enrollment.service";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 import { logger } from "../utils/logger.utils";
 
 export const LearningPathPurchaseController = {
@@ -9,7 +10,7 @@ export const LearningPathPurchaseController = {
     const userId = req.user?.id;
 
     if (!pathId) {
-      throw createError("Path ID is required", 400);
+      throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
     }
 
     const purchaseInfo = await EnrollmentService.getPurchaseInfo(pathId, userId);
@@ -24,11 +25,11 @@ export const LearningPathPurchaseController = {
     const userId = req.user?.id;
 
     if (!userId) {
-      throw createError("Authentication required", 401);
+      throw createError(ErrorCode.AUTH_REQUIRED, 401);
     }
 
     if (!pathId) {
-      throw createError("Path ID is required", 400);
+      throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
     }
 
     const enrollment = await EnrollmentService.startTrial(pathId, userId);
