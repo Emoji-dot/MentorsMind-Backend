@@ -52,6 +52,8 @@ import offlineRoutes from "../offline.routes";
 import syncRoutes from "../sync.routes";
 import searchRoutes from "../search.routes";
 import nlpSearchRoutes from "../nlp-search.routes";
+import errorsRoutes from "../errors.routes";
+import developerRoutes from "../developer.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -146,6 +148,10 @@ router.use("/search", searchRoutes);
 
 // NLP-powered natural language mentor search (issue #739)
 router.use("/search", nlpSearchRoutes);
+// Error catalog endpoint
+router.use("/errors", errorsRoutes);
+// Developer API key management (issue #838)
+router.use("/developer", developerRoutes);
 
 // Verifiable Credentials (DID / W3C VC)
 router.use("/credentials", credentialsRoutes);
