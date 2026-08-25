@@ -51,6 +51,7 @@ import featureFlagRoutes from "../feature-flag.routes";
 import offlineRoutes from "../offline.routes";
 import syncRoutes from "../sync.routes";
 import searchRoutes from "../search.routes";
+import nlpSearchRoutes from "../nlp-search.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -142,6 +143,9 @@ router.use("/sync", syncRoutes);
 
 // Unified global search across mentors, sessions, and messages (issue #738)
 router.use("/search", searchRoutes);
+
+// NLP-powered natural language mentor search (issue #739)
+router.use("/search", nlpSearchRoutes);
 
 // Verifiable Credentials (DID / W3C VC)
 router.use("/credentials", credentialsRoutes);
