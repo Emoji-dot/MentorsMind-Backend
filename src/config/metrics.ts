@@ -37,6 +37,8 @@
  *   Webhooks
  *     webhook_circuit_breaker_state    gauge      url_hash
  *
+ *   API Versioning
+ *     deprecated_api_calls_total       counter    version
  * Default Node.js metrics (GC, heap, event loop lag) are collected
  * automatically via `collectDefaultMetrics()`.
  */
@@ -223,6 +225,15 @@ export const rateLimitExceededTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
+// ─── API Versioning / Sunset ────────────────────────────────────────────────
+
+export const deprecatedApiCallsTotal = new Counter<string>({
+  name: "deprecated_api_calls_total",
+  help: "Total calls to deprecated API versions, partitioned by version — used to monitor migration progress",
+  labelNames: ["version"],
+  registers: [metricsRegistry],
+});
+
 // ─── Goals ────────────────────────────────────────────────────────────────────
 
 export const goalRemindersSentTotal = new Counter<string>({
@@ -247,5 +258,21 @@ export const webhookCircuitBreakerState = new Gauge<string>({
   name: "webhook_circuit_breaker_state",
   help: "Webhook per-endpoint circuit breaker state (0=closed, 1=open, 2=half-open)",
   labelNames: ["url_hash"],
+  registers: [metricsRegistry],
+});
+
+// ─── Wallet Reconciliation ─────────────────────────────────────────────────
+
+export const walletReconciliationsTotal = new Counter<string>({
+  name: "wallet_reconciliations_total",
+  help: "Total wallet reconciliation runs, partitioned by outcome (success, no_wallet, error)",
+  labelNames: ["status"],
+  registers: [metricsRegistry],
+});
+
+export const walletDiscrepanciesTotal = new Counter<string>({
+  name: "wallet_discrepancies_total",
+  help: "Total asset balance discrepancies detected during reconciliation, partitioned by asset type",
+  labelNames: ["asset_type"],
   registers: [metricsRegistry],
 });
