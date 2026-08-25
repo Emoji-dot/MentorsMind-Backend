@@ -144,7 +144,7 @@ export const revokeSessionParamSchema = z.object({
 
 export const oauthProviderParamSchema = z.object({
     params: z.object({
-        provider: z.enum(['google', 'github']),
+        provider: z.enum(['google', 'github', 'linkedin', 'microsoft']),
     }),
 });
 

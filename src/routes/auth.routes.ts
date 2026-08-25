@@ -149,6 +149,10 @@ router.get("/google", asyncHandler(OAuthController.googleAuth));
 router.get("/google/callback", asyncHandler(OAuthController.googleCallback));
 router.get("/github", asyncHandler(OAuthController.githubAuth));
 router.get("/github/callback", asyncHandler(OAuthController.githubCallback));
+router.get("/linkedin", asyncHandler(OAuthController.linkedinAuth));
+router.get("/linkedin/callback", asyncHandler(OAuthController.linkedinCallback));
+router.get("/microsoft", asyncHandler(OAuthController.microsoftAuth));
+router.get("/microsoft/callback", asyncHandler(OAuthController.microsoftCallback));
 router.get(
   "/oauth/providers",
   authenticate,
