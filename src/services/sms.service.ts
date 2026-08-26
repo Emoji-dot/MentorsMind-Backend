@@ -231,9 +231,9 @@ export const SmsService = {
       }
       await client.query('COMMIT');
       return { valid: false, reason: 'Invalid code' };
-    } catch {
+    } catch (error) {
       await client.query('ROLLBACK');
-      throw;
+      throw error;
     } finally {
       client.release();
     }
