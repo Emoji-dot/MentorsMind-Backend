@@ -290,7 +290,7 @@ export const MessagingService = {
     );
 
     return rowCount ?? 0;
-  },
+  }
 
   /**
    * Batch mark specific messages as read.
