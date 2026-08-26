@@ -8,39 +8,36 @@ import pool from '../config/database';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
 import { AuditLogService, extractIpAddress } from '../services/auditLog.service';
+import { MfaDeviceType } from '../models/mfa-device.model';
 
 export const MfaController = {
-  /**
-   * Start MFA setup process.
-   * Generates a secret and returns a QR code.
-   */
+  // ─── Legacy TOTP Setup (backward compatible) ────────────────────────────
+
   async setup(req: AuthenticatedRequest, res: Response) {
     try {
       const userId = req.user?.userId;
       if (!userId) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
-
       const user = await UsersService.findById(userId);
       if (!user) {
         return res.status(404).json({ success: false, error: 'User not found' });
       }
-
-      const secret = MfaService.generateSecret();
-      const qrCodeUrl = await MfaService.generateQrCode(user.email, secret);
-      const encryptedSecret = await MfaService.encryptSecret(secret);
-
-      // Store the secret but don't enable yet
+      const setup = await MfaService.setupTotpDevice({
+        userId,
+        email: user.email,
+        name: req.body?.name,
+      });
       await pool.query(
         `UPDATE users SET mfa_secret = $1 WHERE id = $2`,
-        [encryptedSecret, userId]
+        [setup.encryptedSecret, userId],
       );
-
       return res.status(200).json({
         success: true,
         data: {
-          qrCodeUrl,
-          manualEntryKey: secret,
+          qrCodeUrl: setup.qrCodeUrl,
+          manualEntryKey: setup.manualEntryKey,
+          encryptedSecret: setup.encryptedSecret,
         },
       });
     } catch (error: any) {
@@ -48,63 +45,48 @@ export const MfaController = {
     }
   },
 
-  /**
-   * Finalize MFA setup by verifying the first token.
-   */
   async verifySetup(req: AuthenticatedRequest, res: Response) {
     try {
       const userId = req.user?.userId;
-      const { token } = req.body;
-
+      const { token, encryptedSecret, name, setAsPrimary } = req.body;
       if (!userId || !token) {
         return res.status(400).json({ success: false, error: 'User ID and token are required' });
       }
-
-      const { rows } = await pool.query(`SELECT mfa_secret, email FROM users WHERE id = $1`, [userId]);
-      if (!rows.length || !rows[0].mfa_secret) {
+      const secretToUse =
+        encryptedSecret ||
+        (await pool.query(`SELECT mfa_secret FROM users WHERE id = $1`, [userId]).then((r) => r.rows[0]?.mfa_secret));
+      if (!secretToUse) {
         return res.status(400).json({ success: false, error: 'MFA setup not initiated' });
       }
-
-      const secret = await MfaService.decryptSecret(rows[0].mfa_secret);
-      const isValid = await MfaService.verifyToken(token, secret);
-
-      if (!isValid) {
-        return res.status(401).json({ success: false, error: 'Invalid TOTP token' });
+      const result = await MfaService.confirmTotpDevice({
+        userId,
+        encryptedSecret: secretToUse,
+        token,
+        name,
+        setAsPrimary,
+      });
+      if ('error' in result) {
+        return res.status(401).json({ success: false, error: result.error });
       }
-
-      // Generate backup codes
-      const { plain, hashed } = MfaService.generateBackupCodes();
-
-      // Enable MFA and store hashed backup codes
       await pool.query(
         `UPDATE users SET mfa_enabled = true, mfa_backup_codes = $1 WHERE id = $2`,
-        [hashed, userId]
+        [[], userId],
       );
-
-      // Invalidate all other sessions for security
-      const tokenHeader = req.headers.authorization;
-      const currentRefreshToken = tokenHeader?.startsWith('Bearer ') ? tokenHeader.slice(7) : ''; // Note: this might not be the refresh token, but we need to invalidate all anyway.
-      // Actually, SessionManagerService.revokeAllSessions(userId, currentRefreshToken) is best.
-      // But we might not have the refresh token here.
-      // Let's just revoke all and let the user re-login if needed, or better, keep the current one if we can identify it.
-      
-      // For simplicity, revoke all sessions. The user will need to log in again.
       await pool.query(`UPDATE user_sessions SET revoked_at = NOW() WHERE user_id = $1`, [userId]);
-
       await AuditLogService.log({
         userId,
-        action: 'MFA_ENABLED',
-        resourceType: 'auth',
-        resourceId: userId,
+        action: 'MFA_TOTP_DEVICE_ADDED',
+        resourceType: 'mfa_device',
+        resourceId: result.device.id,
         ipAddress: extractIpAddress(req),
         userAgent: req.headers['user-agent'] || null,
       });
-
       return res.status(200).json({
         success: true,
-        message: 'MFA enabled successfully',
+        message: 'Authenticator app added successfully',
         data: {
-          backupCodes: plain,
+          deviceId: result.device.id,
+          backupCodes: result.backupCodes,
         },
       });
     } catch (error: any) {
@@ -112,38 +94,39 @@ export const MfaController = {
     }
   },
 
-  /**
-   * Disable MFA.
-   */
   async disable(req: AuthenticatedRequest, res: Response) {
     try {
       const userId = req.user?.userId;
       const { token } = req.body;
-
-      if (!userId || !token) {
-        return res.status(400).json({ success: false, error: 'User ID and token are required' });
-      }
-
-      const { rows } = await pool.query(`SELECT mfa_secret, mfa_enabled FROM users WHERE id = $1`, [userId]);
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const { rows } = await pool.query(
+        `SELECT mfa_secret, mfa_enabled FROM users WHERE id = $1`,
+        [userId],
+      );
       if (!rows.length || !rows[0].mfa_enabled) {
         return res.status(400).json({ success: false, error: 'MFA is not enabled' });
       }
-
-      const secret = await MfaService.decryptSecret(rows[0].mfa_secret);
-      const isValid = await MfaService.verifyToken(token, secret);
-
-      if (!isValid) {
-        return res.status(401).json({ success: false, error: 'Invalid TOTP token' });
+      let verified = false;
+      if (token && rows[0].mfa_secret) {
+        const secret = await MfaService.decryptSecret(rows[0].mfa_secret);
+        verified = await MfaService.verifyTotpToken(token, secret);
       }
-
+      if (!verified) {
+        const vr = await MfaService.verifyAndConsumeBackupCode(userId, token);
+        verified = vr.valid;
+      }
+      if (!verified) {
+        return res.status(401).json({ success: false, error: 'Invalid verification token' });
+      }
       await pool.query(
         `UPDATE users SET mfa_enabled = false, mfa_secret = NULL, mfa_backup_codes = NULL WHERE id = $1`,
-        [userId]
+        [userId],
       );
-
-      // Invalidate all sessions
+      await pool.query(
+        `UPDATE mfa_devices SET is_active = FALSE WHERE user_id = $1`,
+        [userId],
+      );
       await pool.query(`UPDATE user_sessions SET revoked_at = NOW() WHERE user_id = $1`, [userId]);
-
       await AuditLogService.log({
         userId,
         action: 'MFA_DISABLED',
@@ -152,54 +135,67 @@ export const MfaController = {
         ipAddress: extractIpAddress(req),
         userAgent: req.headers['user-agent'] || null,
       });
-
       return res.status(200).json({ success: true, message: 'MFA disabled successfully' });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
   },
 
-  /**
-   * Validate MFA token during login.
-   */
   async validate(req: Request, res: Response) {
     try {
-      const { mfaToken, otpToken } = req.body;
-
+      const { mfaToken, otpToken, method } = req.body;
       if (!mfaToken || !otpToken) {
         return res.status(400).json({ success: false, error: 'MFA token and OTP token are required' });
       }
-
-      // Verify short-lived MFA token
       let decoded: any;
       try {
         decoded = jwt.verify(mfaToken, env.JWT_SECRET);
       } catch (err) {
         return res.status(401).json({ success: false, error: 'MFA session expired' });
       }
-
       if (!decoded.mfaPending) {
         return res.status(401).json({ success: false, error: 'Invalid MFA session' });
       }
-
       const userId = decoded.sub;
-      const { rows } = await pool.query(`SELECT mfa_secret, role, email, user_tier FROM users WHERE id = $1`, [userId]);
-      
-      if (!rows.length || !rows[0].mfa_secret) {
-        return res.status(400).json({ success: false, error: 'MFA not configured' });
+      const chosenMethod: MfaDeviceType = (method as MfaDeviceType) || 'totp';
+      const payload =
+        chosenMethod === 'totp'
+          ? { token: otpToken }
+          : { code: otpToken };
+      const v = await MfaService.verifyChallenge({
+        userId,
+        method: chosenMethod,
+        payload,
+      });
+      if (!v.valid) {
+        const bc = await MfaService.verifyAndConsumeBackupCode(userId, otpToken);
+        if (!bc.valid) {
+          await AuditLogService.log({
+            userId,
+            action: 'MFA_VALIDATE_FAILED',
+            resourceType: 'auth',
+            resourceId: userId,
+            ipAddress: extractIpAddress(req),
+            userAgent: req.headers['user-agent'] || null,
+            metadata: { method: chosenMethod, reason: v.error || bc.valid ? undefined : 'bad_code' },
+          });
+          return res.status(401).json({ success: false, error: v.error || 'Invalid MFA code' });
+        }
       }
-
-      const secret = await MfaService.decryptSecret(rows[0].mfa_secret);
-      const isValid = await MfaService.verifyToken(otpToken, secret);
-
-      if (!isValid) {
-        return res.status(401).json({ success: false, error: 'Invalid TOTP code' });
-      }
-
-      // MFA valid, generate full tokens
+      const { rows } = await pool.query(
+        `SELECT role, email, user_tier FROM users WHERE id = $1`,
+        [userId],
+      );
       const user = rows[0];
-      const tokens = await TokenService.issueTokens(userId, user.email, user.role, user.user_tier, undefined, undefined, true);
-
+      const tokens = await TokenService.issueTokens(
+        userId,
+        user.email,
+        user.role,
+        user.user_tier,
+        undefined,
+        undefined,
+        true,
+      );
       await SessionManagerService.createSession({
         userId,
         refreshToken: tokens.refreshToken,
@@ -207,13 +203,368 @@ export const MfaController = {
         userAgent: req.headers['user-agent'] || null,
         userEmail: user.email,
       });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_VALIDATE_SUCCESS',
+        resourceType: 'auth',
+        resourceId: userId,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+        metadata: { method: chosenMethod, deviceId: v.deviceId },
+      });
+      return res.status(200).json({
+        success: true,
+        data: { tokens, userId, role: user.role },
+      });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
 
+  async backup(req: Request, res: Response) {
+    try {
+      const { mfaToken, backupCode } = req.body;
+      if (!mfaToken || !backupCode) {
+        return res.status(400).json({ success: false, error: 'MFA token and backup code are required' });
+      }
+      let decoded: any;
+      try {
+        decoded = jwt.verify(mfaToken, env.JWT_SECRET);
+      } catch (err) {
+        return res.status(401).json({ success: false, error: 'MFA session expired' });
+      }
+      if (!decoded.mfaPending) {
+        return res.status(401).json({ success: false, error: 'Invalid MFA session' });
+      }
+      const userId = decoded.sub;
+      const bc = await MfaService.verifyAndConsumeBackupCode(userId, backupCode);
+      if (!bc.valid) {
+        return res.status(401).json({ success: false, error: 'Invalid backup code' });
+      }
+      const { rows } = await pool.query(
+        `SELECT role, email, user_tier FROM users WHERE id = $1`,
+        [userId],
+      );
+      const user = rows[0];
+      const tokens = await TokenService.issueTokens(
+        userId,
+        user.email,
+        user.role,
+        user.user_tier,
+        undefined,
+        undefined,
+        true,
+      );
+      await SessionManagerService.createSession({
+        userId,
+        refreshToken: tokens.refreshToken,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+        userEmail: user.email,
+      });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_BACKUP_CODE_USED',
+        resourceType: 'auth',
+        resourceId: userId,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      return res.status(200).json({
+        success: true,
+        data: { tokens, userId, role: user.role },
+      });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  // ─── Status & Devices ───────────────────────────────────────────────────
+
+  async status(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const status = await MfaService.getStatus(userId);
+      return res.status(200).json({ success: true, data: status });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  async listDevices(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const devices = await MfaService.listDevices(userId);
+      const sanitized = devices.map((d) => ({
+        id: d.id,
+        type: d.type,
+        name: d.name,
+        isPrimary: d.is_primary,
+        isActive: d.is_active,
+        lastUsedAt: d.last_used_at,
+        createdAt: d.created_at,
+        phoneLast4: d.phone_number ? d.phone_number.slice(-4) : null,
+        emailMasked: d.email_address
+          ? d.email_address.replace(/^(.{2})(.*)(@.*)$/, (_m, a, b, c) => `${a}${'*'.repeat(Math.max(0, b.length))}${c}`)
+          : null,
+        aaguid: d.aaguid,
+        authenticatorAttachment: d.authenticator_attachment,
+        backupCodesRemaining: d.backup_codes_hashed?.length ?? 0,
+      }));
+      return res.status(200).json({ success: true, data: sanitized });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  async renameDevice(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { id } = req.params;
+      const { name } = req.body;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      if (!name || typeof name !== 'string' || name.length > 100) {
+        return res.status(400).json({ success: false, error: 'Valid name (max 100 chars) is required' });
+      }
+      const ok = await MfaService.renameDevice(userId, id, name.trim());
+      if (!ok) return res.status(404).json({ success: false, error: 'Device not found' });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_DEVICE_RENAMED',
+        resourceType: 'mfa_device',
+        resourceId: id,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      return res.status(200).json({ success: true });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  async setPrimaryDevice(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { id } = req.params;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const ok = await MfaService.setPrimaryDevice(userId, id);
+      if (!ok) return res.status(404).json({ success: false, error: 'Device not found' });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_DEVICE_PRIMARY_SET',
+        resourceType: 'mfa_device',
+        resourceId: id,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      return res.status(200).json({ success: true });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  async removeDevice(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { id } = req.params;
+      const { verification } = req.body;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      if (!verification?.token) {
+        return res.status(400).json({ success: false, error: 'Verification token required' });
+      }
+      const v = await MfaService.verifyChallenge({
+        userId,
+        method: 'totp',
+        payload: { token: verification.token },
+      });
+      let verified = v.valid;
+      if (!verified) {
+        const bc = await MfaService.verifyAndConsumeBackupCode(userId, verification.token);
+        verified = bc.valid;
+      }
+      if (!verified) {
+        return res.status(401).json({ success: false, error: 'Invalid verification token' });
+      }
+      const ok = await MfaService.removeDevice(userId, id);
+      if (!ok) return res.status(404).json({ success: false, error: 'Device not found' });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_DEVICE_REMOVED',
+        resourceType: 'mfa_device',
+        resourceId: id,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      return res.status(200).json({ success: true });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  // ─── SMS Device Setup ───────────────────────────────────────────────────
+
+  async smsSetupSend(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { phoneNumber, name } = req.body;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      if (!phoneNumber) {
+        return res.status(400).json({ success: false, error: 'phoneNumber is required' });
+      }
+      const r = await MfaService.setupSmsDevice({ userId, phoneNumber, name });
+      if (!r.success) return res.status(400).json({ success: false, error: r.error });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_SMS_SETUP_CODE_SENT',
+        resourceType: 'mfa_device',
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      return res.status(200).json({ success: true, data: { expiresAt: r.expiresAt } });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  async smsSetupConfirm(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { phoneNumber, otpCode, name, setAsPrimary } = req.body;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      if (!phoneNumber || !otpCode) {
+        return res.status(400).json({ success: false, error: 'phoneNumber and otpCode are required' });
+      }
+      const r = await MfaService.confirmSmsDevice({
+        userId,
+        phoneNumber,
+        otpCode,
+        name,
+        setAsPrimary,
+      });
+      if ('error' in r) return res.status(400).json({ success: false, error: r.error });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_SMS_DEVICE_ADDED',
+        resourceType: 'mfa_device',
+        resourceId: r.device.id,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      return res.status(200).json({ success: true, data: { deviceId: r.device.id } });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  // ─── Email Device Setup ─────────────────────────────────────────────────
+
+  async emailSetupSend(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { emailAddress, name } = req.body;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      if (!emailAddress) {
+        return res.status(400).json({ success: false, error: 'emailAddress is required' });
+      }
+      const r = await MfaService.setupEmailDevice({ userId, emailAddress, name });
+      if (!r.success) return res.status(400).json({ success: false, error: r.error });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_EMAIL_SETUP_CODE_SENT',
+        resourceType: 'mfa_device',
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      return res.status(200).json({ success: true, data: { expiresAt: r.expiresAt } });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  async emailSetupConfirm(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { emailAddress, otpCode, name, setAsPrimary } = req.body;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      if (!emailAddress || !otpCode) {
+        return res.status(400).json({ success: false, error: 'emailAddress and otpCode are required' });
+      }
+      const r = await MfaService.confirmEmailDevice({
+        userId,
+        emailAddress,
+        otpCode,
+        name,
+        setAsPrimary,
+      });
+      if ('error' in r) return res.status(400).json({ success: false, error: r.error });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_EMAIL_DEVICE_ADDED',
+        resourceType: 'mfa_device',
+        resourceId: r.device.id,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      return res.status(200).json({ success: true, data: { deviceId: r.device.id } });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  // ─── WebAuthn / FIDO2 ───────────────────────────────────────────────────
+
+  async webauthnRegisterOptions(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { authenticatorAttachment, userVerification } = req.body || {};
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const user = await UsersService.findById(userId);
+      if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+      const opts = await MfaService.webauthn.generateRegistrationOptions({
+        userId,
+        userName: user.email,
+        userDisplayName: user.full_name || user.email,
+        authenticatorAttachment,
+        userVerification,
+      });
+      return res.status(200).json({ success: true, data: opts });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  async webauthnRegisterVerify(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { credential, deviceName, setAsPrimary } = req.body;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      if (!credential) return res.status(400).json({ success: false, error: 'credential is required' });
+      const r = await MfaService.webauthn.verifyRegistration({
+        userId,
+        credential,
+        deviceName,
+      });
+      if ('error' in r) return res.status(400).json({ success: false, error: r.error });
+      if (setAsPrimary) {
+        await MfaService.setPrimaryDevice(userId, r.device.id);
+      }
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_WEBAUTHN_DEVICE_ADDED',
+        resourceType: 'mfa_device',
+        resourceId: r.device.id,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+        metadata: { aaguid: r.device.aaguid, attachment: r.device.authenticator_attachment },
+      });
       return res.status(200).json({
         success: true,
         data: {
-          tokens,
-          userId,
-          role: user.role,
+          deviceId: r.device.id,
+          aaguid: r.device.aaguid,
+          authenticatorAttachment: r.device.authenticator_attachment,
         },
       });
     } catch (error: any) {
@@ -221,58 +572,175 @@ export const MfaController = {
     }
   },
 
-  /**
-   * Validate backup code during login.
-   */
-  async backup(req: Request, res: Response) {
+  async webauthnAuthenticateOptions(req: Request, res: Response) {
     try {
-      const { mfaToken, backupCode } = req.body;
-
-      if (!mfaToken || !backupCode) {
-        return res.status(400).json({ success: false, error: 'MFA token and backup code are required' });
+      const { mfaToken } = req.body;
+      let userId: string;
+      if (mfaToken) {
+        const decoded: any = jwt.verify(mfaToken, env.JWT_SECRET);
+        if (!decoded.mfaPending) {
+          return res.status(401).json({ success: false, error: 'Invalid MFA session' });
+        }
+        userId = decoded.sub;
+      } else {
+        const authReq = req as AuthenticatedRequest;
+        if (!authReq.user?.userId) {
+          return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+        userId = authReq.user.userId;
       }
-
-      // Verify short-lived MFA token
-      let decoded: any;
-      try {
-        decoded = jwt.verify(mfaToken, env.JWT_SECRET);
-      } catch (err) {
-        return res.status(401).json({ success: false, error: 'MFA session expired' });
-      }
-
-      if (!decoded.mfaPending) {
-        return res.status(401).json({ success: false, error: 'Invalid MFA session' });
-      }
-
-      const userId = decoded.sub;
-      const isValid = await MfaService.verifyAndConsumeBackupCode(userId, backupCode);
-
-      if (!isValid) {
-        return res.status(401).json({ success: false, error: 'Invalid backup code' });
-      }
-
-      const { rows } = await pool.query(`SELECT role, email, user_tier FROM users WHERE id = $1`, [userId]);
-      const user = rows[0];
-      const tokens = await TokenService.issueTokens(userId, user.email, user.role, user.user_tier, undefined, undefined, true);
-
-      await SessionManagerService.createSession({
-        userId,
-        refreshToken: tokens.refreshToken,
-        ipAddress: extractIpAddress(req),
-        userAgent: req.headers['user-agent'] || null,
-        userEmail: user.email,
-      });
-
-      return res.status(200).json({
-        success: true,
-        data: {
-          tokens,
-          userId,
-          role: user.role,
-        },
-      });
+      const opts = await MfaService.webauthn.generateAuthenticationOptions({ userId });
+      return res.status(200).json({ success: true, data: opts });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
-  }
+  },
+
+  // ─── Challenge Initiation / Verification (Login flow) ────────────────────
+
+  async initiateChallenge(req: Request, res: Response) {
+    try {
+      const { mfaToken, method } = req.body;
+      let userId: string;
+      let defaultEmail: string | undefined;
+      if (mfaToken) {
+        const decoded: any = jwt.verify(mfaToken, env.JWT_SECRET);
+        if (!decoded.mfaPending) {
+          return res.status(401).json({ success: false, error: 'Invalid MFA session' });
+        }
+        userId = decoded.sub;
+        defaultEmail = decoded.email;
+      } else {
+        const authReq = req as AuthenticatedRequest;
+        if (!authReq.user?.userId) {
+          return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+        userId = authReq.user.userId;
+      }
+      const r = await MfaService.initiateChallenge({
+        userId,
+        method: method as MfaDeviceType,
+        defaultEmail,
+      });
+      if (!r.success) return res.status(400).json({ success: false, error: r.error });
+      return res.status(200).json({ success: true, data: r.data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  async verifyChallenge(req: Request, res: Response) {
+    try {
+      const { mfaToken, method, payload } = req.body;
+      if (!method || !payload) {
+        return res.status(400).json({ success: false, error: 'method and payload are required' });
+      }
+      let userId: string;
+      if (mfaToken) {
+        const decoded: any = jwt.verify(mfaToken, env.JWT_SECRET);
+        if (!decoded.mfaPending) {
+          return res.status(401).json({ success: false, error: 'Invalid MFA session' });
+        }
+        userId = decoded.sub;
+        const v = await MfaService.verifyChallenge({
+          userId,
+          method: method as MfaDeviceType,
+          payload,
+        });
+        if (!v.valid) {
+          const bc = await MfaService.verifyAndConsumeBackupCode(userId, payload?.code || payload?.token || payload);
+          if (!bc.valid) {
+            return res.status(401).json({ success: false, error: v.error || 'Invalid MFA input' });
+          }
+        }
+        const { rows } = await pool.query(
+          `SELECT role, email, user_tier FROM users WHERE id = $1`,
+          [userId],
+        );
+        const user = rows[0];
+        const tokens = await TokenService.issueTokens(
+          userId,
+          user.email,
+          user.role,
+          user.user_tier,
+          undefined,
+          undefined,
+          true,
+        );
+        await SessionManagerService.createSession({
+          userId,
+          refreshToken: tokens.refreshToken,
+          ipAddress: extractIpAddress(req),
+          userAgent: req.headers['user-agent'] || null,
+          userEmail: user.email,
+        });
+        await AuditLogService.log({
+          userId,
+          action: 'MFA_LOGIN_SUCCESS',
+          resourceType: 'auth',
+          resourceId: userId,
+          ipAddress: extractIpAddress(req),
+          userAgent: req.headers['user-agent'] || null,
+          metadata: { method, deviceId: v.deviceId },
+        });
+        return res.status(200).json({
+          success: true,
+          data: { tokens, userId, role: user.role },
+        });
+      }
+      const authReq = req as AuthenticatedRequest;
+      if (!authReq.user?.userId) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+      userId = authReq.user.userId;
+      const v = await MfaService.verifyChallenge({
+        userId,
+        method: method as MfaDeviceType,
+        payload,
+      });
+      if (!v.valid) return res.status(401).json({ success: false, error: v.error || 'Invalid MFA input' });
+      return res.status(200).json({ success: true, data: { deviceId: v.deviceId } });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
+
+  // ─── Backup Codes ───────────────────────────────────────────────────────
+
+  async regenerateBackupCodes(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.user?.userId;
+      const { deviceId, verification } = req.body;
+      if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      if (!verification?.token) {
+        return res.status(400).json({ success: false, error: 'Verification token required' });
+      }
+      const v = await MfaService.verifyChallenge({
+        userId,
+        method: 'totp',
+        payload: { token: verification.token },
+      });
+      let verified = v.valid;
+      if (!verified) {
+        const bc = await MfaService.verifyAndConsumeBackupCode(userId, verification.token);
+        verified = bc.valid;
+      }
+      if (!verified) {
+        return res.status(401).json({ success: false, error: 'Invalid verification token' });
+      }
+      const r = await MfaService.regenerateBackupCodes(userId, deviceId);
+      if ('error' in r) return res.status(400).json({ success: false, error: r.error });
+      await AuditLogService.log({
+        userId,
+        action: 'MFA_BACKUP_CODES_REGENERATED',
+        resourceType: 'mfa_device',
+        resourceId: deviceId || userId,
+        ipAddress: extractIpAddress(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      return res.status(200).json({ success: true, data: { backupCodes: r.plain } });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  },
 };

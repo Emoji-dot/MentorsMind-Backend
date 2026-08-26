@@ -171,7 +171,35 @@ const envSchema = z.object({
     .string()
     .min(64, "ENCRYPTION_KEY must be at least 64 characters"), // Increased from 32
   MFA_TOTP_ISSUER: z.string().default("MentorMinds"),
-  
+
+  // WebAuthn / FIDO2
+  MFA_WEBAUTHN_RP_NAME: z.string().default("MentorMinds"),
+  MFA_WEBAUTHN_RP_ID: z.string().default("localhost"),
+  MFA_WEBAUTHN_ORIGINS: z
+    .string()
+    .default("http://localhost:3000,http://localhost:5173"),
+
+  // SMS MFA (Twilio or AWS SNS)
+  SMS_PROVIDER: z.enum(["twilio", "aws_sns", "mock"]).default("mock"),
+  TWILIO_ACCOUNT_SID: z.string().optional(),
+  TWILIO_AUTH_TOKEN: z.string().optional(),
+  TWILIO_FROM_NUMBER: z.string().optional(),
+  AWS_SNS_REGION: z.string().optional(),
+
+  // Session Security (Enhanced)
+  SESSION_MAX_CONCURRENT: z.string().regex(/^\d+$/).default("0"),
+  SESSION_AUTO_REVOKE_HIJACK: z.enum(["true", "false"]).default("true"),
+  SESSION_MFA_STEPUP_THRESHOLD: z.string().regex(/^\d+$/).default("0"),
+  SESSION_FINGERPRINT_SALT: z.string().default("mentorminds-session-fp-v1"),
+  REFRESH_TOKEN_COOKIE: z.string().default("mm_refresh"),
+  SESSION_SECURITY_SKIP_PATHS: z.string().default("/health,/metrics,/static"),
+
+  // Geo IP
+  GEO_PROVIDER: z.enum(["ipinfo", "ip-api", "maxmind"]).default("ip-api"),
+  GEO_IPINFO_TOKEN: z.string().optional(),
+  MAXMIND_ACCOUNT_ID: z.string().optional(),
+  MAXMIND_LICENSE_KEY: z.string().optional(),
+
   // Session Security
   SESSION_TIMEOUT_MINUTES: z.string().regex(/^\d+$/).default("30"),
   MAX_LOGIN_ATTEMPTS: z.string().regex(/^\d+$/).default("5"),
@@ -327,6 +355,7 @@ const SENSITIVE_KEYS = new Set([
   "STRIPE_SECRET_KEY",
   "STRIPE_WEBHOOK_SECRET",
   "STELLAR_FUNDING_SECRET",
+  "TWILIO_AUTH_TOKEN",
 ]);
 
 // Additional security validations for production

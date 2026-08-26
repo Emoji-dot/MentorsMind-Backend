@@ -22,6 +22,7 @@ const REQUIRED_QUEUE_NAMES = [
     'RECORDING_CLEANUP',
     'ANALYTICS_REFRESH',
     'INSIGHT_GENERATION',
+    'INCIDENT_RESPONSE',
 ] as const;
 
 for (const queueKey of REQUIRED_QUEUE_NAMES) {
@@ -56,3 +57,4 @@ export { startRetentionEnforcementWorker, stopRetentionEnforcementWorker } from 
 export { recordingCleanupWorker } from './recordingCleanup.worker';
 export { analyticsRefreshWorker } from './analyticsRefresh.worker';
 export { insightGenerationWorker } from './insight-generation.worker';
+export { incidentHandlerWorker } from './incident-handler.worker';
