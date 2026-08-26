@@ -1,5 +1,5 @@
-import crypto from 'crypto';
-import bcrypt from 'bcryptjs';
+import * as crypto from 'crypto';
+import * as bcrypt from 'bcryptjs';
 import pool from '../config/database';
 import { env } from '../config/env';
 import { RateLimiterService } from './rate-limiter.service';

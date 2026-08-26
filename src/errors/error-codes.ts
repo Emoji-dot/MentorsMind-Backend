@@ -181,6 +181,7 @@ export enum ErrorCode {
   ENROLLMENT_ALREADY_UNENROLLED = 'ENROLLMENT_ALREADY_UNENROLLED',
   ENROLLMENT_STATUS_TRANSITION_INVALID = 'ENROLLMENT_STATUS_TRANSITION_INVALID',
   ENROLLMENT_UPDATE_FAILED = 'ENROLLMENT_UPDATE_FAILED',
+  ENROLLMENT_INACTIVE = 'ENROLLMENT_INACTIVE',
   STUDENT_NOT_FOUND = 'STUDENT_NOT_FOUND',
   STUDENT_ACCOUNT_INACTIVE = 'STUDENT_ACCOUNT_INACTIVE',
   ENROLLMENT_ACCESS_DENIED = 'ENROLLMENT_ACCESS_DENIED',
@@ -193,6 +194,8 @@ export enum ErrorCode {
   MILESTONE_STEP_PREREQUISITES_NOT_MET = 'MILESTONE_STEP_PREREQUISITES_NOT_MET',
   MILESTONE_STEP_INVALID = 'MILESTONE_STEP_INVALID',
   MILESTONE_ACCESS_DENIED = 'MILESTONE_ACCESS_DENIED',
+  MILESTONE_COMPLETION_CRITERIA_NOT_MET = 'MILESTONE_COMPLETION_CRITERIA_NOT_MET',
+  MILESTONE_SKIP_REQUIRES_MENTOR_APPROVAL = 'MILESTONE_SKIP_REQUIRES_MENTOR_APPROVAL',
   PREREQUISITE_NOT_FOUND = 'PREREQUISITE_NOT_FOUND',
   PREREQUISITE_OVERRIDE_NOT_FOUND = 'PREREQUISITE_OVERRIDE_NOT_FOUND',
   PREREQUISITE_OVERRIDE_EXISTS = 'PREREQUISITE_OVERRIDE_EXISTS',
@@ -252,6 +255,9 @@ export enum ErrorCode {
   ONBOARDING_ALREADY_COMPLETED = 'ONBOARDING_ALREADY_COMPLETED',
   ONBOARDING_NOT_PAUSED = 'ONBOARDING_NOT_PAUSED',
   ONBOARDING_RATE_LIMITED = 'ONBOARDING_RATE_LIMITED',
+  ONBOARDING_STEP_INVALID = 'ONBOARDING_STEP_INVALID',
+  ONBOARDING_STEP_ALREADY_COMPLETED = 'ONBOARDING_STEP_ALREADY_COMPLETED',
+  ONBOARDING_STEP_PREREQUISITES_NOT_MET = 'ONBOARDING_STEP_PREREQUISITES_NOT_MET',
   CHECKLIST_ITEM_NOT_FOUND = 'CHECKLIST_ITEM_NOT_FOUND',
 
   // ─── Skill Tests ────────────────────────────────────────────────────────────
@@ -286,6 +292,10 @@ export enum ErrorCode {
   MFA_PHONE_NUMBER_REQUIRED = 'MFA_PHONE_NUMBER_REQUIRED',
   INVALID_CURSOR = 'INVALID_CURSOR',
   ASSET_UNSUPPORTED = 'ASSET_UNSUPPORTED',
+  ASSET_INVALID_SEND_AMOUNT = 'ASSET_INVALID_SEND_AMOUNT',
+  QUOTE_EXPIRED_OR_NOT_FOUND = 'QUOTE_EXPIRED_OR_NOT_FOUND',
+  QUOTE_EXPIRED = 'QUOTE_EXPIRED',
+  QUOTE_RATE_MOVED = 'QUOTE_RATE_MOVED',
   SDEX_LIQUIDITY_UNAVAILABLE = 'SDEX_LIQUIDITY_UNAVAILABLE',
   PAYOUT_MINIMUM_NOT_MET = 'PAYOUT_MINIMUM_NOT_MET',
   GOAL_NOT_FOUND = 'GOAL_NOT_FOUND',
@@ -316,7 +326,7 @@ function entry(code: ErrorCode, httpStatus: number, message: string): [ErrorCode
  * Keyed by ErrorCode — every value carries its default English message,
  * default HTTP status, and i18n key.
  */
-export const ERROR_CATALOG: Record<ErrorCode, ErrorCatalogEntry> = Object.fromEntries([
+export const ERROR_CATALOG = Object.fromEntries([
   // ─── Authentication ─────────────────────────────────────────────────────────
   entry(ErrorCode.AUTH_UNAUTHORIZED, 401, 'Unauthorized access'),
   entry(ErrorCode.AUTH_AUTHENTICATION_REQUIRED, 401, 'Authentication required'),
@@ -485,6 +495,7 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorCatalogEntry> = Object.fromEn
   entry(ErrorCode.ENROLLMENT_ALREADY_UNENROLLED, 400, 'Student is already unenrolled'),
   entry(ErrorCode.ENROLLMENT_STATUS_TRANSITION_INVALID, 400, 'Enrollment status transition is not allowed'),
   entry(ErrorCode.ENROLLMENT_UPDATE_FAILED, 500, 'Failed to update enrollment status'),
+  entry(ErrorCode.ENROLLMENT_INACTIVE, 400, 'Cannot complete milestone for inactive enrollment'),
   entry(ErrorCode.STUDENT_NOT_FOUND, 404, 'Student not found'),
   entry(ErrorCode.STUDENT_ACCOUNT_INACTIVE, 403, 'Student account is not active'),
   entry(ErrorCode.ENROLLMENT_ACCESS_DENIED, 403, 'Access denied to this enrollment'),
@@ -497,6 +508,8 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorCatalogEntry> = Object.fromEn
   entry(ErrorCode.MILESTONE_STEP_PREREQUISITES_NOT_MET, 422, 'Step prerequisites not met'),
   entry(ErrorCode.MILESTONE_STEP_INVALID, 400, 'Invalid step ID'),
   entry(ErrorCode.MILESTONE_ACCESS_DENIED, 403, 'Access denied to this milestone'),
+  entry(ErrorCode.MILESTONE_COMPLETION_CRITERIA_NOT_MET, 400, 'Completion criteria not met'),
+  entry(ErrorCode.MILESTONE_SKIP_REQUIRES_MENTOR_APPROVAL, 400, 'Cannot skip required milestone without mentor approval'),
   entry(ErrorCode.PREREQUISITE_NOT_FOUND, 404, 'Prerequisite not found'),
   entry(ErrorCode.PREREQUISITE_OVERRIDE_NOT_FOUND, 404, 'Override not found'),
   entry(ErrorCode.PREREQUISITE_OVERRIDE_EXISTS, 409, 'Override already exists for this prerequisite'),
@@ -556,6 +569,9 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorCatalogEntry> = Object.fromEn
   entry(ErrorCode.ONBOARDING_ALREADY_COMPLETED, 400, 'Onboarding already completed'),
   entry(ErrorCode.ONBOARDING_NOT_PAUSED, 400, 'Onboarding is not paused'),
   entry(ErrorCode.ONBOARDING_RATE_LIMITED, 429, 'Too many onboarding completion attempts. Please try again later.'),
+  entry(ErrorCode.ONBOARDING_STEP_INVALID, 400, 'Invalid step ID'),
+  entry(ErrorCode.ONBOARDING_STEP_ALREADY_COMPLETED, 400, 'Step already completed'),
+  entry(ErrorCode.ONBOARDING_STEP_PREREQUISITES_NOT_MET, 422, 'Step prerequisites not met'),
   entry(ErrorCode.CHECKLIST_ITEM_NOT_FOUND, 404, 'Checklist item not found'),
 
   // ─── Skill Tests ────────────────────────────────────────────────────────────
@@ -590,6 +606,10 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorCatalogEntry> = Object.fromEn
   entry(ErrorCode.MFA_PHONE_NUMBER_REQUIRED, 400, 'Phone number required for SMS MFA'),
   entry(ErrorCode.INVALID_CURSOR, 400, 'Invalid pagination cursor'),
   entry(ErrorCode.ASSET_UNSUPPORTED, 400, 'Unsupported asset'),
+  entry(ErrorCode.ASSET_INVALID_SEND_AMOUNT, 400, 'Invalid send amount'),
+  entry(ErrorCode.QUOTE_EXPIRED_OR_NOT_FOUND, 400, 'Quote expired or not found'),
+  entry(ErrorCode.QUOTE_EXPIRED, 400, 'Quote has expired'),
+  entry(ErrorCode.QUOTE_RATE_MOVED, 409, 'Rate moved beyond acceptable range since quote'),
   entry(ErrorCode.SDEX_LIQUIDITY_UNAVAILABLE, 503, 'No liquidity found on SDEX for the requested pair'),
   entry(ErrorCode.PAYOUT_MINIMUM_NOT_MET, 400, 'Minimum payout amount not met'),
   entry(ErrorCode.GOAL_NOT_FOUND, 404, 'Goal not found'),
@@ -597,7 +617,7 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorCatalogEntry> = Object.fromEn
   entry(ErrorCode.WEBHOOK_PAYLOAD_INVALID, 400, 'Webhook payload missing provider reference'),
   entry(ErrorCode.SUBMISSION_NOT_FOUND, 404, 'Submission not found'),
   entry(ErrorCode.SUBMISSION_ANSWERS_REQUIRED, 400, 'Response text is required'),
-]);
+]) as Record<ErrorCode, ErrorCatalogEntry>;
 
 /** All error codes as a readonly string union type (SDK-friendly). */
 export const ERROR_CODES = Object.values(ErrorCode) as ErrorCode[];

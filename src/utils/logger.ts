@@ -1,5 +1,6 @@
-import pino, { type Bindings, type ChildLoggerOptions } from "pino";
-import os from "os";
+import * as pino from "pino";
+import type { Bindings, ChildLoggerOptions } from "pino";
+import * as os from "os";
 import { env } from "../config/env";
 import { maskPIIDeep } from "./pii-mask";
 

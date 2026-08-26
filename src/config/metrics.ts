@@ -41,7 +41,8 @@
  * automatically via `collectDefaultMetrics()`.
  */
 
-import promClient, { Counter, Gauge, Histogram, Registry } from "prom-client";
+import * as promClient from "prom-client";
+const { Counter, Gauge, Histogram, Registry } = promClient;
 
 // ─── Registry ──────────────────────────────────────────────────────────[...]
 

@@ -2,6 +2,7 @@ import pool from "../config/database";
 import { CacheService } from "./cache.service";
 import { logger } from "../utils/logger.utils";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 import { MentorOnboarding } from "../models/certification.model";
 import { RateLimiterService } from "./rate-limiter.service";
 import { VerificationService } from "./verification.service";
@@ -127,12 +128,12 @@ export const MentorOnboardingService = {
   async completeStep(mentorId: string, stepId: string): Promise<MentorOnboarding> {
     try {
       const onboarding = await this.getOnboarding(mentorId);
-      if (!onboarding) throw createError("Onboarding not found", 404);
-      if (onboarding.status === 'completed') throw createError("Onboarding already completed", 400);
+      if (!onboarding) throw createError(ErrorCode.ONBOARDING_NOT_FOUND, 404);
+      if (onboarding.status === 'completed') throw createError(ErrorCode.ONBOARDING_ALREADY_COMPLETED, 400);
 
       const step = this.ONBOARDING_STEPS.find(s => s.id === stepId);
-      if (!step) throw createError("Invalid step ID", 400);
-      if (onboarding.stepsCompleted.includes(stepId)) throw createError("Step already completed", 400);
+      if (!step) throw createError(ErrorCode.ONBOARDING_STEP_INVALID, 400);
+      if (onboarding.stepsCompleted.includes(stepId)) throw createError(ErrorCode.ONBOARDING_STEP_ALREADY_COMPLETED, 400);
 
       const rateLimit = await RateLimiterService.check(
         `mentor-onboarding:complete-step:${mentorId}`,
@@ -140,7 +141,7 @@ export const MentorOnboardingService = {
         10,
       );
       if (!rateLimit.allowed) {
-        throw createError("Too many onboarding completion attempts. Please try again later.", 429, {
+        throw createError(ErrorCode.ONBOARDING_RATE_LIMITED, 429, {
           limit: rateLimit.limit,
           resetTime: rateLimit.resetTime.toISOString(),
         });
@@ -152,7 +153,7 @@ export const MentorOnboardingService = {
         onboarding.stepsCompleted,
       );
       if (unmetDependencies.length > 0) {
-        throw createError("Step prerequisites not met", 422, {
+        throw createError(ErrorCode.ONBOARDING_STEP_PREREQUISITES_NOT_MET, 422, {
           unmetDependencies,
         });
       }
@@ -255,7 +256,7 @@ export const MentorOnboardingService = {
         `SELECT bio, avatar_url, expertise, hourly_rate, education, years_of_experience FROM users WHERE id = $1`,
         [mentorId],
       );
-      if (rows.length === 0) throw createError("User not found", 404);
+      if (rows.length === 0) throw createError(ErrorCode.USER_NOT_FOUND, 404);
 
       const user = rows[0];
       const sectionsCompleted: string[] = [];
@@ -466,7 +467,7 @@ export const MentorOnboardingService = {
         `UPDATE mentor_success_checklist SET is_completed = true, completed_at = CURRENT_TIMESTAMP WHERE mentor_id = $1 AND item_key = $2`,
         [mentorId, itemKey],
       );
-      if (rowCount === 0) throw createError("Checklist item not found", 404);
+      if (rowCount === 0) throw createError(ErrorCode.CHECKLIST_ITEM_NOT_FOUND, 404);
     } catch (error) {
       logger.error("Failed to complete checklist item", { mentorId, itemKey, error: error instanceof Error ? error.message : error });
       throw error;
@@ -518,7 +519,7 @@ export const MentorOnboardingService = {
   async pauseOnboarding(mentorId: string, reason?: string): Promise<void> {
     try {
       const onboarding = await this.getOnboarding(mentorId);
-      if (!onboarding) throw createError("Onboarding not found", 404);
+      if (!onboarding) throw createError(ErrorCode.ONBOARDING_NOT_FOUND, 404);
 
       await pool.query(
         `UPDATE mentor_onboarding SET status = 'on_hold', metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pause_reason}', $1), updated_at = CURRENT_TIMESTAMP WHERE mentor_id = $2`,
@@ -536,8 +537,8 @@ export const MentorOnboardingService = {
   async resumeOnboarding(mentorId: string): Promise<void> {
     try {
       const onboarding = await this.getOnboarding(mentorId);
-      if (!onboarding) throw createError("Onboarding not found", 404);
-      if (onboarding.status !== 'on_hold') throw createError("Onboarding is not paused", 400);
+      if (!onboarding) throw createError(ErrorCode.ONBOARDING_NOT_FOUND, 404);
+      if (onboarding.status !== 'on_hold') throw createError(ErrorCode.ONBOARDING_NOT_PAUSED, 400);
 
       await pool.query(
         `UPDATE mentor_onboarding SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE mentor_id = $1`,

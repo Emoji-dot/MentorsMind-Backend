@@ -17,7 +17,7 @@
  * with callers that still use it directly.
  */
 
-import crypto from "crypto";
+import * as crypto from "crypto";
 import pool from "../config/database";
 import { logger } from "../utils/logger";
 import { dbQueryDurationMs } from "../config/metrics";
@@ -135,8 +135,8 @@ export function instrumentPool(): void {
   // the built-in event API doesn't expose duration.
   const originalQuery = pool.query.bind(pool);
 
-  // @ts-expect-error — we're augmenting the pool prototype at runtime
-  pool.query = async function instrumentedQuery(
+  // We're augmenting the pool prototype at runtime
+  (pool as any).query = async function instrumentedQuery(
     textOrConfig: any,
     valuesOrCallback?: any,
   ): Promise<any> {
