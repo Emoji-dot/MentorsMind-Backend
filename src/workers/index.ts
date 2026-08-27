@@ -58,3 +58,6 @@ export { recordingCleanupWorker } from './recordingCleanup.worker';
 export { analyticsRefreshWorker } from './analyticsRefresh.worker';
 export { insightGenerationWorker } from './insight-generation.worker';
 export { incidentHandlerWorker } from './incident-handler.worker';
+
+// Outbox pattern worker exports
+export { startOutboxWorker, stopOutboxWorker } from './outbox.worker';
