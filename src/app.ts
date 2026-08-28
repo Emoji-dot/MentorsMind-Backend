@@ -31,6 +31,11 @@ import {
 import { logger } from "./utils/logger";
 import { initializeI18n } from "./config/i18n.config";
 import { tenantMiddleware } from "./middleware/tenant.middleware";
+import {
+  memoryDashboardHandler,
+  memoryMonitorMiddleware,
+  startMemoryMonitoring,
+} from "./middleware/memory-monitor.middleware";
 
 const app: Application = express();
 const { apiVersion } = config.server;
@@ -49,6 +54,8 @@ app.use(blocklistMiddleware);
 app.use(securityMiddleware);
 app.use(corsMiddleware);
 app.use(requestLoggerMiddleware);
+app.use(memoryMonitorMiddleware());
+startMemoryMonitoring();
 
 // i18n middleware (after request logger, before other middleware)
 app.use(i18nMiddleware);
@@ -151,6 +158,12 @@ app.get(
   authenticate as any,
   requireAdmin as any,
   HealthController.getDetailed,
+);
+app.get(
+  "/admin/memory",
+  authenticate as any,
+  requireAdmin as any,
+  memoryDashboardHandler,
 );
 app.get("/health", (_req, res) => res.redirect("/health/ready"));
 
