@@ -15,6 +15,7 @@
 export enum ErrorCode {
   // ─── Authentication ─────────────────────────────────────────────────────────
   AUTH_UNAUTHORIZED = 'AUTH_UNAUTHORIZED',
+  AUTH_REQUIRED = 'AUTH_REQUIRED',
   AUTH_AUTHENTICATION_REQUIRED = 'AUTH_AUTHENTICATION_REQUIRED',
   AUTH_INVALID_CREDENTIALS = 'AUTH_INVALID_CREDENTIALS',
   AUTH_EMAIL_ALREADY_REGISTERED = 'AUTH_EMAIL_ALREADY_REGISTERED',
@@ -35,6 +36,7 @@ export enum ErrorCode {
 
   // ─── Authorization ──────────────────────────────────────────────────────────
   AUTHZ_FORBIDDEN = 'AUTHZ_FORBIDDEN',
+  AUTH_FORBIDDEN = 'AUTH_FORBIDDEN',
   AUTHZ_ACCESS_DENIED = 'AUTHZ_ACCESS_DENIED',
   AUTHZ_INSUFFICIENT_PERMISSIONS = 'AUTHZ_INSUFFICIENT_PERMISSIONS',
   AUTHZ_ADMIN_ONLY = 'AUTHZ_ADMIN_ONLY',
@@ -120,6 +122,7 @@ export enum ErrorCode {
   // ─── Validation ─────────────────────────────────────────────────────────────
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   VALIDATION_REQUIRED_FIELD = 'VALIDATION_REQUIRED_FIELD',
+  VALIDATION_MISSING_REQUIRED = 'VALIDATION_MISSING_REQUIRED',
   VALIDATION_INVALID_FORMAT = 'VALIDATION_INVALID_FORMAT',
   VALIDATION_OUT_OF_RANGE = 'VALIDATION_OUT_OF_RANGE',
   VALIDATION_PROGRESS_OUT_OF_RANGE = 'VALIDATION_PROGRESS_OUT_OF_RANGE',
@@ -148,6 +151,7 @@ export enum ErrorCode {
   NOT_FOUND = 'NOT_FOUND',
   CONFLICT = 'CONFLICT',
   INTERNAL_SERVER_ERROR = 'INTERNAL_SERVER_ERROR',
+  INTERNAL_ERROR = 'INTERNAL_ERROR',
   SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE',
   CIRCUIT_BREAKER_OPEN = 'CIRCUIT_BREAKER_OPEN',
   DATABASE_CONNECTION_FAILED = 'DATABASE_CONNECTION_FAILED',
@@ -172,6 +176,7 @@ export enum ErrorCode {
   LEARNING_PATH_UNPUBLISH_FAILED = 'LEARNING_PATH_UNPUBLISH_FAILED',
   LEARNING_PATH_NOT_ENROLLED = 'LEARNING_PATH_NOT_ENROLLED',
   LEARNING_PATH_NOT_COMPLETED = 'LEARNING_PATH_NOT_COMPLETED',
+  LEARNING_PATH_INVALID_STATUS = 'LEARNING_PATH_INVALID_STATUS',
   PATH_ID_REQUIRED = 'PATH_ID_REQUIRED',
   MILESTONE_ID_REQUIRED = 'MILESTONE_ID_REQUIRED',
 
@@ -329,6 +334,7 @@ function entry(code: ErrorCode, httpStatus: number, message: string): [ErrorCode
 export const ERROR_CATALOG = Object.fromEntries([
   // ─── Authentication ─────────────────────────────────────────────────────────
   entry(ErrorCode.AUTH_UNAUTHORIZED, 401, 'Unauthorized access'),
+  entry(ErrorCode.AUTH_REQUIRED, 401, 'Authentication required'),
   entry(ErrorCode.AUTH_AUTHENTICATION_REQUIRED, 401, 'Authentication required'),
   entry(ErrorCode.AUTH_INVALID_CREDENTIALS, 401, 'Invalid email or password'),
   entry(ErrorCode.AUTH_EMAIL_ALREADY_REGISTERED, 409, 'Email is already registered'),
@@ -349,6 +355,7 @@ export const ERROR_CATALOG = Object.fromEntries([
 
   // ─── Authorization ──────────────────────────────────────────────────────────
   entry(ErrorCode.AUTHZ_FORBIDDEN, 403, 'Access denied'),
+  entry(ErrorCode.AUTH_FORBIDDEN, 403, 'Access denied'),
   entry(ErrorCode.AUTHZ_ACCESS_DENIED, 403, 'You do not have access to this resource'),
   entry(ErrorCode.AUTHZ_INSUFFICIENT_PERMISSIONS, 403, "You don't have permission to perform this action"),
   entry(ErrorCode.AUTHZ_ADMIN_ONLY, 403, 'This action requires administrator privileges'),
@@ -434,6 +441,7 @@ export const ERROR_CATALOG = Object.fromEntries([
   // ─── Validation ─────────────────────────────────────────────────────────────
   entry(ErrorCode.VALIDATION_ERROR, 400, 'Validation failed'),
   entry(ErrorCode.VALIDATION_REQUIRED_FIELD, 400, '{{field}} is required'),
+  entry(ErrorCode.VALIDATION_MISSING_REQUIRED, 400, 'Required field is missing'),
   entry(ErrorCode.VALIDATION_INVALID_FORMAT, 400, '{{field}} has invalid format'),
   entry(ErrorCode.VALIDATION_OUT_OF_RANGE, 400, '{{field}} is out of range'),
   entry(ErrorCode.VALIDATION_PROGRESS_OUT_OF_RANGE, 400, 'Progress must be a number between 0 and 100'),
@@ -462,6 +470,7 @@ export const ERROR_CATALOG = Object.fromEntries([
   entry(ErrorCode.NOT_FOUND, 404, 'Resource not found'),
   entry(ErrorCode.CONFLICT, 409, 'Resource conflict'),
   entry(ErrorCode.INTERNAL_SERVER_ERROR, 500, 'Internal server error'),
+  entry(ErrorCode.INTERNAL_ERROR, 500, 'Internal error'),
   entry(ErrorCode.SERVICE_UNAVAILABLE, 503, 'Service temporarily unavailable'),
   entry(ErrorCode.CIRCUIT_BREAKER_OPEN, 503, 'Database circuit breaker is open'),
   entry(ErrorCode.DATABASE_CONNECTION_FAILED, 503, 'Database connection failed'),
@@ -486,6 +495,7 @@ export const ERROR_CATALOG = Object.fromEntries([
   entry(ErrorCode.LEARNING_PATH_UNPUBLISH_FAILED, 500, 'Failed to unpublish learning path'),
   entry(ErrorCode.LEARNING_PATH_NOT_ENROLLED, 403, 'Not enrolled in this learning path'),
   entry(ErrorCode.LEARNING_PATH_NOT_COMPLETED, 404, 'Learning path not completed or enrollment not found'),
+  entry(ErrorCode.LEARNING_PATH_INVALID_STATUS, 400, 'Invalid learning path status'),
   entry(ErrorCode.PATH_ID_REQUIRED, 400, 'Path ID is required'),
   entry(ErrorCode.MILESTONE_ID_REQUIRED, 400, 'Milestone ID is required'),
 

@@ -81,11 +81,12 @@ export class InvoiceController {
       }
 
       const downloadUrl = await InvoiceService.getDownloadUrl(invoiceId);
+      const downloadUrlStr = Array.isArray(downloadUrl) ? downloadUrl[0] : downloadUrl;
 
       res.json({
         success: true,
         data: {
-          downloadUrl,
+          downloadUrl: downloadUrlStr,
           expiresInSeconds: 3600,
           invoiceNumber: invoice.invoiceNumber,
         },

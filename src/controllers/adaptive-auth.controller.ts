@@ -3,7 +3,8 @@ import { logger } from "../utils/logger.utils";
 import { AdaptiveAuthService } from "../services/adaptive-auth.service";
 import { RiskEngineService } from "../services/risk-engine.service";
 import { BehavioralBiometricsService } from "../services/behavioral-biometrics.service";
-import { AuthenticatedRequest, AdaptiveAuthRequest } from "../middleware/adaptive-auth.middleware";
+import { AuthenticatedRequest } from "../middleware/auth.middleware";
+import { AdaptiveAuthRequest } from "../middleware/adaptive-auth.middleware";
 import pool from "../config/database";
 import { DateTime } from "luxon";
 
