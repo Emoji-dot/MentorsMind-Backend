@@ -269,6 +269,33 @@ export enum ErrorCode {
   SESSION_MILESTONE_ALREADY_LINKED = 'SESSION_MILESTONE_ALREADY_LINKED',
   SESSION_NOT_AUTHORIZED = 'SESSION_NOT_AUTHORIZED',
 
+  // ─── Session Templates ─────────────────────────────────────────────────────
+  SESSION_TEMPLATE_NOT_FOUND = 'SESSION_TEMPLATE_NOT_FOUND',
+  SESSION_TEMPLATE_UPDATE_FAILED = 'SESSION_TEMPLATE_UPDATE_FAILED',
+  SESSION_TEMPLATE_DELETE_FAILED = 'SESSION_TEMPLATE_DELETE_FAILED',
+  SESSION_TEMPLATE_HAS_USAGE = 'SESSION_TEMPLATE_HAS_USAGE',
+  SESSION_TEMPLATE_CREATION_FAILED = 'SESSION_TEMPLATE_CREATION_FAILED',
+  SESSION_TEMPLATE_CLONE_FAILED = 'SESSION_TEMPLATE_CLONE_FAILED',
+
+  // ─── Session Quality ───────────────────────────────────────────────────────
+  SESSION_QUALITY_ASSESSMENT_FAILED = 'SESSION_QUALITY_ASSESSMENT_FAILED',
+  SESSION_QUALITY_NOT_FOUND = 'SESSION_QUALITY_NOT_FOUND',
+  SESSION_QUALITY_INVALID_INPUT = 'SESSION_QUALITY_INVALID_INPUT',
+
+  // ─── Dispute Resolution ────────────────────────────────────────────────────
+  DISPUTE_EVIDENCE_UPLOAD_FAILED = 'DISPUTE_EVIDENCE_UPLOAD_FAILED',
+  DISPUTE_EVIDENCE_NOT_FOUND = 'DISPUTE_EVIDENCE_NOT_FOUND',
+  DISPUTE_MEDIATION_FAILED = 'DISPUTE_MEDIATION_FAILED',
+  DISPUTE_RESOLUTION_FAILED = 'DISPUTE_RESOLUTION_FAILED',
+  DISPUTE_ALREADY_RESOLVED = 'DISPUTE_ALREADY_RESOLVED',
+  DISPUTE_EVIDENCE_LIMIT_EXCEEDED = 'DISPUTE_EVIDENCE_LIMIT_EXCEEDED',
+
+  // ─── Internationalization ───────────────────────────────────────────────────
+  I18N_TRANSLATION_NOT_FOUND = 'I18N_TRANSLATION_NOT_FOUND',
+  I18N_LANGUAGE_NOT_SUPPORTED = 'I18N_LANGUAGE_NOT_SUPPORTED',
+  I18N_TRANSLATION_UPDATE_FAILED = 'I18N_TRANSLATION_UPDATE_FAILED',
+  I18N_RTL_SUPPORT_ERROR = 'I18N_RTL_SUPPORT_ERROR',
+
   // ─── Background Checks ──────────────────────────────────────────────────────
   BACKGROUND_CHECK_NOT_FOUND = 'BACKGROUND_CHECK_NOT_FOUND',
   BACKGROUND_CHECK_ALREADY_IN_PROGRESS = 'BACKGROUND_CHECK_ALREADY_IN_PROGRESS',
@@ -572,6 +599,33 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorCatalogEntry> = Object.fromEn
   entry(ErrorCode.SESSION_MILESTONE_LINK_MISSING, 404, 'Session is not linked to any milestone'),
   entry(ErrorCode.SESSION_MILESTONE_ALREADY_LINKED, 409, 'Session is already linked to a milestone'),
   entry(ErrorCode.SESSION_NOT_AUTHORIZED, 403, 'Not authorized for this session'),
+
+  // ─── Session Templates ─────────────────────────────────────────────────────
+  entry(ErrorCode.SESSION_TEMPLATE_NOT_FOUND, 404, 'Session template not found'),
+  entry(ErrorCode.SESSION_TEMPLATE_UPDATE_FAILED, 500, 'Failed to update session template'),
+  entry(ErrorCode.SESSION_TEMPLATE_DELETE_FAILED, 500, 'Failed to delete session template'),
+  entry(ErrorCode.SESSION_TEMPLATE_HAS_USAGE, 400, 'Cannot delete template with existing usage'),
+  entry(ErrorCode.SESSION_TEMPLATE_CREATION_FAILED, 500, 'Failed to create session template'),
+  entry(ErrorCode.SESSION_TEMPLATE_CLONE_FAILED, 500, 'Failed to clone session template'),
+
+  // ─── Session Quality ───────────────────────────────────────────────────────
+  entry(ErrorCode.SESSION_QUALITY_ASSESSMENT_FAILED, 500, 'Failed to assess session quality'),
+  entry(ErrorCode.SESSION_QUALITY_NOT_FOUND, 404, 'Session quality assessment not found'),
+  entry(ErrorCode.SESSION_QUALITY_INVALID_INPUT, 400, 'Invalid input for quality assessment'),
+
+  // ─── Dispute Resolution ────────────────────────────────────────────────────
+  entry(ErrorCode.DISPUTE_EVIDENCE_UPLOAD_FAILED, 500, 'Failed to upload dispute evidence'),
+  entry(ErrorCode.DISPUTE_EVIDENCE_NOT_FOUND, 404, 'Dispute evidence not found'),
+  entry(ErrorCode.DISPUTE_MEDIATION_FAILED, 500, 'Failed to initiate mediation'),
+  entry(ErrorCode.DISPUTE_RESOLUTION_FAILED, 500, 'Failed to resolve dispute'),
+  entry(ErrorCode.DISPUTE_ALREADY_RESOLVED, 409, 'Dispute has already been resolved'),
+  entry(ErrorCode.DISPUTE_EVIDENCE_LIMIT_EXCEEDED, 400, 'Evidence limit exceeded for this dispute'),
+
+  // ─── Internationalization ───────────────────────────────────────────────────
+  entry(ErrorCode.I18N_TRANSLATION_NOT_FOUND, 404, 'Translation not found'),
+  entry(ErrorCode.I18N_LANGUAGE_NOT_SUPPORTED, 400, 'Language not supported'),
+  entry(ErrorCode.I18N_TRANSLATION_UPDATE_FAILED, 500, 'Failed to update translation'),
+  entry(ErrorCode.I18N_RTL_SUPPORT_ERROR, 500, 'RTL language support error'),
 
   // ─── Background Checks ──────────────────────────────────────────────────────
   entry(ErrorCode.BACKGROUND_CHECK_NOT_FOUND, 404, 'Background check not found'),
