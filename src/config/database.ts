@@ -1,23 +1,10 @@
 import { trackAndLogQuery } from '../middleware/queryLogger';
-import { Pool, PoolClient, PoolConfig } from "pg";
+import { Pool, PoolClient } from "pg";
 import config from "./index";
 import { logger } from "../utils/logger";
+import { createSecurePoolConfig } from "../database/connection";
 
-export const poolConfig: PoolConfig = {
-  connectionString: config.db.url,
-  host: config.db.host,
-  port: config.db.port,
-  database: config.db.name,
-  user: config.db.user,
-  password: config.db.password,
-  max: config.db.poolMax,
-  min: config.db.poolMin,
-  idleTimeoutMillis: config.db.idleTimeoutMs,
-  connectionTimeoutMillis: config.db.connectionTimeoutMs,
-  statement_timeout: config.db.statementTimeoutMs,
-  query_timeout: config.db.statementTimeoutMs,
-  allowExitOnIdle: false,
-};
+export const poolConfig = createSecurePoolConfig(config.db);
 
 export const pool = new Pool(poolConfig);
 
