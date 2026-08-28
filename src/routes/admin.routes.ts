@@ -26,6 +26,7 @@ import { MentorQualityController } from "../controllers/mentor-quality.controlle
 import { TraceController } from "../controllers/trace.controller";
 import { EscrowController } from "../controllers/escrow.controller";
 import { BackgroundCheckController } from "../controllers/background-check.controller";
+import { WalletReconciliationController } from "../controllers/wallet-reconciliation.controller";
 import { getTraceSchema } from "../validators/schemas/trace.schemas";
 import {
   listAdminUsersSchema,
@@ -1795,3 +1796,30 @@ router.delete(
  *         description: List of active impersonation sessions
  */
 router.get("/impersonation", asyncHandler(AdminController.listActiveImpersonations));
+
+/**
+ * @swagger
+ * /admin/wallets/{id}/sync:
+ *   post:
+ *     summary: Reconcile a wallet's stored balances against the Stellar network
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema: { type: string }
+ *         description: Wallet ID (wallets.id)
+ *     responses:
+ *       200:
+ *         description: Reconciliation result with per-asset deltas
+ *       404:
+ *         description: Wallet not found
+ *       502:
+ *         description: Reconciliation failed (e.g. Horizon unreachable)
+ */
+router.post(
+  "/wallets/:id/sync",
+  asyncHandler(WalletReconciliationController.syncWallet),
+);
