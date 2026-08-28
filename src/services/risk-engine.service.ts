@@ -103,7 +103,7 @@ export const RiskEngineService = {
       const deviceData = await this.analyzeDevice(userId, deviceFingerprint, userAgent);
 
       // Behavioral analysis
-      const behavioralData = await this.analyzeBehavior(userId, context.email, ipAddress, context);
+      const behavioralData = await this.analyzeBehavior(userId, context.email, ipAddress, userAgent);
 
       // Historical analysis
       const historicalData = await this.analyzeHistorical(userId, context.email);
@@ -248,7 +248,7 @@ export const RiskEngineService = {
     userId: string | null, 
     email: string | undefined, 
     ipAddress: string,
-    context: any
+    userAgent: string
   ): Promise<RiskFactors['behavioral']> {
     const now = DateTime.now();
     const identifier = userId || email;
@@ -288,7 +288,6 @@ export const RiskEngineService = {
     const rapidSuccessiveLogins = parseInt(recentLogins.rows[0]?.count || '0') >= 3;
 
     // Check suspicious user agent
-    const userAgent = context.userAgent || '';
     const suspiciousUserAgent = SUSPICIOUS_USER_AGENTS.some(pattern => pattern.test(userAgent));
 
     return {

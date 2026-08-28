@@ -390,7 +390,9 @@ export const BehavioralBiometricsService = {
       const row = rows[0];
       return {
         userId: row.user_id,
-        baseline: JSON.parse(row.baseline_data),
+        baseline: typeof row.baseline_data === 'string'
+          ? JSON.parse(row.baseline_data)
+          : row.baseline_data,
         confidence: row.confidence,
         sampleCount: row.sample_count,
         lastUpdated: row.updated_at,

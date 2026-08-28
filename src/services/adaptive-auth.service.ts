@@ -370,7 +370,9 @@ export const AdaptiveAuthService = {
       if (rows.length === 0) return 0;
 
       const session = rows[0];
-      const factors = JSON.parse(session.authentication_factors || '[]');
+      const factors = typeof session.authentication_factors === 'string'
+        ? JSON.parse(session.authentication_factors)
+        : (session.authentication_factors || []);
       let strength = session.strength_score || 0;
 
       // Decay strength over time
@@ -422,8 +424,10 @@ export const AdaptiveAuthService = {
       }
 
       const session = rows[0];
-      const level = session.progressive_level || 1;
-      const completedFactors = JSON.parse(session.completed_factors || '[]');
+      const level = (session.progressive_level || 1) as 1 | 2 | 3 | 4 | 5;
+      const completedFactors = typeof session.completed_factors === 'string'
+        ? JSON.parse(session.completed_factors)
+        : (session.completed_factors || []);
       const strengthScore = session.strength_score || 0;
 
       return {
@@ -523,8 +527,12 @@ export const AdaptiveAuthService = {
       case 'mfa':
         const { MfaService } = await import('./mfa.service');
         try {
-          const isValid = await MfaService.verifyToken(userId, response.token);
-          return { success: isValid, reason: isValid ? 'MFA verified' : 'Invalid MFA token' };
+          const result = await MfaService.verifyChallenge({
+            userId,
+            method: 'totp',
+            payload: response.token
+          });
+          return { success: result.valid, reason: result.valid ? 'MFA verified' : result.error || 'Invalid MFA token' };
         } catch (error) {
           return { success: false, reason: 'MFA verification failed' };
         }
