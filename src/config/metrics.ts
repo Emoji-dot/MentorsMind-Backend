@@ -225,12 +225,10 @@ export const rateLimitExceededTotal = new Counter<string>({
   registers: [metricsRegistry],
 });
 
-// ─── API Versioning / Sunset ────────────────────────────────────────────────
-
-export const deprecatedApiCallsTotal = new Counter<string>({
-  name: "deprecated_api_calls_total",
-  help: "Total calls to deprecated API versions, partitioned by version — used to monitor migration progress",
-  labelNames: ["version"],
+export const stellarVerificationAttemptsTotal = new Counter<string>({
+  name: "stellar_verification_attempts_total",
+  help: "Total Stellar transaction verification attempts by outcome",
+  labelNames: ["outcome"],
   registers: [metricsRegistry],
 });
 

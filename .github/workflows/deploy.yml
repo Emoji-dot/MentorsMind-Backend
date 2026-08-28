@@ -45,6 +45,9 @@ jobs:
       - name: TypeScript type-check
         run: pnpm exec tsc -p tsconfig.build.json --noEmit
 
+      - name: API sunset gate (fail on past sunsetAt without active successor)
+        run: pnpm run sunset:check
+
       - name: Lint
         run: pnpm run lint
 

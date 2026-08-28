@@ -27,3 +27,5 @@ export { PayoutRequestModel } from './payout-request.model';
 export { WalletEventModel } from './wallet-event.model';
 export { TenantModel } from './tenant.model';
 export { EventStoreModel, DomainEvent, Snapshot } from './event.model';
+export { MfaDeviceModel } from './mfa-device.model';
+export { UserSessionModel } from './user-session.model';
