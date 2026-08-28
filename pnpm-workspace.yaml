@@ -6,8 +6,8 @@ allowBuilds:
   '@firebase/util': true
   '@scarf/scarf': true
   '@sentry-internal/node-cpu-profiler': true
-  cpu-features: set this to true or false
+  cpu-features: true
   'msgpackr-extract': true
   'protobufjs': true
   'sharp': true
-  ssh2: set this to true or false
+  ssh2: true
