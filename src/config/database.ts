@@ -55,6 +55,9 @@ export const db = {
   query: async (text: string, params?: any[]) => {
     return await trackAndLogQuery(pool, text, params || []);
   },
+  connect: async () => {
+    return await pool.connect();
+  },
 };
 
 // ─── Tenant-aware pool checkout ───────────────────────────────────────────────
