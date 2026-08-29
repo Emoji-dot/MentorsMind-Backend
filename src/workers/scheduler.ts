@@ -11,6 +11,7 @@ import { qualityScoreQueue } from "../queues/quality-score.queue";
 import { VerificationService } from "../services/verification.service";
 import { BackgroundCheckService } from "../services/background-check.service";
 import { EnrollmentService } from "../services/enrollment.service";
+import { WalletReconciliationService } from "../services/wallet-reconciliation.service";
 import { accountDeletionJob } from "../jobs/accountDeletion.job";
 import databaseMaintenanceJob from "../jobs/database-maintenance.job";
 import staleDataCleanupJob from "../jobs/stale-data-cleanup.job";
@@ -229,6 +230,19 @@ export async function startScheduler(): Promise<void> {
     {
       repeat: { pattern: "5 0 * * *" }, // cron: daily 00:05 UTC
       jobId: "streak-tracking-recurring",
+    },
+  );
+
+  // Nightly wallet reconciliation — daily at 03:00 UTC (issue #771).
+  // Reconciles every active wallet's PostgreSQL balances against the Stellar
+  // network, correcting drift and alerting admins to material XLM discrepancies.
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "wallet-reconciliation-scheduled",
+    { jobType: "wallet-reconciliation" },
+    {
+      repeat: { pattern: "0 3 * * *" }, // cron: daily 03:00 UTC
+      jobId: "wallet-reconciliation-recurring",
     },
   );
 
