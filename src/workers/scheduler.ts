@@ -8,6 +8,8 @@ import { recordingCleanupQueue } from "../queues/recordingCleanup.queue";
 import { analyticsRefreshQueue } from "../queues/analyticsRefresh.queue";
 import { insightGenerationQueue } from "../queues/insightGeneration.queue";
 import { qualityScoreQueue } from "../queues/quality-score.queue";
+import { onboardingNudgeQueue } from "../queues/onboarding-nudge.queue";
+import { taxReportingQueue } from "../queues/tax-reporting.queue";
 import { VerificationService } from "../services/verification.service";
 import { BackgroundCheckService } from "../services/background-check.service";
 import { EnrollmentService } from "../services/enrollment.service";
@@ -243,6 +245,36 @@ export async function startScheduler(): Promise<void> {
     {
       repeat: { pattern: "0 3 * * *" }, // cron: daily 03:00 UTC
       jobId: "wallet-reconciliation-recurring",
+    },
+  );
+
+  // Mentor onboarding nudge emails — every 3 hours (issue #981)
+  // Scans in-progress onboards and sends 24h / 72h / 7d nudge emails to mentors
+  // who have stalled mid-onboarding.
+  await addRepeatableJobIfNotExists(
+    onboardingNudgeQueue,
+    "onboarding-nudge-scheduled",
+    { jobType: "onboarding-nudge", triggeredAt: new Date().toISOString() },
+    {
+      repeat: { pattern: "0 */3 * * *" }, // cron: every 3 hours
+      jobId: "onboarding-nudge-recurring",
+    },
+  );
+
+  // Yearly tax report pre-generation — every January 15 at 06:00 UTC (issue #978)
+  // Regenerates jurisdiction-aware reports and structured exports for the
+  // previous tax year so they are ready for accounting software by tax season.
+  await addRepeatableJobIfNotExists(
+    taxReportingQueue,
+    "tax-reporting-scheduled",
+    {
+      jobType: "tax-reporting",
+      taxYear: new Date().getFullYear() - 1,
+      triggeredAt: new Date().toISOString(),
+    },
+    {
+      repeat: { pattern: "0 6 15 1 *" }, // cron: Jan 15, 06:00 UTC, yearly
+      jobId: "tax-reporting-recurring",
     },
   );
 
