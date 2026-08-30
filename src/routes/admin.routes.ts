@@ -516,6 +516,15 @@ router.get("/sessions", validate(listAdminSessionsSchema), asyncHandler(AdminCon
  */
 router.get("/payments", validate(listAdminPaymentsSchema), asyncHandler(AdminController.listPayments));
 
+/** GET /admin/payments/reconciliation — list Stripe/Stellar mismatch review queue */
+router.get("/payments/reconciliation", asyncHandler(AdminController.listPaymentReconciliations));
+
+/** PATCH /admin/payments/reconciliation/:id/review — update discrepancy review status */
+router.patch(
+  "/payments/reconciliation/:id/review",
+  asyncHandler(AdminController.reviewPaymentReconciliation),
+);
+
 /**
  * @swagger
  * /admin/disputes:
