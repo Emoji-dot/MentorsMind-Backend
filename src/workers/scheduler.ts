@@ -246,6 +246,19 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
+  // Nightly payment reconciliation — daily at 03:30 UTC. Detects mismatches
+  // where a booking has both Stripe and Stellar completion records or missing
+  // rail metadata, and surfaces them for admin review.
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "payment-reconciliation-scheduled",
+    { jobType: "payment-reconciliation" },
+    {
+      repeat: { pattern: "30 3 * * *" }, // cron: daily 03:30 UTC
+      jobId: "payment-reconciliation-recurring",
+    },
+  );
+
   logger.info(
     "Job scheduler started — weekly earnings, session reminders, escrow check, notification cleanup, daily maintenance, verification retry, audit log archival, key rotation, insight generation, leaderboard pre-computation, and streak tracking registered",
   );

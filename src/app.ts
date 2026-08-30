@@ -161,6 +161,7 @@ app.get("/health", (_req, res) => res.redirect("/health/ready"));
 // ─── DID Document ────────────────────────────────────────────────────────────
 import { CredentialsController } from "./controllers/credentials.controller";
 app.get("/.well-known/did.json", CredentialsController.getDidDocument);
+app.get("/did/credentials/:credentialId/status", CredentialsController.getCredentialStatus);
 
 // ─── Sunset Exemptions (admin, unversioned so it survives version sunsets) ───
 import sunsetExemptionsRouter from "./routes/admin/sunset-exemptions.routes";

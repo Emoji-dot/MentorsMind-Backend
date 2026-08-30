@@ -60,6 +60,8 @@ export interface PaymentRecord {
   asset_code: string | null;
   asset_issuer: string | null;
   asset_type: string | null;
+  payment_rail: string | null;
+  external_reference: string | null;
   stellar_tx_hash: string | null;
   from_address: string | null;
   to_address: string | null;
@@ -135,10 +137,11 @@ export const PaymentsService = {
       `INSERT INTO transactions
          (user_id, booking_id, type, status, amount, currency,
           asset_code, asset_issuer, asset_type,
+          payment_rail, external_reference,
           from_address, to_address, platform_fee, description,
           quote_id, quoted_rate, path_payment,
           initiated_at, created_at, updated_at)
-       VALUES ($1, $2, 'payment', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+       VALUES ($1, $2, 'payment', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                NOW(), NOW(), NOW())
        RETURNING *`,
       [
@@ -149,6 +152,8 @@ export const PaymentsService = {
         assetCode,
         assetIssuer,
         assetType,
+        null,
+        null,
         fromAddress ?? null,
         toAddress ?? null,
         platformFee,
@@ -338,7 +343,12 @@ export const PaymentsService = {
     await DatabaseService.withTransaction(async (client) => {
       const { rows } = await client.query<PaymentRecord>(
         `UPDATE transactions
-         SET status = 'completed', stellar_tx_hash = $2, completed_at = NOW(), updated_at = NOW()
+         SET status = 'completed',
+             payment_rail = 'stellar',
+             external_reference = $2,
+             stellar_tx_hash = $2,
+             completed_at = NOW(),
+             updated_at = NOW()
          WHERE id = $1
          RETURNING *`,
         [paymentId, stellarTxHash],
@@ -654,7 +664,12 @@ export const PaymentsService = {
     // 5. Update payment and booking
     const { rows: updatedRows } = await pool.query<PaymentRecord>(
       `UPDATE transactions
-       SET status = 'completed', stellar_tx_hash = $2, completed_at = NOW(), updated_at = NOW()
+       SET status = 'completed',
+           payment_rail = 'stellar',
+           external_reference = $2,
+           stellar_tx_hash = $2,
+           completed_at = NOW(),
+           updated_at = NOW()
        WHERE id = $1
        RETURNING *`,
       [payment.id, payload.transaction_hash],
