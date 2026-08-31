@@ -457,6 +457,57 @@ export const CertificationService = {
     }
   },
 
+  /**
+   * Get verified badges for a mentor
+   */
+  async getMentorBadges(mentorId: string): Promise<CertificationBadge[]> {
+    try {
+      const summary = await this.getMentorCertificationSummary(mentorId);
+      return summary.badges;
+    } catch (error) {
+      logger.error("Failed to get mentor badges", {
+        mentorId,
+        error: error instanceof Error ? error.message : error,
+      });
+      throw error;
+    }
+  },
+
+  /**
+   * Award/verify a certification badge directly to a mentor
+   */
+  async awardBadge(
+    mentorId: string,
+    certificationTypeId: string,
+    verifiedBy?: string,
+    score?: number
+  ): Promise<MentorCertification> {
+    try {
+      let cert = await this.getCertificationById(certificationTypeId);
+      if (!cert) {
+        // Try creating or finding existing certification
+        const existing = await this.getMentorCertifications(mentorId, true);
+        const match = existing.find(c => c.certificationTypeId === certificationTypeId);
+        if (match) {
+          return this.updateCertification(match.id, { status: 'verified', score }, verifiedBy);
+        }
+        cert = await this.createCertification({
+          mentorId,
+          certificationTypeId,
+          verificationMethod: 'manual',
+        });
+      }
+      return this.updateCertification(cert.id, { status: 'verified', score }, verifiedBy);
+    } catch (error) {
+      logger.error("Failed to award badge", {
+        mentorId,
+        certificationTypeId,
+        error: error instanceof Error ? error.message : error,
+      });
+      throw error;
+    }
+  },
+
   // Helper methods
   transformCertificationType(row: any): CertificationType {
     return {

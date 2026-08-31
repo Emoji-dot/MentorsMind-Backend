@@ -248,33 +248,16 @@ export async function startScheduler(): Promise<void> {
     },
   );
 
-  // Mentor onboarding nudge emails — every 3 hours (issue #981)
-  // Scans in-progress onboards and sends 24h / 72h / 7d nudge emails to mentors
-  // who have stalled mid-onboarding.
+  // Nightly payment reconciliation — daily at 03:30 UTC. Detects mismatches
+  // where a booking has both Stripe and Stellar completion records or missing
+  // rail metadata, and surfaces them for admin review.
   await addRepeatableJobIfNotExists(
-    onboardingNudgeQueue,
-    "onboarding-nudge-scheduled",
-    { jobType: "onboarding-nudge", triggeredAt: new Date().toISOString() },
+    maintenanceQueue,
+    "payment-reconciliation-scheduled",
+    { jobType: "payment-reconciliation" },
     {
-      repeat: { pattern: "0 */3 * * *" }, // cron: every 3 hours
-      jobId: "onboarding-nudge-recurring",
-    },
-  );
-
-  // Yearly tax report pre-generation — every January 15 at 06:00 UTC (issue #978)
-  // Regenerates jurisdiction-aware reports and structured exports for the
-  // previous tax year so they are ready for accounting software by tax season.
-  await addRepeatableJobIfNotExists(
-    taxReportingQueue,
-    "tax-reporting-scheduled",
-    {
-      jobType: "tax-reporting",
-      taxYear: new Date().getFullYear() - 1,
-      triggeredAt: new Date().toISOString(),
-    },
-    {
-      repeat: { pattern: "0 6 15 1 *" }, // cron: Jan 15, 06:00 UTC, yearly
-      jobId: "tax-reporting-recurring",
+      repeat: { pattern: "30 3 * * *" }, // cron: daily 03:30 UTC
+      jobId: "payment-reconciliation-recurring",
     },
   );
 
