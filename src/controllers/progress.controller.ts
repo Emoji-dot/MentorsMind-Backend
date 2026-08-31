@@ -10,6 +10,7 @@ import {
 } from "../models/learning-path.model";
 import { logger } from "../utils/logger.utils";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 import { z } from "zod";
 
 export const ProgressController = {
@@ -23,21 +24,21 @@ export const ProgressController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!enrollmentId) {
-        throw createError("Enrollment ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       // Verify user has access to this enrollment
       const enrollment = await EnrollmentModel.findById(enrollmentId);
       if (!enrollment) {
-        throw createError("Enrollment not found", 404);
+        throw createError(ErrorCode.ENROLLMENT_NOT_FOUND, 404);
       }
 
       if (enrollment.student_id !== userId) {
-        throw createError("Access denied", 403);
+        throw createError(ErrorCode.AUTH_FORBIDDEN, 403);
       }
 
       const progress = await ProgressTrackingService.getStudentProgress(enrollmentId);
@@ -66,11 +67,11 @@ export const ProgressController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!enrollmentId) {
-        throw createError("Enrollment ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       const validatedData = UpdateEnrollmentStatusSchema.parse(req.body);
@@ -78,16 +79,16 @@ export const ProgressController = {
       // Verify user has access to this enrollment
       const enrollment = await EnrollmentModel.findById(enrollmentId);
       if (!enrollment) {
-        throw createError("Enrollment not found", 404);
+        throw createError(ErrorCode.ENROLLMENT_NOT_FOUND, 404);
       }
 
       if (enrollment.student_id !== userId) {
-        throw createError("Access denied", 403);
+        throw createError(ErrorCode.AUTH_FORBIDDEN, 403);
       }
 
       const updatedEnrollment = await EnrollmentModel.updateStatus(enrollmentId, validatedData);
       if (!updatedEnrollment) {
-        throw createError("Failed to update enrollment status", 500);
+        throw createError(ErrorCode.INTERNAL_ERROR, 500);
       }
 
       logger.info("Enrollment status updated via API", {
@@ -132,11 +133,11 @@ export const ProgressController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!enrollmentId || !milestoneId) {
-        throw createError("Enrollment ID and Milestone ID are required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       const validatedData = CompleteMilestoneSchema.parse(req.body);
@@ -144,11 +145,11 @@ export const ProgressController = {
       // Verify user has access to this enrollment
       const enrollment = await EnrollmentModel.findById(enrollmentId);
       if (!enrollment) {
-        throw createError("Enrollment not found", 404);
+        throw createError(ErrorCode.ENROLLMENT_NOT_FOUND, 404);
       }
 
       if (enrollment.student_id !== userId) {
-        throw createError("Access denied", 403);
+        throw createError(ErrorCode.AUTH_FORBIDDEN, 403);
       }
 
       const completion = await MilestoneCompletionService.completeMilestone(
@@ -202,21 +203,21 @@ export const ProgressController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!enrollmentId) {
-        throw createError("Enrollment ID is required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       // Verify user has access to this enrollment
       const enrollment = await EnrollmentModel.findById(enrollmentId);
       if (!enrollment) {
-        throw createError("Enrollment not found", 404);
+        throw createError(ErrorCode.ENROLLMENT_NOT_FOUND, 404);
       }
 
       if (enrollment.student_id !== userId) {
-        throw createError("Access denied", 403);
+        throw createError(ErrorCode.AUTH_FORBIDDEN, 403);
       }
 
       const progress = await ProgressTrackingService.getStudentProgress(enrollmentId);
@@ -249,27 +250,27 @@ export const ProgressController = {
       const userId = req.user?.id;
 
       if (!userId) {
-        throw createError("Authentication required", 401);
+        throw createError(ErrorCode.AUTH_REQUIRED, 401);
       }
 
       if (!enrollmentId || !milestoneId) {
-        throw createError("Enrollment ID and Milestone ID are required", 400);
+        throw createError(ErrorCode.VALIDATION_MISSING_REQUIRED, 400);
       }
 
       const { progress, timeSpentMinutes } = req.body;
 
       if (typeof progress !== 'number' || progress < 0 || progress > 100) {
-        throw createError("Progress must be a number between 0 and 100", 400);
+        throw createError(ErrorCode.VALIDATION_INVALID_FORMAT, 400);
       }
 
       // Verify user has access to this enrollment
       const enrollment = await EnrollmentModel.findById(enrollmentId);
       if (!enrollment) {
-        throw createError("Enrollment not found", 404);
+        throw createError(ErrorCode.ENROLLMENT_NOT_FOUND, 404);
       }
 
       if (enrollment.student_id !== userId) {
-        throw createError("Access denied", 403);
+        throw createError(ErrorCode.AUTH_FORBIDDEN, 403);
       }
 
       await ProgressTrackingService.updateProgress(

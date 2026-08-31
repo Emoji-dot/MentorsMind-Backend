@@ -14,6 +14,8 @@ import {
   emitDisputeOpened,
   emitDisputeResolved,
 } from "./outbox.service";
+import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 
 export class DisputeService {
   static async openDispute(
@@ -32,7 +34,7 @@ export class DisputeService {
       sessionId,
     ]);
     const booking = bookingRows[0];
-    if (!booking) throw new Error("Session not found");
+    if (!booking) throw createError(ErrorCode.DISPUTE_SESSION_NOT_FOUND, 404);
 
     if (booking.escrow_id) {
       const { cancelEscrowRelease } = await import("../queues/escrow-release.queue");
@@ -53,7 +55,7 @@ export class DisputeService {
         [sessionId, filedById, respondentId, type, reason],
       );
       const created = insertResult.rows[0];
-      if (!created) throw new Error("Failed to create dispute");
+      if (!created) throw createError(ErrorCode.DISPUTE_CREATION_FAILED, 500);
 
       await client.query(
         `INSERT INTO audit_logs
@@ -98,10 +100,10 @@ export class DisputeService {
     userAgent: string | null = null
   ) {
     const dispute = await DisputeModel.findById(disputeId);
-    if (!dispute) throw new Error("Dispute not found");
+    if (!dispute) throw createError(ErrorCode.DISPUTE_NOT_FOUND, 404);
 
     if (dispute.filed_by_id !== userId && dispute.respondent_id !== userId && userRole !== "admin") {
-      throw new Error("Unauthorized: You are not a party to this dispute");
+      throw createError(ErrorCode.DISPUTE_UNAUTHORIZED, 403);
     }
 
     const evidence = await DisputeModel.addEvidence({
@@ -206,7 +208,7 @@ export class DisputeService {
     userAgent: string | null = null
   ): Promise<DisputeRecord> {
     const dispute = await DisputeModel.findById(disputeId);
-    if (!dispute) throw new Error("Dispute not found");
+    if (!dispute) throw createError(ErrorCode.DISPUTE_NOT_FOUND, 404);
 
     DisputeStateMachine.assertTransition(dispute.status, "mediation");
 
@@ -247,7 +249,7 @@ export class DisputeService {
     userAgent: string | null = null
   ): Promise<DisputeRecord> {
     const dispute = await DisputeModel.findById(disputeId);
-    if (!dispute) throw new Error("Dispute not found");
+    if (!dispute) throw createError(ErrorCode.DISPUTE_NOT_FOUND, 404);
 
     DisputeStateMachine.assertTransition(dispute.status, "resolved");
 
@@ -263,7 +265,7 @@ export class DisputeService {
     );
     const booking = rows[0];
     if (!booking?.escrow_id) {
-      throw new Error(`No escrow_id found for booking ${dispute.session_id}`);
+      throw createError(ErrorCode.DISPUTE_ESCROW_MISSING, 400);
     }
 
     // Execute escrow action + DB status update + outbox write atomically.
@@ -286,7 +288,7 @@ export class DisputeService {
       );
 
       if (!result.rows[0]) {
-        throw new Error("Failed to update dispute status");
+        throw createError(ErrorCode.DISPUTE_UPDATE_FAILED, 500);
       }
 
       // 3. Outbox event committed atomically with dispute status + escrow call.

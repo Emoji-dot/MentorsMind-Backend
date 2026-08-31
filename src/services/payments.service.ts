@@ -12,6 +12,7 @@ import {
   MAX_SLIPPAGE_PCT,
 } from "./assetExchange.service";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 import { logger } from "../utils/logger.utils";
 import { env } from "../config/env";
 import { SocketService } from "./socket.service";
@@ -59,6 +60,8 @@ export interface PaymentRecord {
   asset_code: string | null;
   asset_issuer: string | null;
   asset_type: string | null;
+  payment_rail: string | null;
+  external_reference: string | null;
   stellar_tx_hash: string | null;
   from_address: string | null;
   to_address: string | null;
@@ -103,10 +106,10 @@ export const PaymentsService = {
 
     // Validate booking exists and belongs to user
     const booking = await BookingModel.findById(bookingId);
-    if (!booking) throw createError("Booking not found", 404);
-    if (booking.mentee_id !== userId) throw createError("Access denied", 403);
+    if (!booking) throw createError(ErrorCode.PAYMENT_BOOKING_NOT_FOUND, 404);
+    if (booking.mentee_id !== userId) throw createError(ErrorCode.PAYMENT_ACCESS_DENIED, 403);
     if (booking.payment_status === "paid")
-      throw createError("Booking is already paid", 409);
+      throw createError(ErrorCode.PAYMENT_ALREADY_COMPLETED, 409);
 
     // Loyalty tier reduces the effective platform fee (issue #680)
     const discountBps = await LoyaltyService.getDiscountBps(userId);
@@ -115,7 +118,7 @@ export const PaymentsService = {
 
     // Resolve asset metadata
     const assetDef = SUPPORTED_ASSETS[currency.toUpperCase()];
-    if (!assetDef) throw createError(`Unsupported currency: ${currency}`, 400);
+    if (!assetDef) throw createError(ErrorCode.PAYMENT_UNSUPPORTED_CURRENCY, 400, { currency });
 
     const assetCode = assetDef.code === "XLM" ? null : assetDef.code;
     const assetIssuer = assetDef.issuer ?? null;
@@ -134,10 +137,11 @@ export const PaymentsService = {
       `INSERT INTO transactions
          (user_id, booking_id, type, status, amount, currency,
           asset_code, asset_issuer, asset_type,
+          payment_rail, external_reference,
           from_address, to_address, platform_fee, description,
           quote_id, quoted_rate, path_payment,
           initiated_at, created_at, updated_at)
-       VALUES ($1, $2, 'payment', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+       VALUES ($1, $2, 'payment', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                NOW(), NOW(), NOW())
        RETURNING *`,
       [
@@ -148,6 +152,8 @@ export const PaymentsService = {
         assetCode,
         assetIssuer,
         assetType,
+        null,
+        null,
         fromAddress ?? null,
         toAddress ?? null,
         platformFee,
@@ -337,7 +343,12 @@ export const PaymentsService = {
     await DatabaseService.withTransaction(async (client) => {
       const { rows } = await client.query<PaymentRecord>(
         `UPDATE transactions
-         SET status = 'completed', stellar_tx_hash = $2, completed_at = NOW(), updated_at = NOW()
+         SET status = 'completed',
+             payment_rail = 'stellar',
+             external_reference = $2,
+             stellar_tx_hash = $2,
+             completed_at = NOW(),
+             updated_at = NOW()
          WHERE id = $1
          RETURNING *`,
         [paymentId, stellarTxHash],
@@ -653,7 +664,12 @@ export const PaymentsService = {
     // 5. Update payment and booking
     const { rows: updatedRows } = await pool.query<PaymentRecord>(
       `UPDATE transactions
-       SET status = 'completed', stellar_tx_hash = $2, completed_at = NOW(), updated_at = NOW()
+       SET status = 'completed',
+           payment_rail = 'stellar',
+           external_reference = $2,
+           stellar_tx_hash = $2,
+           completed_at = NOW(),
+           updated_at = NOW()
        WHERE id = $1
        RETURNING *`,
       [payment.id, payload.transaction_hash],

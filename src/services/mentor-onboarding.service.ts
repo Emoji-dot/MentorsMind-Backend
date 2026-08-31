@@ -70,6 +70,31 @@ const WIZARD_KEY_TO_STEP_ALIAS: Record<string, string> = {
   practice_session: "first_session",
 };
 
+/** Map of step id → named `step_*` column used for per-step completion tracking. */
+const STEP_COLUMN_MAP: Record<string, string | string[]> = {
+  profile_setup: 'step_profile',
+  pricing_setup: ['step_rates', 'step_availability'],
+  identity_verification: 'step_verification',
+  first_session: 'step_first_session',
+};
+
+const ONBOARDING_COMPLETE_BADGE = {
+  type: 'mentor_onboarding_complete',
+  title: 'Mentor Onboarding Complete',
+  description: 'Completed the full mentor onboarding flow on MentorMinds.',
+  icon: 'graduation-cap',
+  color: '#6366f1',
+};
+
+/** Keyed enrichment of the raw row with the canonical five named steps. */
+const NAMED_STEPS = [
+  { key: 'step_profile', label: 'profile' },
+  { key: 'step_availability', label: 'availability' },
+  { key: 'step_rates', label: 'rates' },
+  { key: 'step_verification', label: 'verification' },
+  { key: 'step_first_session', label: 'first_session' },
+];
+
 export const MentorOnboardingService = {
   ONBOARDING_STEPS: [
     { id: 'profile_setup', title: 'Complete Profile', description: 'Add your bio, expertise, and photo', dependsOn: [] as string[] },
@@ -161,9 +186,15 @@ export const MentorOnboardingService = {
       const currentStep = stepsCompleted.length + 1;
       const isComplete = stepsCompleted.length === this.ONBOARDING_STEPS.length;
 
+      // Map a completed step to its named tracking column(s) (safe default).
+      const stepColumns = STEP_COLUMN_MAP[stepId];
+      const columns = Array.isArray(stepColumns) ? stepColumns : stepColumns ? [stepColumns] : [];
+      const stepSetSnippet = columns.length > 0 ? columns.map((c) => `${c} = TRUE`).join(", ") + "," : "";
+
       const { rows } = await pool.query(
         `UPDATE mentor_onboarding
-         SET steps_completed = $1, current_step = $2, status = $3, completed_at = $4, updated_at = CURRENT_TIMESTAMP
+         SET steps_completed = $1, current_step = $2, status = $3, completed_at = $4, ${stepSetSnippet}
+             updated_at = CURRENT_TIMESTAMP
          WHERE mentor_id = $5 RETURNING *`,
         [JSON.stringify(stepsCompleted), currentStep, isComplete ? 'completed' : 'in_progress', isComplete ? new Date() : null, mentorId],
       );
@@ -182,6 +213,7 @@ export const MentorOnboardingService = {
       if (isComplete) {
         await this.trackAnalytics(mentorId, 'wizard_complete', null);
         await this.initializeSuccessChecklist(mentorId);
+        await this.issueCompletionBadge(mentorId);
       }
 
       return this.transformOnboarding(rows[0]);
@@ -683,6 +715,13 @@ export const MentorOnboardingService = {
   },
 
   transformOnboarding(row: any): MentorOnboarding {
+    const steps = NAMED_STEPS.map(({ key, label }) => Boolean(row[key])).map(
+      (completed) => completed,
+    );
+    const namedSteps = Object.fromEntries(
+      NAMED_STEPS.map(({ key, label }) => [label, Boolean(row[key])]),
+    );
+
     return {
       id: row.id,
       mentorId: row.mentor_id,
@@ -692,9 +731,140 @@ export const MentorOnboardingService = {
       stepsCompleted: row.steps_completed || [],
       startedAt: row.started_at,
       completedAt: row.completed_at,
-      metadata: row.metadata || {},
+      metadata: {
+        ...(row.metadata || {}),
+        namedSteps,
+        nudge24hSent: Boolean(row.nudge_24h_sent),
+        nudge72hSent: Boolean(row.nudge_72h_sent),
+        nudge7dSent: Boolean(row.nudge_7d_sent),
+        badgeIssuedAt: row.badge_issued_at ?? null,
+      },
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  },
+
+  /**
+   * Issue the onboarding-completion badge for a mentor (idempotent).
+   * Called automatically when the final onboarding step is completed.
+   */
+  async issueCompletionBadge(mentorId: string): Promise<boolean> {
+    try {
+      await pool.query(
+        `UPDATE mentor_onboarding
+         SET badge_issued_at = NOW(), updated_at = NOW()
+         WHERE mentor_id = $1`,
+        [mentorId],
+      );
+      const { rowCount } = await pool.query(
+        `INSERT INTO mentor_badges (mentor_id, badge_type, title, description, icon, color)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (mentor_id, badge_type) DO NOTHING`,
+        [
+          mentorId,
+          ONBOARDING_COMPLETE_BADGE.type,
+          ONBOARDING_COMPLETE_BADGE.title,
+          ONBOARDING_COMPLETE_BADGE.description,
+          ONBOARDING_COMPLETE_BADGE.icon,
+          ONBOARDING_COMPLETE_BADGE.color,
+        ],
+      );
+      logger.info("Onboarding completion badge issued", { mentorId });
+      return (rowCount ?? 0) > 0;
+    } catch (error) {
+      logger.error("Failed to issue onboarding badge", {
+        mentorId,
+        error: error instanceof Error ? error.message : error,
+      });
+      return false;
+    }
+  },
+
+  /**
+   * List badges a mentor has earned (onboarding completion first).
+   */
+  async getBadges(mentorId: string): Promise<any[]> {
+    try {
+      const { rows } = await pool.query(
+        `SELECT badge_type, title, description, icon, color, issued_at
+         FROM mentor_badges
+         WHERE mentor_id = $1
+         ORDER BY issued_at DESC`,
+        [mentorId],
+      );
+      return rows;
+    } catch (error) {
+      logger.error("Failed to get mentor badges", {
+        mentorId,
+        error: error instanceof Error ? error.message : error,
+      });
+      return [];
+    }
+  },
+
+  /**
+   * Queue a nudge email for mentors who are mid-onboarding.
+   * Delegates to the onboarding-nudge worker via enqueue. Enqueues the
+   * recurring job onto its dedicated queue (idempotent at job level).
+   */
+  async triggerNudgeScan(): Promise<void> {
+    const { onboardingNudgeQueue } = await import("../queues/onboarding-nudge.queue");
+    await onboardingNudgeQueue.add(
+      "onboarding-nudge-scan",
+      { jobType: "onboarding-nudge", triggeredAt: new Date().toISOString() },
+      { removeOnComplete: { count: 50 } },
+    );
+  },
+
+  /**
+   * Admin funnel analytics — drop-off points across the named onboarding steps.
+   * Reports how many mentors completed each named step out of all who started.
+   */
+  async getAdminFunnelAnalytics(): Promise<any> {
+    try {
+      const [startedRes, completeRes, namedRes] = await Promise.all([
+        pool.query(
+          `SELECT COUNT(*)::INTEGER AS total FROM mentor_onboarding WHERE status != 'not_started'`,
+        ),
+        pool.query(
+          `SELECT COUNT(*)::INTEGER AS completed FROM mentor_onboarding WHERE status = 'completed'`,
+        ),
+        pool.query(
+          `SELECT
+             COUNT(*) FILTER (WHERE step_profile)       AS profile,
+             COUNT(*) FILTER (WHERE step_availability)  AS availability,
+             COUNT(*) FILTER (WHERE step_rates)         AS rates,
+             COUNT(*) FILTER (WHERE step_verification)  AS verification,
+             COUNT(*) FILTER (WHERE step_first_session) AS first_session
+           FROM mentor_onboarding WHERE status != 'not_started'`,
+        ),
+      ]);
+
+      const total = startedRes.rows[0]?.total ?? 0;
+      const completed = completeRes.rows[0]?.completed ?? 0;
+      const named = namedRes.rows[0] ?? {};
+
+      const funnel = NAMED_STEPS.map(({ key, label }) => {
+        const count = named[label] ?? 0;
+        return {
+          step: label,
+          completed: count,
+          dropOff: total - count,
+          completionRate: total > 0 ? Math.round((count / total) * 1000) / 10 : 0,
+        };
+      });
+
+      return {
+        started: total,
+        completed,
+        overallCompletionRate: total > 0 ? Math.round((completed / total) * 1000) / 10 : 0,
+        funnel,
+      };
+    } catch (error) {
+      logger.error("Failed to get onboarding funnel analytics", {
+        error: error instanceof Error ? error.message : error,
+      });
+      return { started: 0, completed: 0, overallCompletionRate: 0, funnel: [] };
+    }
   },
 };

@@ -149,6 +149,10 @@ router.get("/google", asyncHandler(OAuthController.googleAuth));
 router.get("/google/callback", asyncHandler(OAuthController.googleCallback));
 router.get("/github", asyncHandler(OAuthController.githubAuth));
 router.get("/github/callback", asyncHandler(OAuthController.githubCallback));
+router.get("/linkedin", asyncHandler(OAuthController.linkedinAuth));
+router.get("/linkedin/callback", asyncHandler(OAuthController.linkedinCallback));
+router.get("/microsoft", asyncHandler(OAuthController.microsoftAuth));
+router.get("/microsoft/callback", asyncHandler(OAuthController.microsoftCallback));
 router.get(
   "/oauth/providers",
   authenticate,
@@ -163,5 +167,43 @@ router.delete(
 
 // JWKS endpoint
 router.get("/jwks", asyncHandler(JwksController.getJwks));
+
+// ── WebAuthn / Passkey routes ─────────────────────────────────────────────
+
+// Registration flow (authenticated user adding a new passkey)
+router.post(
+  "/passkey/register/begin",
+  authenticate,
+  asyncHandler(AuthController.passkeyRegisterBegin),
+);
+router.post(
+  "/passkey/register/complete",
+  authenticate,
+  asyncHandler(AuthController.passkeyRegisterComplete),
+);
+
+// Authentication flow (public — rate limited to prevent abuse)
+router.post(
+  "/passkey/auth/begin",
+  authLimiter,
+  asyncHandler(AuthController.passkeyAuthBegin),
+);
+router.post(
+  "/passkey/auth/complete",
+  authLimiter,
+  asyncHandler(AuthController.passkeyAuthComplete),
+);
+
+// Device management (authenticated)
+router.get(
+  "/passkey/devices",
+  authenticate,
+  asyncHandler(AuthController.listPasskeyDevices),
+);
+router.delete(
+  "/passkey/devices/:id",
+  authenticate,
+  asyncHandler(AuthController.removePasskeyDevice),
+);
 
 export default router;
