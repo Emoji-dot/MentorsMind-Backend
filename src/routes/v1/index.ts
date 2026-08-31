@@ -54,6 +54,8 @@ import searchRoutes from "../search.routes";
 import nlpSearchRoutes from "../nlp-search.routes";
 import errorsRoutes from "../errors.routes";
 import developerRoutes from "../developer.routes";
+import taxRoutes from "../tax.routes";
+import emailWebhookRoutes from "../emailWebhook.routes";
 
 import { BookingsService } from "../../services/bookings.service";
 import { logger } from "../../utils/logger";
@@ -153,7 +155,16 @@ router.use("/errors", errorsRoutes);
 // Developer API key management (issue #838)
 router.use("/developer", developerRoutes);
 
+// Tax reporting export (issue #978) — /api/v1/tax
+router.use("/tax", taxRoutes);
+
+// Inbound provider webhooks (issue #979) — unauthenticated, signature-verified
+router.use("/webhooks/email", emailWebhookRoutes);
+
 // Verifiable Credentials (DID / W3C VC)
 router.use("/credentials", credentialsRoutes);
+
+// Gamification & Achievement System
+router.use("/gamification", gamificationRoutes);
 
 export default router;

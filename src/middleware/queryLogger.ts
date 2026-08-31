@@ -127,7 +127,7 @@ let poolInstrumented = false;
  * Safe to call multiple times — will instrument only once.
  */
 export function instrumentPool(): void {
-  if (poolInstrumented) return;
+  if (poolInstrumented || !pool?.query) return;
   poolInstrumented = true;
 
   // pg Pool fires `query` event for every query submitted through the pool.
@@ -135,8 +135,8 @@ export function instrumentPool(): void {
   // the built-in event API doesn't expose duration.
   const originalQuery = pool.query.bind(pool);
 
-  // We're augmenting the pool prototype at runtime
-  (pool as any).query = async function instrumentedQuery(
+  // @ts-ignore — we're augmenting the pool prototype at runtime
+  pool.query = async function instrumentedQuery(
     textOrConfig: any,
     valuesOrCallback?: any,
   ): Promise<any> {

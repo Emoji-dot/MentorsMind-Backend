@@ -8,6 +8,8 @@ import { recordingCleanupQueue } from "../queues/recordingCleanup.queue";
 import { analyticsRefreshQueue } from "../queues/analyticsRefresh.queue";
 import { insightGenerationQueue } from "../queues/insightGeneration.queue";
 import { qualityScoreQueue } from "../queues/quality-score.queue";
+import { onboardingNudgeQueue } from "../queues/onboarding-nudge.queue";
+import { taxReportingQueue } from "../queues/tax-reporting.queue";
 import { VerificationService } from "../services/verification.service";
 import { BackgroundCheckService } from "../services/background-check.service";
 import { EnrollmentService } from "../services/enrollment.service";
@@ -243,6 +245,19 @@ export async function startScheduler(): Promise<void> {
     {
       repeat: { pattern: "0 3 * * *" }, // cron: daily 03:00 UTC
       jobId: "wallet-reconciliation-recurring",
+    },
+  );
+
+  // Nightly payment reconciliation — daily at 03:30 UTC. Detects mismatches
+  // where a booking has both Stripe and Stellar completion records or missing
+  // rail metadata, and surfaces them for admin review.
+  await addRepeatableJobIfNotExists(
+    maintenanceQueue,
+    "payment-reconciliation-scheduled",
+    { jobType: "payment-reconciliation" },
+    {
+      repeat: { pattern: "30 3 * * *" }, // cron: daily 03:30 UTC
+      jobId: "payment-reconciliation-recurring",
     },
   );
 

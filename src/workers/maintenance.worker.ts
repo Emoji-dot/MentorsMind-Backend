@@ -8,6 +8,7 @@ import recommendationStatsJob from "../jobs/recommendationStats.job";
 import { runLeaderboardPrecompute } from "../jobs/leaderboardPrecompute.job";
 import { runStreakTracking } from "../jobs/streakTracking.job";
 import { WalletReconciliationService } from "../services/wallet-reconciliation.service";
+import { PaymentReconciliationService } from "../services/payment-reconciliation.service";
 import { logger } from "../utils/logger.utils";
 
 async function processMaintenanceJob(job: Job): Promise<void> {
@@ -66,6 +67,11 @@ async function processMaintenanceJob(job: Job): Promise<void> {
     return;
   }
 
+  if (job.name === "payment-reconciliation-scheduled") {
+    await handlePaymentReconciliation(job);
+    return;
+  }
+
   logger.info("[MaintenanceWorker] Running maintenance tasks", { jobId: job.id });
   await runMaintenanceTasks();
 }
@@ -76,6 +82,14 @@ async function handleWalletReconciliation(job: Job): Promise<void> {
   });
   const result = await WalletReconciliationService.reconcileAll();
   logger.info("[MaintenanceWorker] Wallet reconciliation sweep complete", result);
+}
+
+async function handlePaymentReconciliation(job: Job): Promise<void> {
+  logger.info("[MaintenanceWorker] Running payment reconciliation sweep", {
+    jobId: job.id,
+  });
+  const result = await PaymentReconciliationService.runNightlyReconciliation();
+  logger.info("[MaintenanceWorker] Payment reconciliation sweep complete", result);
 }
 
 export const maintenanceWorker = new Worker(

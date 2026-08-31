@@ -96,7 +96,6 @@ export const dbQueryDurationSeconds = new Histogram<string>({
   registers: [metricsRegistry],
 });
 
-// Alias for backward compatibility
 export const dbQueryDurationMs = dbQueryDurationSeconds;
 
 export const dbPoolTotalConnections = new Gauge<string>({
