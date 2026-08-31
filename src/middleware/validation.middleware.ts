@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodSchema, ZodError } from 'zod';
+import { validationResult } from 'express-validator';
 import { ResponseUtil } from '../utils/response.utils';
 import { ValidationError } from '../types/api.types';
 import { logger } from '../utils/logger.utils';
@@ -87,4 +88,19 @@ export const validateParams = (schema: ZodSchema) => {
       handleValidationError(error, req, res, next);
     }
   };
+};
+
+export const validationMiddleware = (req: Request, res: Response, next: NextFunction): void => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    res.status(400).json({
+      success: false,
+      errors: errors.array().map(err => ({
+        field: (err as any).path || (err as any).param,
+        message: err.msg,
+      }))
+    });
+    return;
+  }
+  next();
 };

@@ -1,0 +1,13 @@
+# =============================================================================
+# Railway Deployment Configuration — MentorsMind
+# Docs: https://docs.railway.app/reference/config-as-code
+# =============================================================================
+
+[project]
+# Railway Project ID
+id = "6e4d396f-3dd2-437f-9dea-f7d4bd113824"
+
+[build]
+# Use the existing multi-stage Dockerfile (builder → runner)
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"

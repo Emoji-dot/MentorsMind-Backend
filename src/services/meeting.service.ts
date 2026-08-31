@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import jwt from 'jsonwebtoken';
 import meetingConfig, { MeetingProvider } from '../config/meeting.config';
 import { calculateMeetingExpiry, generateJitsiRoomName } from '../utils/meeting.utils';
 import { logger } from '../utils/logger';
@@ -16,6 +17,21 @@ export interface MeetingRoomResult {
   roomId: string;
   expiresAt: Date;
   provider: MeetingProvider;
+}
+
+/**
+ * Result of a token generation request.
+ *
+ * When the provider requires a token, `token` holds the signed credential
+ * string and `tokenExpiry` is the UTC timestamp (seconds) at which it expires.
+ *
+ * When the provider does not use tokens, `token` is `null` and `reason`
+ * explains why (currently always `'not_required'`).
+ */
+export interface GenerateTokenResult {
+  token: string | null;
+  tokenExpiry: number | null;
+  reason?: string;
 }
 
 interface DailyRoomResponse {
@@ -39,6 +55,10 @@ interface ZoomMeetingResponse {
   id: string;
   join_url: string;
   start_url: string;
+}
+
+interface WherebyHostTokenResponse {
+  token: string;
 }
 
 /**
@@ -166,25 +186,190 @@ async function createJitsiRoom(
 /**
  * Generate Daily.co participant token
  */
-async function generateDailyToken(roomName: string, participantName: string): Promise<string> {
-  const response = await axios.post(
-    `${meetingConfig.baseUrl}/meeting-tokens`,
-    {
-      properties: {
-        room_name: roomName,
-        user_name: participantName,
-        is_owner: false,
+async function generateDailyToken(
+  roomName: string,
+  participantName: string
+): Promise<GenerateTokenResult> {
+  const apiKey = meetingConfig.apiKey;
+  
+  if (!apiKey) {
+    throw new Error('Daily.co API key is not configured. Set MEETING_API_KEY.');
+  }
+
+  // Token valid for 2 hours by default
+  const tokenExpiry = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
+
+  try {
+    const response = await axios.post(
+      `${meetingConfig.baseUrl}/meeting-tokens`,
+      {
+        properties: {
+          room_name: roomName,
+          user_name: participantName,
+          is_owner: false,
+          exp: tokenExpiry,
+        },
       },
-    },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    const token = response.data?.token;
+    
+    if (!token || typeof token !== 'string' || token.trim() === '') {
+      throw new Error('Daily.co API returned empty or invalid token');
+    }
+
+    logger.info(`Generated Daily.co token for ${participantName} in room ${roomName}`);
+    
+    return {
+      token: token.trim(),
+      tokenExpiry,
+    };
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const message = error.response?.data?.info || error.message;
+      throw new Error(`Daily.co token generation failed (${status}): ${message}`);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Generate Zoom Video SDK JWT token.
+ *
+ * The Zoom Video SDK requires a short-lived JWT with the following claims:
+ *   app_key      — Zoom Video SDK key (ZOOM_SDK_KEY)
+ *   tpc          — topic / room name
+ *   role_type    — 0 = participant, 1 = host
+ *   user_identity — display name of the participant
+ *   nb           — not-before (now)
+ *   exp          — expiry (now + TTL)
+ *
+ * Reference: https://developers.zoom.us/docs/video-sdk/auth/
+ */
+function generateZoomToken(
+  roomId: string,
+  participantName: string,
+  roleType: 0 | 1 = 0
+): GenerateTokenResult {
+  const sdkKey = meetingConfig.zoomSdkKey;
+  const sdkSecret = meetingConfig.zoomSdkSecret;
+
+  if (!sdkKey || !sdkSecret) {
+    throw new Error(
+      'Zoom Video SDK credentials are not configured. Set ZOOM_SDK_KEY and ZOOM_SDK_SECRET.'
+    );
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const ttl = 2 * 60 * 60; // 2 hours
+  const exp = now + ttl;
+
+  const payload = {
+    app_key: sdkKey,
+    tpc: roomId,
+    role_type: roleType,
+    user_identity: participantName,
+    nb: now,
+    exp,
+  };
+
+  const token = jwt.sign(payload, sdkSecret, { algorithm: 'HS256' });
+
+  return { token, tokenExpiry: exp };
+}
+
+/**
+ * Generate a Whereby host token via the Whereby REST API.
+ *
+ * The Whereby REST API issues short-lived host tokens that grant host
+ * privileges inside a specific room. The token is valid for the duration
+ * of the meeting plus a configurable buffer.
+ *
+ * Reference: https://docs.whereby.com/reference/whereby-rest-api-reference#meetings-roomname-host
+ */
+async function generateWherebyHostToken(
+  roomName: string
+): Promise<GenerateTokenResult> {
+  const apiKey = meetingConfig.wherebyApiKey || meetingConfig.apiKey;
+
+  if (!apiKey) {
+    throw new Error(
+      'Whereby API key is not configured. Set WHEREBY_API_KEY (or MEETING_API_KEY).'
+    );
+  }
+
+  // TTL matches room expiry setting
+  const ttlMinutes = meetingConfig.roomExpiryMinutes || 30;
+  const expiryDate = new Date(Date.now() + ttlMinutes * 60 * 1000);
+
+  const response = await axios.post<WherebyHostTokenResponse>(
+    `${meetingConfig.baseUrl}/meetings/${encodeURIComponent(roomName)}/host`,
+    { endDate: expiryDate.toISOString() },
     {
       headers: {
-        Authorization: `Bearer ${meetingConfig.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
     }
   );
 
-  return response.data.token;
+  const tokenExpiry = Math.floor(expiryDate.getTime() / 1000);
+  return { token: response.data.token, tokenExpiry };
+}
+
+/**
+ * Generate a Jitsi JWT token.
+ *
+ * When JITSI_JWT_SECRET is set, Jitsi can be configured to require JWT
+ * authentication. The JWT carries the room, user identity, and optional
+ * moderator flag as claims.
+ *
+ * If JITSI_JWT_SECRET is not configured, Jitsi operates in open (no-auth)
+ * mode and no token is needed — this returns { token: null, reason: 'not_required' }.
+ *
+ * Reference: https://github.com/jitsi/lib-jitsi-meet/blob/master/doc/tokens.md
+ */
+function generateJitsiToken(
+  roomId: string,
+  participantName: string,
+  isModerator: boolean = false
+): GenerateTokenResult {
+  const jwtSecret = meetingConfig.jitsiJwtSecret;
+
+  if (!jwtSecret) {
+    // No secret configured — Jitsi is in open/anonymous mode
+    return { token: null, tokenExpiry: null, reason: 'not_required' };
+  }
+
+  const appId = meetingConfig.jitsiAppId || 'mentorminds';
+  const now = Math.floor(Date.now() / 1000);
+  const ttl = 2 * 60 * 60; // 2 hours
+  const exp = now + ttl;
+
+  const payload = {
+    iss: appId,
+    sub: appId,
+    aud: appId,
+    iat: now,
+    exp,
+    room: roomId,
+    context: {
+      user: {
+        name: participantName,
+        moderator: isModerator,
+      },
+    },
+  };
+
+  const token = jwt.sign(payload, jwtSecret, { algorithm: 'HS256' });
+  return { token, tokenExpiry: exp };
 }
 
 /**
@@ -234,7 +419,7 @@ export const MeetingService = {
    */
   async createMeetingRoom(options: MeetingRoomOptions): Promise<MeetingRoomResult> {
     const { sessionId, scheduledAt, durationMinutes } = options;
-    
+
     // Calculate expiry time (30 minutes after session end by default)
     const expiresAt = calculateMeetingExpiry(scheduledAt, durationMinutes);
 
@@ -293,21 +478,33 @@ export const MeetingService = {
   },
 
   /**
-   * Generate participant token for provider-specific authentication
+   * Generate a participant token for provider-specific SDK authentication.
+   *
+   * Returns a `GenerateTokenResult` with:
+   *   - `token`       — signed credential string, or `null` if not needed
+   *   - `tokenExpiry` — Unix timestamp (seconds) when the token expires, or `null`
+   *   - `reason`      — present when `token` is `null` (e.g. `'not_required'`)
+   *
+   * Providers:
+   *   - Daily.co  → API-issued meeting token (HTTP call to /meeting-tokens)
+   *   - Zoom      → Video SDK JWT signed with ZOOM_SDK_KEY / ZOOM_SDK_SECRET
+   *   - Whereby   → API-issued host token  (HTTP call to /meetings/:room/host)
+   *   - Jitsi     → JWT signed with JITSI_JWT_SECRET (or null if unconfigured)
    */
-  async generateToken(roomId: string, participantName: string): Promise<string> {
+  async generateToken(roomId: string, participantName: string): Promise<GenerateTokenResult> {
     switch (meetingConfig.provider) {
       case MeetingProvider.DAILY:
         return await generateDailyToken(roomId, participantName);
-      case MeetingProvider.WHEREBY:
-        // Whereby doesn't use tokens - return empty string
-        return '';
+
       case MeetingProvider.ZOOM:
-        // Zoom uses JWT tokens but they're generated differently
-        return '';
+        return generateZoomToken(roomId, participantName);
+
+      case MeetingProvider.WHEREBY:
+        return await generateWherebyHostToken(roomId);
+
       case MeetingProvider.JITSI:
-        // Jitsi doesn't require tokens for basic usage
-        return '';
+        return generateJitsiToken(roomId, participantName);
+
       default:
         throw new Error(`Token generation not supported for provider: ${meetingConfig.provider}`);
     }

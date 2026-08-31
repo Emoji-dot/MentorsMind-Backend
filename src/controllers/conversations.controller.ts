@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../types/api.types';
 import { MessagingService } from '../services/messaging.service';
 import { AttachmentService } from '../services/attachment.service';
 import { ResponseUtil } from '../utils/response.utils';
+import { PaginationUtil } from '../utils/pagination.utils';
 
 export const ConversationsController = {
   /**
@@ -28,7 +29,7 @@ export const ConversationsController = {
     if (!conversation) {
       ResponseUtil.forbidden(
         res,
-        'Messaging is only available between users who share at least one booking',
+        'Messaging is only available between users who share at least one confirmed booking',
       );
       return;
     }
@@ -52,9 +53,17 @@ export const ConversationsController = {
    */
   async getMessages(req: AuthenticatedRequest, res: Response): Promise<void> {
     const userId = req.user!.id;
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
     const limit = Math.min(100, parseInt(req.query.limit as string) || 50);
     const cursor = req.query.cursor as string | undefined;
+
+    if (cursor) {
+      const decoded = PaginationUtil.decodeCursor(cursor);
+      if (!decoded) {
+        ResponseUtil.error(res, 'Invalid cursor format', 400);
+        return;
+      }
+    }
 
     const result = await MessagingService.getMessages(id, userId, limit, cursor);
 
@@ -75,7 +84,7 @@ export const ConversationsController = {
    */
   async sendMessage(req: AuthenticatedRequest, res: Response): Promise<void> {
     const userId = req.user!.id;
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
     const { body } = req.body;
 
     if (!body || !String(body).trim()) {
@@ -99,7 +108,7 @@ export const ConversationsController = {
    */
   async deleteMessage(req: AuthenticatedRequest, res: Response): Promise<void> {
     const userId = req.user!.id;
-    const { id, msgId } = req.params;
+    const { id, msgId } = req.params as Record<string, string>;
 
     const deleted = await MessagingService.deleteMessage(id, msgId, userId);
 
@@ -119,7 +128,7 @@ export const ConversationsController = {
    */
   async markRead(req: AuthenticatedRequest, res: Response): Promise<void> {
     const userId = req.user!.id;
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
 
     const conv = await MessagingService.getConversation(id, userId);
     if (!conv) {
@@ -129,6 +138,30 @@ export const ConversationsController = {
 
     const count = await MessagingService.markAsRead(id, userId);
     ResponseUtil.success(res, { markedRead: count }, 'Messages marked as read');
+  }
+
+  /**
+   * POST /api/v1/conversations/:id/messages/read
+   * Batch mark specific messages as read.
+   */
+  async batchMarkAsRead(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const userId = req.user!.id;
+    const { id } = req.params as Record<string, string>;
+    const { messageIds } = req.body;
+
+    if (!Array.isArray(messageIds) || messageIds.length === 0) {
+      ResponseUtil.error(res, 'messageIds must be a non-empty array', 400);
+      return;
+    }
+
+    const conv = await MessagingService.getConversation(id, userId);
+    if (!conv) {
+      ResponseUtil.notFound(res, 'Conversation not found');
+      return;
+    }
+
+    const count = await MessagingService.batchMarkAsRead(id, userId, messageIds);
+    ResponseUtil.success(res, { markedRead: count }, 'Messages marked as read');
   },
 
   /**
@@ -137,7 +170,7 @@ export const ConversationsController = {
    */
   async uploadAttachment(req: AuthenticatedRequest, res: Response): Promise<void> {
     const userId = req.user!.id;
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
 
     const file = (req as any).file;
     if (!file) {

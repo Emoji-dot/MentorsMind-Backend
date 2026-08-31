@@ -10,12 +10,13 @@ import {
 } from "../utils/ical.utils";
 import { logger } from "../utils/logger";
 import { EncryptionUtil } from "../utils/encryption.utils";
-import { NotificationService } from "./notification.service";
 import {
-  NotificationType,
+  NotificationService,
   NotificationChannel,
   NotificationPriority,
-} from "../models/notifications.model";
+} from "./notification.service";
+import { NotificationType } from "../models/notifications.model";
+import { TokenBucketLimiter } from "../utils/token-bucket-limiter";
 
 const GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.events"];
 
@@ -92,8 +93,7 @@ async function disconnectExpiredCalendar(userId: string): Promise<void> {
       channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
       priority: NotificationPriority.HIGH,
       title: "Calendar Connection Expired",
-      message:
-        "Your Google Calendar connection has expired. Please reconnect.",
+      message: "Your Google Calendar connection has expired. Please reconnect.",
     });
   } catch (notifyErr) {
     logger.error("Failed to send calendar expiry notification", {
@@ -156,16 +156,24 @@ export const CalendarService = {
    */
   async getOrCreateICalToken(userId: string): Promise<string> {
     const { rows } = await pool.query(
-      "SELECT ical_token FROM users WHERE id = $1",
+      "SELECT ical_token, ical_token_expires_at FROM users WHERE id = $1",
       [userId],
     );
     if (!rows[0]) throw createError("User not found", 404);
 
-    if (rows[0].ical_token) return rows[0].ical_token;
+    if (
+      rows[0].ical_token &&
+      (!rows[0].ical_token_expires_at || rows[0].ical_token_expires_at > new Date())
+    ) {
+      return rows[0].ical_token;
+    }
 
     const token = generateICalToken();
-    await pool.query("UPDATE users SET ical_token = $1 WHERE id = $2", [
+    const expiresAt = new Date();
+    expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+    await pool.query("UPDATE users SET ical_token = $1, ical_token_expires_at = $2 WHERE id = $3", [
       token,
+      expiresAt,
       userId,
     ]);
     return token;
@@ -176,9 +184,11 @@ export const CalendarService = {
    */
   async regenerateICalToken(userId: string): Promise<string> {
     const token = generateICalToken();
+    const expiresAt = new Date();
+    expiresAt.setFullYear(expiresAt.getFullYear() + 1);
     const { rowCount } = await pool.query(
-      "UPDATE users SET ical_token = $1 WHERE id = $2",
-      [token, userId],
+      "UPDATE users SET ical_token = $1, ical_token_expires_at = $2 WHERE id = $3",
+      [token, expiresAt, userId],
     );
     if (!rowCount) throw createError("User not found", 404);
     return token;
@@ -187,19 +197,80 @@ export const CalendarService = {
   /**
    * Build and return the iCal feed for the user identified by the given token
    */
-  async getICalFeed(token: string): Promise<string> {
+  async getICalFeed(token: string, ip: string): Promise<string> {
+    // 1. Rate limiting (Token Bucket max 10/hour)
+    const rlResult = await TokenBucketLimiter.consume(`ical_rl:${token}`, {
+      algorithm: "token-bucket",
+      capacity: 10,
+      refillRate: 10 / 3600,
+      burstSize: 10,
+      dynamicAdjustment: false,
+    });
+    if (!rlResult.allowed) {
+      throw createError("Rate limit exceeded for iCal feed", 429);
+    }
+
+    // 2. Fetch user
     const { rows } = await pool.query(
-      "SELECT id, first_name, last_name FROM users WHERE ical_token = $1 AND is_active = true",
+      "SELECT id, first_name, last_name, ical_token_expires_at FROM users WHERE ical_token = $1 AND is_active = true",
       [token],
     );
     if (!rows[0]) throw createError("Invalid or expired iCal token", 404);
 
     const user = rows[0];
+
+    // 3. Check token expiry (1 year)
+    if (user.ical_token_expires_at && user.ical_token_expires_at < new Date()) {
+      throw createError("Invalid or expired iCal token", 404);
+    }
+
+    // 4. Update access stats
+    await pool.query(
+      "UPDATE users SET last_ical_access_at = NOW(), ical_access_count = ical_access_count + 1 WHERE id = $1",
+      [user.id]
+    );
+
+    // 5. Abuse detection (>3 distinct IPs in 1 hour)
+    const ipKey = `ical_ips:${token}`;
+    const isNewIp = await redis.sadd(ipKey, ip);
+    if (isNewIp === 1) {
+      const ttl = await redis.ttl(ipKey);
+      if (ttl < 0) {
+        await redis.expire(ipKey, 3600);
+      }
+    }
+    const distinctIps = await redis.scard(ipKey);
+    if (distinctIps > 3) {
+      const alertKey = `ical_abuse_alert:${user.id}`;
+      const alreadyAlerted = await redis.get(alertKey);
+      if (!alreadyAlerted) {
+        await NotificationService.sendNotification({
+          userId: user.id,
+          type: NotificationType.SYSTEM_ALERT,
+          channels: [NotificationChannel.EMAIL, NotificationChannel.IN_APP],
+          priority: NotificationPriority.HIGH,
+          title: "Suspicious Activity on iCal Feed",
+          message: "Your iCal feed was accessed from multiple locations recently. If this wasn't you, please regenerate your feed token in settings.",
+        });
+        await redis.set(alertKey, "1", "EX", 86400); // Alert once per 24h
+      }
+    }
+
+    // 6. Return cached feed if available (5 minutes)
+    const cacheKey = `ical_feed:${token}`;
+    const cachedFeed = await redis.get(cacheKey);
+    if (cachedFeed) {
+      return cachedFeed;
+    }
+
     const sessions = await fetchSessionsForUser(user.id);
-    return buildICalFeed(
+    const feed = buildICalFeed(
       sessions,
       `MentorMinds – ${user.first_name} ${user.last_name}`,
     );
+
+    await redis.set(cacheKey, feed, "EX", 300);
+    return feed;
   },
 
   // ---- Google Calendar OAuth -----------------------------------------------
@@ -224,7 +295,10 @@ export const CalendarService = {
   /**
    * Verify and clear the CSRF token from Redis
    */
-  async verifyAndClearCsrfToken(userId: string, csrf: string): Promise<boolean> {
+  async verifyAndClearCsrfToken(
+    userId: string,
+    csrf: string,
+  ): Promise<boolean> {
     const key = `google_oauth_csrf:${userId}`;
     const storedCsrf = await redis.get(key);
 
@@ -292,7 +366,7 @@ export const CalendarService = {
   /**
    * Build an OAuth2 client pre-loaded with a user's stored tokens
    */
-  async _buildAuthedClient(userId: string) {
+  async _buildAuthedClient(userId: string): Promise<InstanceType<typeof google.auth.OAuth2> | null> {
     const { rows } = await pool.query(
       `SELECT encrypted_access_token,
               encrypted_refresh_token,
@@ -302,10 +376,17 @@ export const CalendarService = {
     );
     if (!rows[0]?.encrypted_access_token) return null;
 
-    const [accessToken, refreshToken] = await Promise.all([
-      EncryptionUtil.decrypt(rows[0].encrypted_access_token),
-      EncryptionUtil.decrypt(rows[0].encrypted_refresh_token),
-    ]);
+    let accessToken: string | null = null;
+    let refreshToken: string | null = null;
+    try {
+      [accessToken, refreshToken] = await Promise.all([
+        EncryptionUtil.decrypt(rows[0].encrypted_access_token),
+        EncryptionUtil.decrypt(rows[0].encrypted_refresh_token),
+      ]);
+    } catch (err) {
+      logger.error("Failed to decrypt Google Calendar tokens (possible key rotation issue)", { userId, error: err });
+      return null;
+    }
 
     if (!accessToken) return null;
 
@@ -327,9 +408,9 @@ export const CalendarService = {
         await client.refreshAccessToken();
         await persistGoogleCredentials(
           userId,
-          client.credentials.access_token,
-          client.credentials.refresh_token,
-          client.credentials.expiry_date,
+          client.credentials.access_token || undefined,
+          client.credentials.refresh_token || undefined,
+          client.credentials.expiry_date || undefined,
         );
       } catch (err) {
         if (isInvalidGrantError(err)) {

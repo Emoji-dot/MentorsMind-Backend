@@ -1,16 +1,20 @@
 import fs from "fs";
 import path from "path";
 import archiver from "archiver";
+import pool from "../config/database";
 import { ExportJobModel } from "../models/export-job.model";
 import { SessionModel } from "../models/session.model";
 import { PaymentModel } from "../models/payment.model";
 import { ReviewModel } from "../models/review.model";
 import { UsersService } from "./users.service";
 import { exportQueue } from "../queues/export.queue";
+import { enqueueEmail } from "../queues/email.queue";
 import { AuditLoggerService } from "./audit-logger.service";
 import { LogLevel } from "../utils/log-formatter.utils";
 import { StorageService } from "./storage.service";
 import { createError } from "../middleware/errorHandler";
+
+const EXPORT_LINK_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 function toExportSafeRecord(user: any): any {
   const safeUser = { ...user };
@@ -21,7 +25,10 @@ function toExportSafeRecord(user: any): any {
 }
 
 export const ExportService = {
-  async requestExport(userId: string): Promise<string> {
+  async requestExport(
+    userId: string,
+    format: import("../models/export-job.model").ExportFormat = "json",
+  ): Promise<string> {
     // Check if user already has a pending or processing export job
     const existing = await ExportJobModel.findPendingByUserId(userId);
     if (existing) {
@@ -35,8 +42,7 @@ export const ExportService = {
     const lastCompleted = await ExportJobModel.findLastCompletedByUserId(userId);
     if (lastCompleted && lastCompleted.created_at) {
       const hoursSinceLastExport =
-        (Date.now() - new Date(lastCompleted.created_at).getTime()) /
-        (1000 * 60 * 60);
+        (Date.now() - new Date(lastCompleted.created_at).getTime()) / (1000 * 60 * 60);
       if (hoursSinceLastExport < 24) {
         const hoursRemaining = Math.ceil(24 - hoursSinceLastExport);
         throw createError(
@@ -46,8 +52,16 @@ export const ExportService = {
       }
     }
 
-    const job = await ExportJobModel.create(userId);
-    await exportQueue.add("process-export", { userId, jobId: job.id });
+    const dbJob = await ExportJobModel.create(userId, { format });
+    const bullJob = await exportQueue.add("process-export", {
+      userId,
+      jobId: dbJob.id,
+      format,
+      type: "data-export",
+    });
+
+    // Persist BullMQ ID immediately so /progress can query job state
+    await ExportJobModel.setBullmqJobId(dbJob.id, bullJob.id!);
 
     await AuditLoggerService.logEvent({
       level: LogLevel.INFO,
@@ -55,11 +69,11 @@ export const ExportService = {
       message: `User ${userId} requested data export`,
       userId: userId,
       entityType: "export_job",
-      entityId: job.id,
-      metadata: {},
+      entityId: dbJob.id,
+      metadata: { format },
     });
 
-    return job.id;
+    return dbJob.id;
   },
 
   async processExport(userId: string, jobId: string): Promise<void> {
@@ -71,6 +85,13 @@ export const ExportService = {
       const sessions = await SessionModel.findByUserId(userId);
       const payments = await PaymentModel.findByUserId(userId);
       const reviews = await ReviewModel.findByUserId(userId);
+      const { rows: messages } = await pool.query(
+        `SELECT m.*
+         FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         WHERE c.participant_one_id = $1 OR c.participant_two_id = $1`,
+        [userId],
+      );
 
       const fileName = `export_${userId}_${Date.now()}.zip`;
       const timestamp = Date.now();
@@ -111,6 +132,11 @@ export const ExportService = {
       });
       archive.append(this.jsonToCsv(reviews), { name: "reviews.csv" });
 
+      archive.append(JSON.stringify(messages, null, 2), {
+        name: "messages.json",
+      });
+      archive.append(this.jsonToCsv(messages), { name: "messages.csv" });
+
       await archive.finalize();
 
       // Wait for the write stream to finish
@@ -133,7 +159,7 @@ export const ExportService = {
 
       // Store the S3 key (not local path) in the database
       const expiresAt = new Date();
-      expiresAt.setHours(expiresAt.getHours() + 24);
+      expiresAt.setDate(expiresAt.getDate() + 7);
 
       await ExportJobModel.updateStatus(
         jobId,
@@ -142,6 +168,51 @@ export const ExportService = {
         undefined,
         expiresAt,
       );
+
+      const downloadUrl = await StorageService.generatePresignedUrl(
+        result.key,
+        EXPORT_LINK_TTL_SECONDS,
+      );
+
+      const exportUser = await UsersService.findById(userId);
+      const recipientEmail = exportUser?.email;
+      if (recipientEmail) {
+        try {
+          await enqueueEmail({
+            to: [recipientEmail],
+            subject: "Your MentorMinds data export is ready",
+            templateId: "data_export_ready",
+            templateData: {
+              userName: exportUser?.first_name
+                ? `${exportUser.first_name} ${exportUser.last_name || ""}`.trim()
+                : "there",
+              downloadUrl,
+              expiresAt: expiresAt.toISOString(),
+              platformUrl:
+                process.env.APP_CLIENT_URL ||
+                process.env.APP_BASE_URL ||
+                "https://mentorsmind.com",
+              supportUrl:
+                process.env.SUPPORT_URL || "https://mentorsmind.com/support",
+            },
+          });
+        } catch (emailError) {
+          await AuditLoggerService.logEvent({
+            level: LogLevel.WARN,
+            action: "DATA_EXPORT_EMAIL_FAILED",
+            message: `Failed to queue export ready email for user ${userId}`,
+            userId,
+            entityType: "export_job",
+            entityId: jobId,
+            metadata: {
+              error:
+                emailError instanceof Error
+                  ? emailError.message
+                  : String(emailError),
+            },
+          });
+        }
+      }
 
       // Delete the local temp file after successful S3 upload
       if (tempFilePath && fs.existsSync(tempFilePath)) {
@@ -155,7 +226,12 @@ export const ExportService = {
         userId: userId,
         entityType: "export_job",
         entityId: jobId,
-        metadata: { fileName, s3Key: result.key, expiresAt, s3Url: result.url },
+        metadata: {
+          fileName,
+          s3Key: result.key,
+          expiresAt,
+          downloadUrlSent: Boolean(recipientEmail),
+        },
       });
     } catch (error: any) {
       // Cleanup: delete the local temp file on failure
@@ -209,6 +285,34 @@ export const ExportService = {
     });
 
     return { data: csv, fileName };
+  },
+
+  /**
+   * Delete S3 objects and export_jobs rows older than `days` (GDPR retention limit).
+   */
+  async cleanupExpiredExports(days: number = 30): Promise<number> {
+    const expired = await ExportJobModel.findExpiredOlderThan(days);
+    const keys = expired
+      .map((job) => job.storage_key)
+      .filter((key): key is string => Boolean(key));
+
+    if (keys.length > 0) {
+      await StorageService.deleteFiles(keys);
+    }
+
+    const deletedCount = await ExportJobModel.deleteOlderThan(days);
+
+    if (deletedCount > 0) {
+      await AuditLoggerService.logEvent({
+        level: LogLevel.INFO,
+        action: "DATA_EXPORT_CLEANUP",
+        message: `Cleaned up ${deletedCount} expired export job(s)`,
+        entityType: "export_job",
+        metadata: { deletedCount, s3ObjectsDeleted: keys.length, days },
+      });
+    }
+
+    return deletedCount;
   },
 
   async getJobStatus(jobId: string, userId: string) {

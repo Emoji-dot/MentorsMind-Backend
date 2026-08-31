@@ -1,8 +1,15 @@
-import { Router } from 'express';
-import { NotificationsController } from '../controllers/notifications.controller';
-import { NotificationPreferencesController } from '../controllers/notificationPreferences.controller';
-import { PushController } from '../controllers/push.controller';
-import { authenticate } from '../middleware/auth.middleware';
+import { Router } from "express";
+import { NotificationsController } from "../controllers/notifications.controller";
+import { NotificationPreferencesController } from "../controllers/notificationPreferences.controller";
+import { PushController } from "../controllers/push.controller";
+import { authenticate } from "../middleware/auth.middleware";
+import { validate } from "../middleware/validation.middleware";
+import {
+  listNotificationsSchema,
+  notificationIdParamSchema,
+  updateNotificationPreferencesSchema,
+  pushUnsubscribeSchema,
+} from "../validators/schemas/notifications.schemas";
 
 const router = Router();
 
@@ -63,7 +70,12 @@ const router = Router();
  *                         hasMore:
  *                           type: boolean
  */
-router.get('/', authenticate, NotificationsController.getNotifications);
+router.get(
+  "/",
+  authenticate,
+  validate(listNotificationsSchema),
+  NotificationsController.getNotifications,
+);
 
 /**
  * @swagger
@@ -91,7 +103,11 @@ router.get('/', authenticate, NotificationsController.getNotifications);
  *                       type: integer
  *                       example: 5
  */
-router.get('/unread-count', authenticate, NotificationsController.getUnreadCount);
+router.get(
+  "/unread-count",
+  authenticate,
+  NotificationsController.getUnreadCount,
+);
 
 /**
  * @swagger
@@ -122,7 +138,7 @@ router.get('/unread-count', authenticate, NotificationsController.getUnreadCount
  *                       type: integer
  *                       example: 5
  */
-router.put('/read-all', authenticate, NotificationsController.markAllAsRead);
+router.put("/read-all", authenticate, NotificationsController.markAllAsRead);
 
 /**
  * @swagger
@@ -146,7 +162,12 @@ router.put('/read-all', authenticate, NotificationsController.markAllAsRead);
  *       404:
  *         description: Notification not found
  */
-router.put('/:id/read', authenticate, NotificationsController.markAsRead);
+router.put(
+  "/:id/read",
+  authenticate,
+  validate(notificationIdParamSchema),
+  NotificationsController.markAsRead,
+);
 
 /**
  * @swagger
@@ -170,7 +191,12 @@ router.put('/:id/read', authenticate, NotificationsController.markAsRead);
  *       404:
  *         description: Notification not found
  */
-router.delete('/:id', authenticate, NotificationsController.deleteNotification);
+router.delete(
+  "/:id",
+  authenticate,
+  validate(notificationIdParamSchema),
+  NotificationsController.deleteNotification,
+);
 
 /**
  * @swagger
@@ -202,8 +228,17 @@ router.delete('/:id', authenticate, NotificationsController.deleteNotification);
  *       200:
  *         description: Preferences updated successfully
  */
-router.get('/preferences', authenticate, NotificationPreferencesController.getPreferences);
-router.put('/preferences', authenticate, NotificationPreferencesController.updatePreferences);
+router.get(
+  "/preferences",
+  authenticate,
+  NotificationPreferencesController.getPreferences,
+);
+router.put(
+  "/preferences",
+  authenticate,
+  validate(updateNotificationPreferencesSchema),
+  NotificationPreferencesController.updatePreferences,
+);
 
 /**
  * @swagger
@@ -217,7 +252,11 @@ router.put('/preferences', authenticate, NotificationPreferencesController.updat
  *       200:
  *         description: Preferences reset successfully
  */
-router.post('/preferences/reset', authenticate, NotificationPreferencesController.resetPreferences);
+router.post(
+  "/preferences/reset",
+  authenticate,
+  NotificationPreferencesController.resetPreferences,
+);
 
 /**
  * @swagger
@@ -251,7 +290,7 @@ router.post('/preferences/reset', authenticate, NotificationPreferencesControlle
  *       400:
  *         description: Invalid request
  */
-router.post('/push/subscribe', authenticate, PushController.subscribe);
+router.post("/push/subscribe", authenticate, PushController.subscribe);
 
 /**
  * @swagger
@@ -279,7 +318,12 @@ router.post('/push/subscribe', authenticate, PushController.subscribe);
  *       404:
  *         description: Token not found
  */
-router.delete('/push/unsubscribe', authenticate, PushController.unsubscribe);
+router.delete(
+  "/push/unsubscribe",
+  authenticate,
+  validate(pushUnsubscribeSchema),
+  PushController.unsubscribe,
+);
 
 /**
  * @swagger
@@ -293,7 +337,7 @@ router.delete('/push/unsubscribe', authenticate, PushController.unsubscribe);
  *       200:
  *         description: List of active push tokens
  */
-router.get('/push/tokens', authenticate, PushController.getTokens);
+router.get("/push/tokens", authenticate, PushController.getTokens);
 
 /**
  * @swagger
@@ -307,7 +351,47 @@ router.get('/push/tokens', authenticate, PushController.getTokens);
  *       200:
  *         description: Test notification sent
  */
-router.post('/push/test', authenticate, PushController.sendTest);
+router.post("/push/test", authenticate, PushController.sendTest);
+
+/**
+ * @swagger
+ * /api/v1/notifications/push/send:
+ *   post:
+ *     summary: Send rich push notification with actions and deep link
+ *     tags: [Notifications]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [title, body]
+ *             properties:
+ *               title:
+ *                 type: string
+ *               body:
+ *                 type: string
+ *               deepLink:
+ *                 type: string
+ *               priority:
+ *                 type: string
+ *                 enum: [high, normal]
+ *               actions:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                     title:
+ *                       type: string
+ *     responses:
+ *       200:
+ *         description: Notification sent
+ */
+router.post("/push/send", authenticate, PushController.sendRich);
 
 /**
  * @swagger

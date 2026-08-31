@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP ZAP context for the MentorMinds Backend (issue #785).
+
+  Excludes paths that are known false-positive sources for a baseline scan:
+  the Swagger UI bundle, health checks, and the Prometheus metrics endpoint.
+  These are either static assets, unauthenticated-by-design operational
+  endpoints, or (in the case of /metrics) intentionally verbose diagnostic
+  output — none represent an application vulnerability surface worth
+  spending scan budget on.
+
+  Loaded via: zap-baseline.py -n .zap/context.xml
+-->
+<configuration>
+  <context>
+    <name>mentorminds-api</name>
+    <desc>MentorMinds Backend API — baseline scan context</desc>
+    <inscope>true</inscope>
+    <incregexes>^http.*/api/v[0-9]+/.*$</incregexes>
+    <excluderegexes>^http.*/api/v[0-9]+/docs(/.*)?$</excluderegexes>
+    <excluderegexes>^http.*/health(/.*)?$</excluderegexes>
+    <excluderegexes>^http.*/metrics$</excluderegexes>
+    <excluderegexes>^http.*/api/versions$</excluderegexes>
+  </context>
+</configuration>

@@ -55,8 +55,8 @@ export const disputeEscrowSchema = z.object({
 export const resolveDisputeSchema = z.object({
   params: idParamSchema.shape.params,
   body: z.object({
-    resolution: z.enum(['release_to_mentor', 'refund_to_mentee'], {
-      errorMap: () => ({ message: 'Resolution must be either "release_to_mentor" or "refund_to_mentee"' }),
+    mentor_pct: z.number().int().min(0).max(100, {
+      message: 'Mentor percentage must be between 0 and 100',
     }),
     notes: longTextSchema.optional(),
     stellarTxHash: z

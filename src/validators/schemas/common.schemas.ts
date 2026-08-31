@@ -32,7 +32,35 @@ export const passwordSchema = z
     )
     .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
     .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
-    .regex(/[0-9]/, 'Password must contain at least one number');
+    .regex(/[0-9]/, 'Password must contain at least one number')
+    .regex(/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>?]/, 'Password must contain at least one special character')
+    .refine(
+        (password) => {
+            // Check for disallowed patterns
+            const disallowedPatterns = validationConfig.password.disallowedPatterns;
+            return !disallowedPatterns.some(pattern => pattern.test(password));
+        },
+        'Password contains weak patterns (avoid repeated characters, sequences, or keyboard patterns)'
+    )
+    .refine(
+        (password) => {
+            // Check against common passwords list
+            const commonPasswords = validationConfig.password.commonPasswords;
+            return !commonPasswords.some(common => 
+                password.toLowerCase().includes(common.toLowerCase())
+            );
+        },
+        'Password is too common or easily guessable'
+    )
+    .refine(
+        (password) => {
+            // Ensure password doesn't contain only dictionary words
+            const words = password.toLowerCase().match(/[a-z]+/g) || [];
+            const commonWords = ['password', 'admin', 'user', 'login', 'welcome', 'test', 'demo'];
+            return !words.every(word => word.length < 4 || commonWords.includes(word));
+        },
+        'Password should not consist only of common dictionary words'
+    );
 
 /** UUID v4 param – used in path parameters */
 export const uuidSchema = z

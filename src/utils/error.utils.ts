@@ -1,6 +1,8 @@
+import { logger } from "./logger.utils";
+
 /**
  * Error Tracking Utility
- * 
+ *
  * Handles error logging and reporting to external monitoring services
  * (Sentry, DataDog) with automatic sanitization of sensitive data.
  */
@@ -11,14 +13,14 @@ let datadogLogs: any;
 
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  Sentry = require('@sentry/node');
+  Sentry = require("@sentry/node");
 } catch {
   // Sentry not installed
 }
 
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const datadog = require('@datadog/browser-logs');
+  const datadog = require("@datadog/browser-logs");
   datadogLogs = datadog.datadogLogs;
 } catch {
   // DataDog not installed
@@ -51,11 +53,11 @@ const SENSITIVE_PATTERNS = [
 
 // Headers that should be redacted
 const SENSITIVE_HEADERS = [
-  'authorization',
-  'x-api-key',
-  'x-auth-token',
-  'cookie',
-  'set-cookie',
+  "authorization",
+  "x-api-key",
+  "x-auth-token",
+  "cookie",
+  "set-cookie",
 ];
 
 class ErrorTracker {
@@ -66,9 +68,9 @@ class ErrorTracker {
     this.config = {
       sentryDsn: process.env.SENTRY_DSN,
       datadogClientToken: process.env.DATADOG_CLIENT_TOKEN,
-      datadogSite: process.env.DATADOG_SITE || 'datadoghq.com',
-      environment: process.env.NODE_ENV || 'development',
-      enableConsoleLogging: process.env.NODE_ENV !== 'production',
+      datadogSite: process.env.DATADOG_SITE || "datadoghq.com",
+      environment: process.env.NODE_ENV || "development",
+      enableConsoleLogging: process.env.NODE_ENV !== "production",
     };
   }
 
@@ -85,7 +87,7 @@ class ErrorTracker {
       Sentry.init({
         dsn: this.config.sentryDsn,
         environment: this.config.environment,
-        tracesSampleRate: this.config.environment === 'production' ? 0.1 : 1.0,
+        tracesSampleRate: this.config.environment === "production" ? 0.1 : 1.0,
         beforeSend: (event: any) => this.sanitizeEvent(event),
         integrations: [
           new Sentry.Integrations.Http({ tracing: true }),
@@ -93,7 +95,7 @@ class ErrorTracker {
           new Sentry.Integrations.OnUnhandledRejection(),
         ],
       });
-      console.log('✓ Sentry initialized');
+      logger.info("Sentry initialized");
     }
 
     // Initialize DataDog
@@ -107,9 +109,9 @@ class ErrorTracker {
           sessionSampleRate: 100,
         };
         datadogLogs.init(ddConfig);
-        console.log('✓ DataDog initialized');
+        logger.info("DataDog initialized");
       } catch (error) {
-        console.warn('DataDog initialization failed:', error);
+        logger.warn("DataDog initialization failed", { error });
       }
     }
 
@@ -127,7 +129,7 @@ class ErrorTracker {
 
     // Sanitize breadcrumbs
     if (event.breadcrumbs) {
-      event.breadcrumbs = event.breadcrumbs.map((breadcrumb) => ({
+      event.breadcrumbs = event.breadcrumbs.map((breadcrumb: any) => ({
         ...breadcrumb,
         data: this.sanitizeObject(breadcrumb.data || {}),
       }));
@@ -140,9 +142,9 @@ class ErrorTracker {
 
     // Sanitize exception values
     if (event.exception?.values) {
-      event.exception.values = event.exception.values.map((exception) => ({
+      event.exception.values = event.exception.values.map((exception: any) => ({
         ...exception,
-        value: this.sanitizeString(exception.value || ''),
+        value: this.sanitizeString(exception.value || ""),
       }));
     }
 
@@ -176,7 +178,7 @@ class ErrorTracker {
       SENSITIVE_HEADERS.forEach((header) => {
         const lowerHeader = header.toLowerCase();
         if (sanitized.headers[lowerHeader]) {
-          sanitized.headers[lowerHeader] = '[REDACTED]';
+          sanitized.headers[lowerHeader] = "[REDACTED]";
         }
       });
     }
@@ -188,7 +190,7 @@ class ErrorTracker {
 
     // Sanitize cookies
     if (sanitized.cookies) {
-      sanitized.cookies = '[REDACTED]';
+      sanitized.cookies = "[REDACTED]";
     }
 
     // Sanitize data/body
@@ -205,7 +207,7 @@ class ErrorTracker {
   private sanitizeString(str: string): string {
     let sanitized = str;
     SENSITIVE_PATTERNS.forEach((pattern) => {
-      sanitized = sanitized.replace(pattern, '[REDACTED]');
+      sanitized = sanitized.replace(pattern, "[REDACTED]");
     });
     return sanitized;
   }
@@ -214,7 +216,7 @@ class ErrorTracker {
    * Recursively sanitize an object
    */
   private sanitizeObject(obj: any): any {
-    if (!obj || typeof obj !== 'object') {
+    if (!obj || typeof obj !== "object") {
       return obj;
     }
 
@@ -225,19 +227,19 @@ class ErrorTracker {
     const sanitized: any = {};
     for (const [key, value] of Object.entries(obj)) {
       const lowerKey = key.toLowerCase();
-      
+
       // Redact sensitive keys
       if (
-        lowerKey.includes('password') ||
-        lowerKey.includes('token') ||
-        lowerKey.includes('secret') ||
-        lowerKey.includes('key') ||
-        lowerKey.includes('authorization')
+        lowerKey.includes("password") ||
+        lowerKey.includes("token") ||
+        lowerKey.includes("secret") ||
+        lowerKey.includes("key") ||
+        lowerKey.includes("authorization")
       ) {
-        sanitized[key] = '[REDACTED]';
-      } else if (typeof value === 'string') {
+        sanitized[key] = "[REDACTED]";
+      } else if (typeof value === "string") {
         sanitized[key] = this.sanitizeString(value);
-      } else if (typeof value === 'object') {
+      } else if (typeof value === "object") {
         sanitized[key] = this.sanitizeObject(value);
       } else {
         sanitized[key] = value;
@@ -252,10 +254,10 @@ class ErrorTracker {
    */
   logError(
     error: Error | string,
-    severity: 'low' | 'medium' | 'high' | 'critical' = 'medium',
-    context?: ErrorContext
+    severity: "low" | "medium" | "high" | "critical" = "medium",
+    context?: ErrorContext,
   ): void {
-    const errorObj = typeof error === 'string' ? new Error(error) : error;
+    const errorObj = typeof error === "string" ? new Error(error) : error;
     const sanitizedContext = context ? this.sanitizeObject(context) : {};
 
     // Console logging (development)
@@ -267,7 +269,11 @@ class ErrorTracker {
     }
 
     // Send to external services only for medium+ severity
-    if (severity === 'medium' || severity === 'high' || severity === 'critical') {
+    if (
+      severity === "medium" ||
+      severity === "high" ||
+      severity === "critical"
+    ) {
       this.sendToExternalServices(errorObj, severity, sanitizedContext);
     }
   }
@@ -278,13 +284,13 @@ class ErrorTracker {
   private sendToExternalServices(
     error: Error,
     severity: string,
-    context: ErrorContext
+    context: ErrorContext,
   ): void {
     // Send to Sentry
     if (this.config.sentryDsn && Sentry) {
       Sentry.withScope((scope: any) => {
         scope.setLevel(this.mapSeverityToSentryLevel(severity));
-        scope.setContext('additional', context);
+        scope.setContext("additional", context);
         Sentry.captureException(error);
       });
     }
@@ -308,19 +314,19 @@ class ErrorTracker {
    */
   private mapSeverityToSentryLevel(severity: string): string {
     const mapping: Record<string, string> = {
-      low: 'info',
-      medium: 'warning',
-      high: 'error',
-      critical: 'fatal',
+      low: "info",
+      medium: "warning",
+      high: "error",
+      critical: "fatal",
     };
-    return mapping[severity] || 'error';
+    return mapping[severity] || "error";
   }
 
   /**
    * Log a warning
    */
   logWarning(message: string, context?: ErrorContext): void {
-    this.logError(new Error(message), 'low', context);
+    this.logError(new Error(message), "low", context);
   }
 
   /**
@@ -381,12 +387,15 @@ class ErrorTracker {
         message,
         category,
         data: sanitizedData,
-        level: 'info',
+        level: "info",
       });
     }
 
     if (this.config.datadogClientToken && datadogLogs) {
-      datadogLogs.logger.info(`[Breadcrumb] ${category}: ${message}`, sanitizedData);
+      datadogLogs.logger.info(
+        `[Breadcrumb] ${category}: ${message}`,
+        sanitizedData,
+      );
     }
   }
 }
@@ -400,8 +409,8 @@ errorTracker.initialize();
 // Export convenience functions
 export const logError = (
   error: Error | string,
-  severity: 'low' | 'medium' | 'high' | 'critical' = 'medium',
-  context?: ErrorContext
+  severity: "low" | "medium" | "high" | "critical" = "medium",
+  context?: ErrorContext,
 ) => errorTracker.logError(error, severity, context);
 
 export const logWarning = (message: string, context?: ErrorContext) =>
@@ -410,12 +419,18 @@ export const logWarning = (message: string, context?: ErrorContext) =>
 export const logInfo = (message: string, context?: ErrorContext) =>
   errorTracker.logInfo(message, context);
 
-export const setUser = (user: { id: string; email?: string; username?: string }) =>
-  errorTracker.setUser(user);
+export const setUser = (user: {
+  id: string;
+  email?: string;
+  username?: string;
+}) => errorTracker.setUser(user);
 
 export const clearUser = () => errorTracker.clearUser();
 
-export const addBreadcrumb = (message: string, category: string, data?: ErrorContext) =>
-  errorTracker.addBreadcrumb(message, category, data);
+export const addBreadcrumb = (
+  message: string,
+  category: string,
+  data?: ErrorContext,
+) => errorTracker.addBreadcrumb(message, category, data);
 
 export default errorTracker;

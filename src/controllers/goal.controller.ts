@@ -22,7 +22,7 @@ export class GoalController {
   static async get(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const learnerId = (req as any).user.userId;
-      const goal = await GoalService.getGoal(req.params.id, learnerId);
+      const goal = await GoalService.getGoal(req.params.id as string, learnerId);
       res.json({ status: 'success', data: goal });
     } catch (err) { next(err); }
   }
@@ -30,7 +30,7 @@ export class GoalController {
   static async update(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const learnerId = (req as any).user.userId;
-      const goal = await GoalService.updateGoal(req.params.id, learnerId, req.body);
+      const goal = await GoalService.updateGoal(req.params.id as string, learnerId, req.body);
       res.json({ status: 'success', data: goal });
     } catch (err) { next(err); }
   }
@@ -38,7 +38,7 @@ export class GoalController {
   static async delete(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const learnerId = (req as any).user.userId;
-      await GoalService.deleteGoal(req.params.id, learnerId);
+      await GoalService.deleteGoal(req.params.id as string, learnerId);
       res.status(204).send();
     } catch (err) { next(err); }
   }
@@ -46,12 +46,20 @@ export class GoalController {
   static async updateProgress(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const learnerId = (req as any).user.userId;
-      const { progress } = req.body;
+      const { progress, notes } = req.body;
       if (typeof progress !== 'number' || progress < 0 || progress > 100) {
         throw new Error('Invalid progress value (0-100)');
       }
-      const goal = await GoalService.updateProgress(req.params.id, learnerId, progress);
+      const goal = await GoalService.updateProgress(req.params.id as string, learnerId, progress, notes);
       res.json({ status: 'success', data: goal });
+    } catch (err) { next(err); }
+  }
+
+  static async getProgress(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const learnerId = (req as any).user.userId;
+      const logs = await GoalService.getProgressLogs(req.params.id as string, learnerId);
+      res.json({ status: 'success', data: logs });
     } catch (err) { next(err); }
   }
 
@@ -60,7 +68,7 @@ export class GoalController {
       const learnerId = (req as any).user.userId;
       const { booking_id } = req.body;
       if (!booking_id) throw new Error('booking_id is required');
-      await GoalService.linkSession(req.params.id, learnerId, booking_id);
+      await GoalService.linkSession(req.params.id as string, learnerId, booking_id);
       res.json({ status: 'success', message: 'Session linked to goal' });
     } catch (err) { next(err); }
   }

@@ -14,7 +14,7 @@ import { Router } from "express";
 import { PaymentsController } from "../controllers/payments.controller";
 import { PaymentQuoteController } from "../controllers/paymentQuote.controller";
 import { authenticate } from "../middleware/auth.middleware";
-import { idempotency } from "../middleware/idempotency.middleware";
+import { requireIdempotency } from "../middleware/idempotency.middleware";
 import { validate } from "../middleware/validation.middleware";
 import { asyncHandler } from "../utils/asyncHandler.utils";
 import {
@@ -26,6 +26,7 @@ import {
   getPaymentByIdSchema,
 } from "../validators/schemas/payments.schemas";
 import { FeeEstimateController } from "../controllers/feeEstimate.controller";
+import { stellarVerificationRateLimit } from "../middleware/stellar-rate-limit.middleware";
 
 const router = Router();
 
@@ -61,6 +62,11 @@ router.post(
   validate(webhookPaymentSchema),
   asyncHandler(PaymentsController.handleWebhook),
 );
+
+// Stripe webhook endpoint (raw body required for signature verification)
+import { StripeController } from '../controllers/stripe.controller';
+import bodyParser from 'body-parser';
+router.post('/stripe/webhook', bodyParser.raw({ type: '*/*' }), asyncHandler(StripeController.webhook));
 
 // All routes below require authentication
 router.use(authenticate);
@@ -110,7 +116,7 @@ router.use(authenticate);
  */
 router.post(
   "/",
-  idempotency,
+  requireIdempotency,
   validate(initiatePaymentSchema),
   asyncHandler(PaymentsController.initiatePayment),
 );
@@ -309,6 +315,8 @@ router.get(
  */
 router.post(
   "/:id/confirm",
+  stellarVerificationRateLimit,
+  requireIdempotency,
   validate(confirmPaymentSchema),
   asyncHandler(PaymentsController.confirmPayment),
 );
@@ -346,5 +354,9 @@ router.post(
   validate(refundPaymentSchema),
   asyncHandler(PaymentsController.refundPayment),
 );
+
+// Stripe payment creation and refund endpoints (authenticated)
+router.post('/stripe/create-intent', asyncHandler(StripeController.createPaymentIntent));
+router.post('/stripe/refund', asyncHandler(StripeController.createRefund));
 
 export default router;

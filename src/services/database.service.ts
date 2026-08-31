@@ -1,4 +1,5 @@
 import pool from '../config/database';
+import config from '../config';
 import { logger } from '../utils/logger.utils';
 import { toDatabaseError, isSerializationFailure, getPoolStats } from '../utils/database.utils';
 import type {
@@ -10,6 +11,7 @@ import type {
   MigrationRecord,
 } from '../types/database.types';
 import { PoolClient } from 'pg';
+import { dbCircuitBreakerOpenTotal } from '../config/metrics';
 
 // ─── Default retry config ─────────────────────────────────────────────────────
 
@@ -19,6 +21,73 @@ const DEFAULT_RETRY: RetryOptions = {
   maxDelayMs: 5000,
   backoffFactor: 2,
 };
+
+// ─── Circuit Breaker ───────────────────────────────────────────────────────────
+
+type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+
+let circuitState: CircuitState = 'CLOSED';
+let consecutiveExhaustionCount = 0;
+let lastOpenTime = 0;
+const CIRCUIT_RESET_TIMEOUT_MS = 30_000; // 30 seconds
+const CONSECUTIVE_EXHAUSTION_THRESHOLD = 3;
+
+export class CircuitBreakerError extends Error {
+  retryAfterSeconds: number;
+  constructor(message: string, retryAfterSeconds: number) {
+    super(message);
+    this.name = 'CircuitBreakerError';
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+export function getCircuitState(): CircuitState {
+  return circuitState;
+}
+
+export function resetCircuitBreaker(): void {
+  circuitState = 'CLOSED';
+  consecutiveExhaustionCount = 0;
+  lastOpenTime = 0;
+}
+
+function checkCircuitBreaker(): void {
+  if (!config.db.circuitBreakerEnabled) return;
+
+  const now = Date.now();
+
+  if (circuitState === 'OPEN') {
+    if (now - lastOpenTime >= CIRCUIT_RESET_TIMEOUT_MS) {
+      circuitState = 'HALF_OPEN';
+      logger.info('Circuit breaker transitioning to HALF_OPEN state');
+    } else {
+      const retryAfter = Math.ceil((lastOpenTime + CIRCUIT_RESET_TIMEOUT_MS - now) / 1000);
+      throw new CircuitBreakerError('Database circuit breaker is open', retryAfter);
+    }
+  }
+}
+
+function onPoolPressure(): void {
+  consecutiveExhaustionCount++;
+  logger.warn('Pool pressure detected', { consecutiveExhaustionCount });
+
+  if (consecutiveExhaustionCount >= CONSECUTIVE_EXHAUSTION_THRESHOLD && circuitState === 'CLOSED') {
+    circuitState = 'OPEN';
+    lastOpenTime = Date.now();
+    dbCircuitBreakerOpenTotal.inc();
+    logger.error('Circuit breaker opened due to pool exhaustion');
+  }
+}
+
+function onSuccessfulConnection(): void {
+  if (circuitState === 'HALF_OPEN') {
+    circuitState = 'CLOSED';
+    consecutiveExhaustionCount = 0;
+    logger.info('Circuit breaker closed after successful connection');
+  } else if (circuitState === 'CLOSED') {
+    consecutiveExhaustionCount = 0;
+  }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -31,9 +100,56 @@ function calcDelay(attempt: number, opts: RetryOptions): number {
   return Math.min(delay, opts.maxDelayMs);
 }
 
+async function acquireConnectionWithTimeout(timeoutMs = 5000): Promise<PoolClient> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error('Connection acquisition timeout'));
+    }, timeoutMs);
+
+    pool.connect()
+      .then(client => {
+        clearTimeout(timeoutId);
+        resolve(client);
+      })
+      .catch(err => {
+        clearTimeout(timeoutId);
+        reject(err);
+      });
+  });
+}
+
 // ─── DatabaseService ──────────────────────────────────────────────────────────
 
 export class DatabaseService {
+  // ── withConnection ───────────────────────────────────────────────────────────
+
+  static async withConnection<T>(
+    callback: (client: PoolClient) => Promise<T>,
+    timeoutMs = 5000,
+  ): Promise<T> {
+    checkCircuitBreaker();
+
+    let client: PoolClient | null = null;
+    try {
+      client = await acquireConnectionWithTimeout(timeoutMs);
+      onSuccessfulConnection();
+      return await callback(client);
+    } catch (err) {
+      // Check if error is due to pool exhaustion or connection timeout
+      if (
+        (err as Error).message.includes('timeout') ||
+        (err as Error).message.includes('no connections available')
+      ) {
+        onPoolPressure();
+      }
+      throw toDatabaseError(err);
+    } finally {
+      if (client) {
+        client.release();
+      }
+    }
+  }
+
   // ── Transactions ────────────────────────────────────────────────────────────
 
   /**
@@ -57,8 +173,12 @@ export class DatabaseService {
 
     while (true) {
       attempt++;
-      const client = await pool.connect();
+      checkCircuitBreaker();
+
+      let client: PoolClient | null = null;
       try {
+        client = await acquireConnectionWithTimeout();
+        onSuccessfulConnection();
         await client.query('BEGIN');
         if (isolationLevel !== 'READ COMMITTED') {
           await client.query(`SET TRANSACTION ISOLATION LEVEL ${isolationLevel}`);
@@ -69,7 +189,9 @@ export class DatabaseService {
         logger.debug('Transaction committed', { attempt, isolationLevel });
         return result;
       } catch (err) {
-        await client.query('ROLLBACK').catch(() => {});
+        if (client) {
+          await client.query('ROLLBACK').catch(() => {});
+        }
         const isSerial = isSerializationFailure(err);
 
         if (isSerial && attempt < maxRetries) {
@@ -79,6 +201,13 @@ export class DatabaseService {
           continue;
         }
 
+        if (
+          (err as Error).message.includes('timeout') ||
+          (err as Error).message.includes('no connections available')
+        ) {
+          onPoolPressure();
+        }
+
         logger.error('Transaction rolled back', {
           attempt,
           error: (err as Error).message,
@@ -86,7 +215,9 @@ export class DatabaseService {
         });
         throw toDatabaseError(err);
       } finally {
-        client.release();
+        if (client) {
+          client.release();
+        }
       }
     }
   }

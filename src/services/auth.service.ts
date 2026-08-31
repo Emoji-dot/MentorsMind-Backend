@@ -10,6 +10,8 @@ import {
 } from "../validators/auth.validator";
 import { UserRecord } from "./users.service";
 import { TokenService } from "./token.service";
+import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 
 const JWT_SECRET = env.JWT_SECRET;
 
@@ -33,7 +35,7 @@ export const AuthService = {
     const checkQuery = `SELECT id FROM users WHERE email = $1`;
     const checkResult = await pool.query(checkQuery, [email]);
     if (checkResult.rows.length > 0) {
-      throw new Error("Email is already registered.");
+      throw createError(ErrorCode.AUTH_EMAIL_ALREADY_REGISTERED, 409);
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -51,9 +53,9 @@ export const AuthService = {
     };
 
     const insertQuery = `
-      INSERT INTO users (email, password_hash, first_name, last_name, role, notification_preferences)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING id, role
+      INSERT INTO users (email, password_hash, first_name, last_name, role, notification_preferences, user_tier)
+      VALUES ($1, $2, $3, $4, $5, $6, 'free')
+      RETURNING id, role, user_tier
     `;
     const { rows } = await pool.query(insertQuery, [
       email,
@@ -65,7 +67,7 @@ export const AuthService = {
     ]);
     const user = rows[0];
 
-    const tokens = await TokenService.issueTokens(user.id, email, user.role);
+    const tokens = await TokenService.issueTokens(user.id, email, user.role, user.user_tier);
     return { ...tokens, userId: user.id };
   },
 
@@ -73,21 +75,37 @@ export const AuthService = {
     const { email, password } = input;
 
     const query = `
-      SELECT id, role, password_hash, mfa_enabled 
+      SELECT id, role, password_hash, mfa_enabled, user_tier 
       FROM users 
-      WHERE email = $1 AND status = 'active' AND deleted_at IS NULL
+      WHERE email = $1 AND deleted_at IS NULL
     `;
     const { rows } = await pool.query(query, [email]);
 
     if (rows.length === 0) {
-      throw new Error('Invalid email or password.');
+      throw createError(ErrorCode.AUTH_INVALID_CREDENTIALS, 401);
     }
 
     const user = rows[0];
+
+    // Banned users receive a specific error and cannot log in at all
+    if (user.status === 'banned') {
+      throw createError(ErrorCode.AUTH_ACCOUNT_BANNED, 403);
+    }
+
+    // Suspended users cannot log in
+    if (user.status === 'suspended') {
+      throw createError(ErrorCode.AUTH_ACCOUNT_SUSPENDED, 403);
+    }
+
+    // Any other non-active status (inactive, pending_verification)
+    if (user.status !== 'active') {
+      throw createError(ErrorCode.AUTH_INVALID_CREDENTIALS, 401);
+    }
+
     const isMatch = await bcrypt.compare(password, user.password_hash);
 
     if (!isMatch) {
-      throw new Error('Invalid email or password.');
+      throw createError(ErrorCode.AUTH_INVALID_CREDENTIALS, 401);
     }
 
     if (user.mfa_enabled) {
@@ -100,7 +118,7 @@ export const AuthService = {
     }
 
     const fingerprint = userAgent ? `${ipAddress}:${userAgent}` : undefined;
-    const tokens = await TokenService.issueTokens(user.id, email, user.role, fingerprint, {
+    const tokens = await TokenService.issueTokens(user.id, email, user.role, user.user_tier, fingerprint, {
       deviceName: userAgent ?? undefined,
       ipAddress: ipAddress ?? undefined,
     });
@@ -162,7 +180,7 @@ export const AuthService = {
     const { rows } = await pool.query(query, [resetTokenHash]);
 
     if (rows.length === 0) {
-      throw new Error('Invalid or expired reset token.');
+      throw createError(ErrorCode.AUTH_INVALID_RESET_TOKEN, 400);
     }
 
     const userId = rows[0].id;

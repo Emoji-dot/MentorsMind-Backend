@@ -1,0 +1,79 @@
+{
+  "_meta": {
+    "description": "MentorsMind Backend — Structured Log Dashboard (ELK Issue #740)",
+    "version": "1.0.0"
+  },
+  "objects": [
+    {
+      "id": "mentorminds-logs-index-pattern",
+      "type": "index-pattern",
+      "attributes": {
+        "title": "mentorminds-logs-*",
+        "timeFieldName": "@timestamp",
+        "fields": "[]"
+      }
+    },
+    {
+      "id": "mentorminds-error-rate",
+      "type": "visualization",
+      "attributes": {
+        "title": "Error Rate Over Time",
+        "visState": "{\"type\":\"line\",\"params\":{},\"aggs\":[{\"id\":\"1\",\"type\":\"count\"},{\"id\":\"2\",\"type\":\"date_histogram\",\"params\":{\"field\":\"@timestamp\",\"interval\":\"auto\"}}],\"filters\":[{\"meta\":{\"type\":\"phrase\"},\"query\":{\"match_phrase\":{\"log.level\":\"error\"}}}]}",
+        "uiStateJSON": "{}",
+        "description": "HTTP 5xx and application errors per minute",
+        "kibanaSavedObjectMeta": {
+          "searchSourceJSON": "{\"index\":\"mentorminds-logs-*\",\"filter\":[{\"match_phrase\":{\"log.level\":\"error\"}}],\"query\":{\"match_all\":{}}}"
+        }
+      }
+    },
+    {
+      "id": "mentorminds-request-latency",
+      "type": "visualization",
+      "attributes": {
+        "title": "API Response Latency (P50/P95/P99)",
+        "visState": "{\"type\":\"metric\",\"aggs\":[{\"id\":\"1\",\"type\":\"percentiles\",\"params\":{\"field\":\"durationMs\",\"percents\":[50,95,99]}}]}",
+        "description": "Response time percentiles in milliseconds",
+        "kibanaSavedObjectMeta": {
+          "searchSourceJSON": "{\"index\":\"mentorminds-logs-*\",\"query\":{\"match_all\":{}},\"filter\":[{\"exists\":{\"field\":\"durationMs\"}}]}"
+        }
+      }
+    },
+    {
+      "id": "mentorminds-top-endpoints",
+      "type": "visualization",
+      "attributes": {
+        "title": "Top API Endpoints by Request Count",
+        "visState": "{\"type\":\"table\",\"aggs\":[{\"id\":\"1\",\"type\":\"count\"},{\"id\":\"2\",\"type\":\"terms\",\"params\":{\"field\":\"http.request.url.path\",\"size\":20}}]}",
+        "description": "Most frequently called endpoints",
+        "kibanaSavedObjectMeta": {
+          "searchSourceJSON": "{\"index\":\"mentorminds-logs-*\",\"query\":{\"match_all\":{}},\"filter\":[{\"exists\":{\"field\":\"http.request.method\"}}]}"
+        }
+      }
+    },
+    {
+      "id": "mentorminds-log-levels",
+      "type": "visualization",
+      "attributes": {
+        "title": "Log Volume by Level",
+        "visState": "{\"type\":\"pie\",\"aggs\":[{\"id\":\"1\",\"type\":\"count\"},{\"id\":\"2\",\"type\":\"terms\",\"params\":{\"field\":\"log.level\",\"size\":7}}]}",
+        "description": "Distribution of log levels (error, warn, info, debug)",
+        "kibanaSavedObjectMeta": {
+          "searchSourceJSON": "{\"index\":\"mentorminds-logs-*\",\"query\":{\"match_all\":{}}}"
+        }
+      }
+    },
+    {
+      "id": "mentorminds-dashboard",
+      "type": "dashboard",
+      "attributes": {
+        "title": "MentorsMind Backend — Observability",
+        "description": "Structured log monitoring dashboard — Issue #740",
+        "panelsJSON": "[{\"id\":\"mentorminds-error-rate\",\"type\":\"visualization\",\"gridData\":{\"x\":0,\"y\":0,\"w\":24,\"h\":15}},{\"id\":\"mentorminds-request-latency\",\"type\":\"visualization\",\"gridData\":{\"x\":24,\"y\":0,\"w\":24,\"h\":15}},{\"id\":\"mentorminds-top-endpoints\",\"type\":\"visualization\",\"gridData\":{\"x\":0,\"y\":15,\"w\":36,\"h\":15}},{\"id\":\"mentorminds-log-levels\",\"type\":\"visualization\",\"gridData\":{\"x\":36,\"y\":15,\"w\":12,\"h\":15}}]",
+        "timeRestore": false,
+        "kibanaSavedObjectMeta": {
+          "searchSourceJSON": "{\"query\":{\"language\":\"kuery\",\"query\":\"\"},\"filter\":[]}"
+        }
+      }
+    }
+  ]
+}

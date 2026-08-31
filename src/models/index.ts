@@ -10,6 +10,7 @@
 export { AuditLogModel } from './audit-log.model';
 export { ExportJobModel } from './export-job.model';
 export { SessionModel } from './session.model';
+export { SessionRecordingModel } from './session-recording.model';
 export { PaymentModel } from './payment.model';
 export { ReviewModel } from './review.model';
 export { NotificationsModel } from './notifications.model';
@@ -24,3 +25,8 @@ export { EscrowModel } from './escrow.model';
 export { WalletModel } from './wallet.model';
 export { PayoutRequestModel } from './payout-request.model';
 export { WalletEventModel } from './wallet-event.model';
+export { TenantModel } from './tenant.model';
+export { EventStoreModel, DomainEvent, Snapshot } from './event.model';
+export { MfaDeviceModel } from './mfa-device.model';
+export { UserSessionModel } from './user-session.model';
+export { SessionTemplateModel } from './session-template.model';

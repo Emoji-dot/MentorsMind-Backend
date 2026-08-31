@@ -42,8 +42,8 @@ const tracingFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   return fetch(input, { ...init, headers });
 };
 
-export const server = new StellarSdk.Horizon.Server(horizonUrls.primary, { fetch: tracingFetch as any });
-export const backupServer = new StellarSdk.Horizon.Server(horizonUrls.backup, { fetch: tracingFetch as any });
+export const server = new StellarSdk.Horizon.Server(horizonUrls.primary, { fetch: tracingFetch } as any);
+export const backupServer = new StellarSdk.Horizon.Server(horizonUrls.backup, { fetch: tracingFetch } as any);
 
 export const networkPassphrase =
   config.stellar.network === "testnet"

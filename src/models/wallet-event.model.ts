@@ -1,4 +1,4 @@
-import pool from "../config/database";
+import { db } from "../config/database";
 import { logger } from "../utils/logger";
 
 export interface WalletEvent {
@@ -19,26 +19,6 @@ export interface WalletEvent {
 }
 
 export const WalletEventModel = {
-  async initializeTable(): Promise<void> {
-    const query = `
-      CREATE TABLE IF NOT EXISTS wallet_events (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID NOT NULL,
-        event_type VARCHAR(50) NOT NULL,
-        metadata JSONB DEFAULT '{}'::jsonb,
-        ip_address VARCHAR(45),
-        user_agent TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_wallet_events_user_id ON wallet_events(user_id);
-      CREATE INDEX IF NOT EXISTS idx_wallet_events_event_type ON wallet_events(event_type);
-      CREATE INDEX IF NOT EXISTS idx_wallet_events_created_at ON wallet_events(created_at);
-      CREATE INDEX IF NOT EXISTS idx_wallet_events_user_type ON wallet_events(user_id, event_type);
-    `;
-    await pool.query(query);
-  },
-
   async create(eventData: {
     userId: string;
     eventType: WalletEvent["event_type"];
@@ -62,7 +42,7 @@ export const WalletEventModel = {
     ];
 
     try {
-      const { rows } = await pool.query<WalletEvent>(query, values);
+      const { rows } = await db.query(query, values);
       return rows[0] || null;
     } catch (error) {
       logger.error({ err: error }, "Failed to create wallet event");
@@ -81,11 +61,7 @@ export const WalletEventModel = {
       ORDER BY created_at DESC 
       LIMIT $2 OFFSET $3;
     `;
-    const { rows } = await pool.query<WalletEvent>(query, [
-      userId,
-      limit,
-      offset,
-    ]);
+    const { rows } = await db.query(query, [userId, limit, offset]);
     return rows;
   },
 
@@ -100,11 +76,7 @@ export const WalletEventModel = {
       ORDER BY created_at DESC 
       LIMIT $2 OFFSET $3;
     `;
-    const { rows } = await pool.query<WalletEvent>(query, [
-      eventType,
-      limit,
-      offset,
-    ]);
+    const { rows } = await db.query(query, [eventType, limit, offset]);
     return rows;
   },
 
@@ -120,19 +92,14 @@ export const WalletEventModel = {
       ORDER BY created_at DESC
       LIMIT $3 OFFSET $4;
     `;
-    const { rows } = await pool.query<WalletEvent>(query, [
-      userId,
-      eventType,
-      limit,
-      offset,
-    ]);
+    const { rows } = await db.query(query, [userId, eventType, limit, offset]);
     return rows;
   },
 
   async getEventStats(userId?: string): Promise<{
     totalEvents: number;
-    eventsByType: Record<string, number>;
-    recentActivity: WalletEvent[];
+    byType: any[];
+    recentEvents: WalletEvent[];
   }> {
     let totalQuery = "SELECT COUNT(*) FROM wallet_events";
     let typeQuery = "SELECT event_type, COUNT(*) as count FROM wallet_events";
@@ -149,31 +116,22 @@ export const WalletEventModel = {
     typeQuery += " GROUP BY event_type";
     recentQuery += " ORDER BY created_at DESC LIMIT 10";
 
-    const [totalResult, typeResult, recentResult] = await Promise.all([
-      pool.query(totalQuery, params),
-      pool.query(typeQuery, params),
-      pool.query<WalletEvent>(recentQuery, params),
+    const [totalRes, typeRes, recentRes] = await Promise.all([
+      db.query(totalQuery, params),
+      db.query(typeQuery, params),
+      db.query(recentQuery, params),
     ]);
 
-    const eventsByType: Record<string, number> = {};
-    typeResult.rows.forEach((row) => {
-      eventsByType[row.event_type] = parseInt(row.count, 10);
-    });
-
     return {
-      totalEvents: parseInt(totalResult.rows[0].count, 10),
-      eventsByType,
-      recentActivity: recentResult.rows,
+      totalEvents: parseInt(totalRes.rows[0].count, 10),
+      byType: typeRes.rows,
+      recentEvents: recentRes.rows,
     };
   },
 
-  async deleteOldEvents(daysToKeep = 90): Promise<number> {
-    const query = `
-      DELETE FROM wallet_events
-      WHERE created_at < NOW() - make_interval(days => $1)
-      RETURNING id;
-    `;
-    const { rows } = await pool.query(query, [daysToKeep]);
+  async purgeOldEvents(daysToKeep = 90): Promise<number> {
+    const query = `DELETE FROM wallet_events WHERE created_at < NOW() - make_interval(days => $1) RETURNING id`;
+    const { rows } = await db.query(query, [daysToKeep]);
     return rows.length;
   },
 };

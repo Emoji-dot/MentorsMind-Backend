@@ -42,6 +42,17 @@ Use the **Authorize** button (🔒) above to set your token for all requests.
         url: `https://api.mentorminds.com/api/${apiVersion}`,
         description: 'Production server',
       },
+      // Selecting this server makes the Swagger UI "Try it out" button call
+      // the fixture-data sandbox instead of real endpoints (issue #784).
+      // Only offered when SANDBOX_MODE=true.
+      ...(process.env.SANDBOX_MODE === 'true'
+        ? [
+          {
+            url: `http://localhost:${port}/api/${apiVersion}/sandbox`,
+            description: 'Sandbox (Try it out) — fixture data, no real side effects',
+          },
+        ]
+        : []),
     ],
     components: {
       securitySchemes: {
@@ -61,24 +72,6 @@ Use the **Authorize** button (🔒) above to set your token for all requests.
             message: { type: 'string' },
             data: { type: 'object' },
             timestamp: { type: 'string', format: 'date-time' },
-          },
-        },
-        ErrorResponse: {
-          type: 'object',
-          properties: {
-            status: { type: 'string', example: 'error' },
-            message: { type: 'string' },
-            error: { type: 'string' },
-            timestamp: { type: 'string', format: 'date-time' },
-          },
-        },
-        PaginationMeta: {
-          type: 'object',
-          properties: {
-            page: { type: 'integer' },
-            limit: { type: 'integer' },
-            total: { type: 'integer' },
-            hasMore: { type: 'boolean' },
           },
         },
         ...commonSchemas,
@@ -112,7 +105,11 @@ Use the **Authorize** button (🔒) above to set your token for all requests.
       },
       { name: 'Bookings', description: 'Session booking and meeting management' },
       { name: 'Notifications', description: 'In-app and push notifications' },
+      { name: 'Session Quality', description: 'ML-based session quality analytics and scoring' },
+      { name: 'Feedback', description: 'Session feedback submission and retrieval' },
+      { name: 'Analytics', description: 'Platform and learning analytics' },
+      { name: 'Documentation', description: 'API documentation portal and guides' },
     ],
   },
-  apis: ['./src/routes/*.ts', './src/docs/schemas/*.ts'],
+  apis: ['./src/routes/*.ts', './src/routes/v1/*.ts', './src/routes/admin/*.ts', './src/docs/schemas/*.ts'],
 };

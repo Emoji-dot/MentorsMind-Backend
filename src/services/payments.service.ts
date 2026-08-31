@@ -12,6 +12,7 @@ import {
   MAX_SLIPPAGE_PCT,
 } from "./assetExchange.service";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 import { logger } from "../utils/logger.utils";
 import { env } from "../config/env";
 import { SocketService } from "./socket.service";
@@ -29,6 +30,9 @@ import {
 } from "../config/stellar";
 import { EncryptionUtil } from "../utils/encryption.utils";
 import { PaginationUtil } from "../utils/pagination.utils";
+import { LoyaltyService } from "./loyalty.service";
+import { DatabaseService } from "./database.service";
+import { emitPaymentConfirmed } from "./outbox.service";
 
 export type PaymentStatus =
   | "pending"
@@ -55,6 +59,9 @@ export interface PaymentRecord {
   currency: string;
   asset_code: string | null;
   asset_issuer: string | null;
+  asset_type: string | null;
+  payment_rail: string | null;
+  external_reference: string | null;
   stellar_tx_hash: string | null;
   from_address: string | null;
   to_address: string | null;
@@ -99,16 +106,19 @@ export const PaymentsService = {
 
     // Validate booking exists and belongs to user
     const booking = await BookingModel.findById(bookingId);
-    if (!booking) throw createError("Booking not found", 404);
-    if (booking.mentee_id !== userId) throw createError("Access denied", 403);
+    if (!booking) throw createError(ErrorCode.PAYMENT_BOOKING_NOT_FOUND, 404);
+    if (booking.mentee_id !== userId) throw createError(ErrorCode.PAYMENT_ACCESS_DENIED, 403);
     if (booking.payment_status === "paid")
-      throw createError("Booking is already paid", 409);
+      throw createError(ErrorCode.PAYMENT_ALREADY_COMPLETED, 409);
 
-    const platformFee = (parseFloat(amount) * PLATFORM_FEE_PCT).toFixed(7);
+    // Loyalty tier reduces the effective platform fee (issue #680)
+    const discountBps = await LoyaltyService.getDiscountBps(userId);
+    const effectiveFeePct = PLATFORM_FEE_PCT * (1 - discountBps / 10000);
+    const platformFee = (parseFloat(amount) * effectiveFeePct).toFixed(7);
 
     // Resolve asset metadata
     const assetDef = SUPPORTED_ASSETS[currency.toUpperCase()];
-    if (!assetDef) throw createError(`Unsupported currency: ${currency}`, 400);
+    if (!assetDef) throw createError(ErrorCode.PAYMENT_UNSUPPORTED_CURRENCY, 400, { currency });
 
     const assetCode = assetDef.code === "XLM" ? null : assetDef.code;
     const assetIssuer = assetDef.issuer ?? null;
@@ -127,10 +137,11 @@ export const PaymentsService = {
       `INSERT INTO transactions
          (user_id, booking_id, type, status, amount, currency,
           asset_code, asset_issuer, asset_type,
+          payment_rail, external_reference,
           from_address, to_address, platform_fee, description,
           quote_id, quoted_rate, path_payment,
           initiated_at, created_at, updated_at)
-       VALUES ($1, $2, 'payment', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+       VALUES ($1, $2, 'payment', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                NOW(), NOW(), NOW())
        RETURNING *`,
       [
@@ -141,6 +152,8 @@ export const PaymentsService = {
         assetCode,
         assetIssuer,
         assetType,
+        null,
+        null,
         fromAddress ?? null,
         toAddress ?? null,
         platformFee,
@@ -208,11 +221,40 @@ export const PaymentsService = {
       );
     }
 
-    // Verify transaction on Stellar network
-    const tx = await stellarService.getTransaction(stellarTxHash);
+    // Validate stellarTxHash format
+    if (!stellarTxHash || typeof stellarTxHash !== 'string' || stellarTxHash.length !== 64 || !/^[a-fA-F0-9]+$/.test(stellarTxHash)) {
+      throw createError("Invalid Stellar transaction hash format", 400);
+    }
+
+    // 1. Check idempotency: ensure this tx hash hasn't been used for another payment
+    const idempotencyCheck = await pool.query(
+      `SELECT id FROM transactions WHERE stellar_tx_hash = $1 AND id != $2 LIMIT 1`,
+      [stellarTxHash, paymentId]
+    );
+    if (idempotencyCheck.rows.length > 0) {
+      throw createError("This transaction hash has already been used for another payment", 409);
+    }
+
+    // 2. Verify transaction on Stellar network with timeout
+    let tx;
+    try {
+      tx = await stellarService.getTransaction(stellarTxHash);
+    } catch (error) {
+      logger.error("Failed to fetch Stellar transaction", { stellarTxHash, error });
+      throw createError("Unable to verify transaction on Stellar network", 400);
+    }
+    
     if (!tx.successful) {
       throw createError("Stellar transaction was not successful", 400);
     }
+    
+    // Verify transaction is recent (within 24 hours)
+    const txCreatedAt = new Date(tx.created_at);
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    if (txCreatedAt < twentyFourHoursAgo) {
+      throw createError("Transaction is too old to confirm (must be within 24 hours)", 400);
+    }
+    
     if (payment.from_address && tx.source_account !== payment.from_address) {
       throw createError(
         "Transaction source account does not match payment sender",
@@ -220,15 +262,63 @@ export const PaymentsService = {
       );
     }
 
-    // Verify payment amount in transaction operations
-    const operations =
-      await stellarService.getTransactionOperations(stellarTxHash);
-    const matchingPaymentOp = operations.find(
-      (op) => op.type === "payment" && op.amount === payment.amount,
-    );
+    // 3. Verify payment operations with full checks
+    let operations;
+    try {
+      operations = await stellarService.getTransactionOperations(stellarTxHash);
+    } catch (error) {
+      logger.error("Failed to fetch transaction operations", { stellarTxHash, error });
+      throw createError("Unable to verify transaction operations", 400);
+    }
+    
+    const matchingPaymentOp = operations.find((op) => {
+      if (op.type !== "payment") return false;
+      
+      // Amount matching with precision tolerance for floating point issues
+      const opAmount = parseFloat(op.amount);
+      const paymentAmount = parseFloat(payment.amount);
+      const tolerance = 0.0000001; // 1e-7 XLM (0.1 stroops)
+      if (Math.abs(opAmount - paymentAmount) > tolerance) return false;
+
+      // Check destination address (more secure validation)
+      const validDestinations: string[] = [];
+      if (payment.to_address) validDestinations.push(payment.to_address);
+      if (env.PLATFORM_PUBLIC_KEY) validDestinations.push(env.PLATFORM_PUBLIC_KEY);
+      if (validDestinations.length === 0) {
+        logger.error("No valid destination addresses configured", { paymentId });
+        return false;
+      }
+      if (!validDestinations.includes(op.to)) return false;
+
+      // Check asset details with strict validation
+      if (payment.currency === "XLM" || payment.asset_type === "native") {
+        if (op.asset_type !== "native") return false;
+      } else {
+        if (op.asset_type === "native") return false;
+        if (op.asset_code !== payment.asset_code) return false;
+        if (op.asset_issuer !== payment.asset_issuer) return false;
+      }
+
+      return true;
+    });
+    
     if (!matchingPaymentOp) {
+      logger.warn("No matching payment operation found", {
+        paymentId,
+        stellarTxHash,
+        expectedAmount: payment.amount,
+        expectedCurrency: payment.currency,
+        expectedDestinations: payment.to_address || env.PLATFORM_PUBLIC_KEY,
+        operations: operations.map(op => ({
+          type: op.type,
+          amount: op.amount,
+          to: op.to,
+          asset_type: op.asset_type,
+          asset_code: op.asset_code
+        }))
+      });
       throw createError(
-        "Transaction does not contain a matching payment amount",
+        "Transaction does not contain a matching payment operation",
         400,
       );
     }
@@ -236,38 +326,70 @@ export const PaymentsService = {
     logger.info("Stellar transaction verified for payment", {
       paymentId,
       hash: tx.hash,
+      amount: matchingPaymentOp.amount,
+      destination: matchingPaymentOp.to,
+      assetType: matchingPaymentOp.asset_type
     });
 
-    const { rows } = await pool.query<PaymentRecord>(
-      `UPDATE transactions
-       SET status = 'completed', stellar_tx_hash = $2, completed_at = NOW(), updated_at = NOW()
-       WHERE id = $1
-       RETURNING *`,
-      [paymentId, stellarTxHash],
-    );
-
-    if (!rows[0]) throw createError("Failed to confirm payment", 500);
-
-    // Update booking payment status
-    if (payment.booking_id) {
-      await pool.query(
-        `UPDATE bookings SET payment_status = 'paid', stellar_tx_hash = $2, updated_at = NOW() WHERE id = $1`,
-        [payment.booking_id, stellarTxHash],
+    // Atomic write: update the transactions row, the booking payment
+    // status, AND emit a payment.confirmed outbox event. If the process
+    // crashes after COMMIT, the outbox worker re-dispatches the
+    // notification fan-out reliably.
+    //
+    // The socket emit happens AFTER this transaction commits — keeping
+    // side-effects to external systems outside the DB tx avoids
+    // notifying users of a payment that did not actually persist.
+    const completedAtIso = new Date().toISOString();
+    await DatabaseService.withTransaction(async (client) => {
+      const { rows } = await client.query<PaymentRecord>(
+        `UPDATE transactions
+         SET status = 'completed',
+             payment_rail = 'stellar',
+             external_reference = $2,
+             stellar_tx_hash = $2,
+             completed_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $1
+         RETURNING *`,
+        [paymentId, stellarTxHash],
       );
-    }
 
-    // Emit payment:confirmed event to the user
+      if (!rows[0]) throw createError("Failed to confirm payment", 500);
+
+      if (payment.booking_id) {
+        await client.query(
+          `UPDATE bookings SET payment_status = 'paid', stellar_tx_hash = $2, updated_at = NOW() WHERE id = $1`,
+          [payment.booking_id, stellarTxHash],
+        );
+      }
+
+      await emitPaymentConfirmed(
+        {
+          paymentId,
+          bookingId: payment.booking_id,
+          userId: payment.user_id,
+          amount: payment.amount,
+          currency: payment.currency,
+          stellarTxHash,
+          completedAt: completedAtIso,
+        },
+        { client, userId: payment.user_id },
+      );
+    });
+
+    // Best-effort real-time socket notification once the DB tx is durably
+    // committed. The outbox worker is the durable fallback.
     SocketService.emitToUser(payment.user_id, "payment:confirmed", {
       paymentId,
       bookingId: payment.booking_id,
       amount: payment.amount,
       currency: payment.currency,
       stellarTxHash,
-      completedAt: rows[0].completed_at,
+      completedAt: completedAtIso,
     });
 
     logger.info("Payment confirmed", { paymentId, stellarTxHash });
-    return rows[0];
+    return await this.getPaymentById(paymentId, userId);
   },
 
   async listUserPayments(
@@ -389,6 +511,7 @@ export const PaymentsService = {
     amount?: string,
     reason?: string,
     stellarTxHash?: string,
+    stripeRefundChargeId?: string,
   ): Promise<PaymentRecord> {
     const payment = await this.getPaymentById(paymentId, userId);
 
@@ -464,11 +587,27 @@ export const PaymentsService = {
       return { processed: false, message: "No transaction hash provided" };
     }
 
-    // Find pending payment matching this transaction hash or to_address
+    // 1. Check idempotency first: if transaction hash is already in transactions, skip
+    const idempotencyCheck = await pool.query(
+      `SELECT id FROM transactions WHERE stellar_tx_hash = $1 LIMIT 1`,
+      [payload.transaction_hash]
+    );
+    if (idempotencyCheck.rows.length > 0) {
+      logger.info("Webhook: transaction hash already processed, skipping", {
+        txHash: payload.transaction_hash,
+      });
+      return { processed: false, message: "Transaction hash already processed" };
+    }
+
+    // 2. Find pending payment (prefer matching by to_address)
     const { rows } = await pool.query<PaymentRecord>(
       `SELECT * FROM transactions
-       WHERE (stellar_tx_hash = $1 OR to_address = $2)
-         AND status IN ('pending', 'processing')
+       WHERE status IN ('pending', 'processing')
+       ORDER BY
+         CASE
+           WHEN to_address = $2 THEN 0
+           ELSE 1
+         END
        LIMIT 1`,
       [payload.transaction_hash, payload.to ?? null],
     );
@@ -482,10 +621,57 @@ export const PaymentsService = {
 
     const payment = rows[0];
 
-    await pool.query(
+    // 3. Verify transaction on Stellar network
+    const tx = await stellarService.getTransaction(payload.transaction_hash);
+    if (!tx.successful) {
+      logger.warn("Webhook: Stellar transaction not successful", {
+        txHash: payload.transaction_hash,
+      });
+      return { processed: false, message: "Stellar transaction was not successful" };
+    }
+
+    // 4. Verify payment operations
+    const operations = await stellarService.getTransactionOperations(payload.transaction_hash);
+    const matchingPaymentOp = operations.find((op) => {
+      if (op.type !== "payment") return false;
+      if (op.amount !== payment.amount) return false;
+
+      // Check destination
+      const validDestinations: string[] = [];
+      if (payment.to_address) validDestinations.push(payment.to_address);
+      if (env.PLATFORM_PUBLIC_KEY) validDestinations.push(env.PLATFORM_PUBLIC_KEY);
+      if (!validDestinations.includes(op.to)) return false;
+
+      // Check asset details
+      if (payment.currency === "XLM" || payment.asset_type === "native") {
+        if (op.asset_type !== "native") return false;
+      } else {
+        if (op.asset_type === "native") return false;
+        if (op.asset_code !== payment.asset_code) return false;
+        if (op.asset_issuer !== payment.asset_issuer) return false;
+      }
+
+      return true;
+    });
+    if (!matchingPaymentOp) {
+      logger.warn("Webhook: No matching payment operation found", {
+        txHash: payload.transaction_hash,
+        paymentId: payment.id,
+      });
+      return { processed: false, message: "No matching payment operation found" };
+    }
+
+    // 5. Update payment and booking
+    const { rows: updatedRows } = await pool.query<PaymentRecord>(
       `UPDATE transactions
-       SET status = 'completed', stellar_tx_hash = $2, completed_at = NOW(), updated_at = NOW()
-       WHERE id = $1`,
+       SET status = 'completed',
+           payment_rail = 'stellar',
+           external_reference = $2,
+           stellar_tx_hash = $2,
+           completed_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
       [payment.id, payload.transaction_hash],
     );
 
@@ -495,6 +681,16 @@ export const PaymentsService = {
         [payment.booking_id, payload.transaction_hash],
       );
     }
+
+    // Emit event
+    SocketService.emitToUser(payment.user_id, "payment:confirmed", {
+      paymentId: payment.id,
+      bookingId: payment.booking_id,
+      amount: payment.amount,
+      currency: payment.currency,
+      stellarTxHash: payload.transaction_hash,
+      completedAt: updatedRows[0]?.completed_at,
+    });
 
     logger.info("Webhook processed payment", {
       paymentId: payment.id,

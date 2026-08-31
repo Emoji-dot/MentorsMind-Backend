@@ -3,72 +3,86 @@ import { DisputeStateMachine } from "./dispute-state-machine.service";
 import { AuditLogModel } from "../models/audit-log.model";
 import { SorobanEscrowService } from "./sorobanEscrow.service";
 import { DatabaseService } from "./database.service";
-import { NotificationService } from "./notification.service";
-import { NotificationType, NotificationChannel, NotificationPriority } from "../models/notifications.model";
+import {
+  NotificationService,
+  NotificationChannel,
+  NotificationPriority,
+} from "./notification.service";
+import { NotificationType } from "../models/notifications.model";
 import pool from "../config/database";
-import { logger } from "../utils/logger";
+import {
+  emitDisputeOpened,
+  emitDisputeResolved,
+} from "./outbox.service";
+import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
 
 export class DisputeService {
-  /**
-   * Opens a new dispute.
-   */
   static async openDispute(
-    transactionId: string,
-    reporterId: string,
+    sessionId: string,
+    filedById: string,
+    type: "payment" | "quality" | "conduct" | "cancellation",
     reason: string,
+    ipAddress: string | null = null,
+    userAgent: string | null = null
   ): Promise<DisputeRecord> {
-    const dispute = await DisputeModel.create({
-      transaction_id: transactionId,
-      reporter_id: reporterId,
-      reason,
-    });
-
-    await AuditLogModel.create({
-      level: "info",
-      action: "dispute_opened",
-      message: `Dispute opened for transaction ${transactionId}`,
-      user_id: reporterId,
-      entity_type: "dispute",
-      entity_id: dispute.id,
-      metadata: { reason },
-      ip_address: null,
-      user_agent: null,
-    });
-
-    // Notify reporter and the other party (mentor or mentee)
     const { rows: bookingRows } = await pool.query<{
       mentor_id: string;
       mentee_id: string;
-    }>(
-      `SELECT mentor_id, mentee_id FROM bookings WHERE id = $1 LIMIT 1`,
-      [transactionId],
-    );
+      escrow_id: string | null;
+    }>(`SELECT mentor_id, mentee_id, escrow_id FROM bookings WHERE id = $1 LIMIT 1`, [
+      sessionId,
+    ]);
     const booking = bookingRows[0];
-    const otherPartyId =
-      booking &&
-      (booking.mentor_id === reporterId ? booking.mentee_id : booking.mentor_id);
+    if (!booking) throw createError(ErrorCode.DISPUTE_SESSION_NOT_FOUND, 404);
 
-    const openedNotifications = [
-      NotificationService.sendNotification({
-        userId: reporterId,
-        type: NotificationType.DISPUTE_CREATED,
-        channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
-        priority: NotificationPriority.HIGH,
-        data: { disputeId: dispute.id, event: "dispute_opened" },
-      }),
-    ];
-    if (otherPartyId) {
-      openedNotifications.push(
-        NotificationService.sendNotification({
-          userId: otherPartyId,
-          type: NotificationType.DISPUTE_CREATED,
-          channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
-          priority: NotificationPriority.HIGH,
-          data: { disputeId: dispute.id, event: "dispute_opened" },
-        }),
-      );
+    if (booking.escrow_id) {
+      const { cancelEscrowRelease } = await import("../queues/escrow-release.queue");
+      await cancelEscrowRelease(booking.escrow_id);
     }
-    await Promise.all(openedNotifications);
+
+    const respondentId =
+      booking.mentor_id === filedById ? booking.mentee_id : booking.mentor_id;
+
+    // Atomic writes: dispute INSERT + audit-log INSERT + outbox row.
+    // The outbox worker re-dispatches the notification fan-out reliably
+    // if the process crashes before sendNotification finishes.
+    const dispute = await DatabaseService.withTransaction(async (client) => {
+      const insertResult = await client.query<DisputeRecord>(
+        `INSERT INTO disputes (session_id, filed_by_id, respondent_id, type, reason, status)
+         VALUES ($1, $2, $3, $4, $5, 'open')
+         RETURNING *`,
+        [sessionId, filedById, respondentId, type, reason],
+      );
+      const created = insertResult.rows[0];
+      if (!created) throw createError(ErrorCode.DISPUTE_CREATION_FAILED, 500);
+
+      await client.query(
+        `INSERT INTO audit_logs
+           (level, action, message, user_id, entity_type, entity_id, metadata, ip_address, user_agent)
+         VALUES ('info', 'dispute_opened', $1, $2, 'dispute', $3, $4, NULL, NULL)`,
+        [
+          `Dispute opened for session ${sessionId}`,
+          filedById,
+          created.id,
+          JSON.stringify({ reason, type }),
+        ],
+      );
+
+      await emitDisputeOpened(
+        {
+          disputeId: created.id,
+          filedById,
+          respondentId,
+          bookingId: sessionId,
+          type,
+          reason,
+        },
+        { client, userId: filedById },
+      );
+
+      return created;
+    });
 
     return dispute;
   }
@@ -79,9 +93,19 @@ export class DisputeService {
   static async uploadEvidence(
     disputeId: string,
     userId: string,
+    userRole: string,
     textContent?: string,
     fileUrl?: string,
+    ipAddress: string | null = null,
+    userAgent: string | null = null
   ) {
+    const dispute = await DisputeModel.findById(disputeId);
+    if (!dispute) throw createError(ErrorCode.DISPUTE_NOT_FOUND, 404);
+
+    if (dispute.filed_by_id !== userId && dispute.respondent_id !== userId && userRole !== "admin") {
+      throw createError(ErrorCode.DISPUTE_UNAUTHORIZED, 403);
+    }
+
     const evidence = await DisputeModel.addEvidence({
       dispute_id: disputeId,
       submitter_id: userId,
@@ -98,25 +122,25 @@ export class DisputeService {
       entity_type: "dispute_evidence",
       entity_id: evidence.id,
       metadata: { file_attached: !!fileUrl },
-      ip_address: null,
-      user_agent: null,
+      ip_address: ipAddress,
+      user_agent: userAgent,
     });
 
     return evidence;
   }
 
   /**
-   * Automatically escalate disputes older than 7 days to `under_review`.
+   * Automatically escalate disputes older than 7 days to `investigating`.
    */
   static async escalateOldDisputes(): Promise<number> {
     const oldDisputes = await DisputeModel.findUnresolvedOlderThanDays(7);
     let escalatedCount = 0;
 
     for (const dispute of oldDisputes) {
-      if (DisputeStateMachine.canTransition(dispute.status, "under_review")) {
+      if (DisputeStateMachine.canTransition(dispute.status, "investigating")) {
         await DisputeModel.updateStatus(
           dispute.id,
-          "under_review",
+          "investigating",
           "Auto-escalated after 7 days",
         );
 
@@ -136,20 +160,19 @@ export class DisputeService {
         const { rows: escalateBookingRows } = await pool.query<{
           mentor_id: string;
           mentee_id: string;
-        }>(
-          `SELECT mentor_id, mentee_id FROM bookings WHERE id = $1 LIMIT 1`,
-          [dispute.transaction_id],
-        );
+        }>(`SELECT mentor_id, mentee_id FROM bookings WHERE id = $1 LIMIT 1`, [
+          dispute.session_id,
+        ]);
         const escalateBooking = escalateBookingRows[0];
         const escalateOtherPartyId =
           escalateBooking &&
-          (escalateBooking.mentor_id === dispute.reporter_id
+          (escalateBooking.mentor_id === dispute.filed_by_id
             ? escalateBooking.mentee_id
             : escalateBooking.mentor_id);
 
         const escalateNotifications = [
           NotificationService.sendNotification({
-            userId: dispute.reporter_id,
+            userId: dispute.filed_by_id,
             type: NotificationType.DISPUTE_CREATED,
             channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
             priority: NotificationPriority.HIGH,
@@ -175,23 +198,62 @@ export class DisputeService {
   }
 
   /**
+   * Move dispute to mediation workflow.
+   */
+  static async mediateDispute(
+    disputeId: string,
+    adminId: string,
+    notes: string,
+    ipAddress: string | null = null,
+    userAgent: string | null = null
+  ): Promise<DisputeRecord> {
+    const dispute = await DisputeModel.findById(disputeId);
+    if (!dispute) throw createError(ErrorCode.DISPUTE_NOT_FOUND, 404);
+
+    DisputeStateMachine.assertTransition(dispute.status, "mediation");
+
+    const updated = await DisputeModel.updateStatus(
+      disputeId,
+      "mediation",
+      notes,
+    );
+
+    await AuditLogModel.create({
+      level: "info",
+      action: "dispute_mediated",
+      message: `Dispute ${disputeId} moved to mediation by admin ${adminId}`,
+      user_id: adminId,
+      entity_type: "dispute",
+      entity_id: disputeId,
+      metadata: { notes },
+      ip_address: ipAddress,
+      user_agent: userAgent,
+    });
+
+    return updated!;
+  }
+
+  /**
    * Admins resolve a dispute.
    * Looks up the booking's escrow_id and escrow_contract_address via the dispute's
-   * transaction_id, calls the real SorobanEscrowService, and wraps the escrow call
-   * + DB status update in a single transaction so they succeed or fail together.
+   * session_id, calls the real SorobanEscrowService, and wraps the escrow call
+   * + DB status update + outbox event in a single transaction so the durable
+   * side-effects remain consistent.
    */
   static async resolveDispute(
     disputeId: string,
     adminId: string,
-    resolutionType: "full_refund" | "partial_refund" | "release",
+    mentorPct: number,
     notes: string,
+    ipAddress: string | null = null,
+    userAgent: string | null = null
   ): Promise<DisputeRecord> {
     const dispute = await DisputeModel.findById(disputeId);
-    if (!dispute) throw new Error("Dispute not found");
+    if (!dispute) throw createError(ErrorCode.DISPUTE_NOT_FOUND, 404);
 
     DisputeStateMachine.assertTransition(dispute.status, "resolved");
 
-    // Look up escrow details from the bookings table using the dispute's transaction_id
+    // Look up escrow details from the bookings table using the dispute's session_id
     const { rows } = await pool.query<{
       escrow_id: string | null;
       escrow_contract_address: string | null;
@@ -199,34 +261,24 @@ export class DisputeService {
       mentee_id: string;
     }>(
       `SELECT escrow_id, escrow_contract_address, mentor_id, mentee_id FROM bookings WHERE id = $1 LIMIT 1`,
-      [dispute.transaction_id],
+      [dispute.session_id],
     );
     const booking = rows[0];
     if (!booking?.escrow_id) {
-      throw new Error(
-        `No escrow_id found for booking ${dispute.transaction_id}`,
-      );
+      throw createError(ErrorCode.DISPUTE_ESCROW_MISSING, 400);
     }
 
-    // Execute escrow action + DB status update atomically
+    // Execute escrow action + DB status update + outbox write atomically.
+    // The outbox worker re-dispatches notifications if the process crashes
+    // before they finish.
     const updated = await DatabaseService.withTransaction(async (client) => {
-      // 1. Call the real Soroban escrow contract
-      if (
-        resolutionType === "full_refund" ||
-        resolutionType === "partial_refund"
-      ) {
-        await SorobanEscrowService.refund({
-          escrowId: booking.escrow_id!,
-          refundedBy: adminId,
-          contractAddress: booking.escrow_contract_address ?? undefined,
-        });
-      } else {
-        await SorobanEscrowService.releaseFunds({
-          escrowId: booking.escrow_id!,
-          releasedBy: adminId,
-          contractAddress: booking.escrow_contract_address ?? undefined,
-        });
-      }
+      // 1. Call the real Soroban escrow contract's resolve_dispute
+      await SorobanEscrowService.resolveDispute({
+        escrowId: booking.escrow_id!,
+        splitPercentage: mentorPct,
+        resolvedBy: adminId,
+        contractAddress: booking.escrow_contract_address ?? undefined,
+      });
 
       // 2. Update dispute status inside the same transaction
       const result = await client.query<DisputeRecord>(
@@ -234,43 +286,41 @@ export class DisputeService {
          WHERE id = $2 RETURNING *`,
         [notes, disputeId],
       );
+
+      if (!result.rows[0]) {
+        throw createError(ErrorCode.DISPUTE_UPDATE_FAILED, 500);
+      }
+
+      // 3. Outbox event committed atomically with dispute status + escrow call.
+      await emitDisputeResolved(
+        {
+          disputeId,
+          filedById: dispute.filed_by_id,
+          respondentId:
+            booking.mentor_id === dispute.filed_by_id
+              ? booking.mentee_id
+              : booking.mentor_id,
+          bookingId: dispute.session_id,
+          mentorPct,
+          notes,
+        },
+        { client, userId: adminId },
+      );
+
       return result.rows[0];
     });
 
     await AuditLogModel.create({
       level: "info",
       action: "dispute_resolved",
-      message: `Dispute ${disputeId} resolved by admin ${adminId} via ${resolutionType}`,
+      message: `Dispute ${disputeId} resolved by admin ${adminId} with mentorPct ${mentorPct}`,
       user_id: adminId,
       entity_type: "dispute",
       entity_id: disputeId,
-      metadata: { resolutionType, notes },
-      ip_address: null,
-      user_agent: null,
+      metadata: { mentorPct, notes },
+      ip_address: ipAddress,
+      user_agent: userAgent,
     });
-
-    await NotificationService.sendNotification({
-      userId: dispute.reporter_id,
-      type: NotificationType.SYSTEM_ALERT,
-      channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
-      priority: NotificationPriority.HIGH,
-      data: { disputeId, event: "dispute_resolved", resolutionType },
-    });
-
-    // Notify the other party (mentor or mentee)
-    const resolveOtherPartyId =
-      booking.mentor_id === dispute.reporter_id
-        ? booking.mentee_id
-        : booking.mentor_id;
-    if (resolveOtherPartyId) {
-      await NotificationService.sendNotification({
-        userId: resolveOtherPartyId,
-        type: NotificationType.SYSTEM_ALERT,
-        channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL],
-        priority: NotificationPriority.HIGH,
-        data: { disputeId, event: "dispute_resolved", resolutionType },
-      });
-    }
 
     return updated;
   }

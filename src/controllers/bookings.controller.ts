@@ -4,6 +4,7 @@ import { UsersService } from "../services/users.service";
 import { MeetingService } from "../services/meeting.service";
 import { NotificationService } from "../services/notification.service";
 import { BookingsService } from "../services/bookings.service";
+import { EventStoreService } from "../services/event-store.service";
 import { ResponseUtil } from "../utils/response.utils";
 import { asyncHandler } from "../utils/asyncHandler.utils";
 import { logger } from "../utils/logger";
@@ -279,6 +280,34 @@ export const BookingsController = {
       );
     },
   ),
+
+  /**
+   * GET /api/v1/bookings/:id/events
+   * Admin-only full event log for a booking aggregate (version order).
+   */
+  getBookingEvents: asyncHandler(async (req: Request, res: Response) => {
+    const { id } = req.params;
+    if (!id || Array.isArray(id)) {
+      return ResponseUtil.error(res, "Invalid booking ID", 400);
+    }
+
+    const limit = Math.min(parseInt(String(req.query.limit || "100"), 10) || 100, 500);
+    const offset = parseInt(String(req.query.offset || "0"), 10) || 0;
+
+    const history = await EventStoreService.getEventHistory(id, limit, offset);
+
+    return ResponseUtil.success(
+      res,
+      {
+        bookingId: id,
+        events: history.events,
+        total: history.total,
+        limit,
+        offset,
+      },
+      "Booking event history retrieved",
+    );
+  }),
 };
 
 export default BookingsController;

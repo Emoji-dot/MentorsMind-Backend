@@ -12,6 +12,7 @@
 import { Asset } from '@stellar/stellar-sdk';
 import { server } from '../config/stellar';
 import { CacheService } from './cache.service';
+import { OracleService } from './oracle.service';
 import { logger } from '../utils/logger.utils';
 import { createError } from '../middleware/errorHandler';
 import { v4 as uuidv4 } from 'uuid';
@@ -80,6 +81,8 @@ export interface ExchangeRate {
   to: string;
   rate: string;       // how many `to` units per 1 `from` unit
   fetchedAt: string;  // ISO timestamp
+  source?: 'oracle' | 'sdex';
+  warning?: 'oracle_stale';
 }
 
 export interface PaymentQuote {
@@ -148,7 +151,7 @@ export const AssetExchangeService = {
     const cached = await CacheService.get<ExchangeRate>(key);
     if (cached) return cached;
 
-    const rate = await this._fetchRateFromDex(from, to);
+    const rate = await this._fetchRate(from, to);
     await CacheService.set(key, rate, RATE_TTL_SECONDS);
     return rate;
   },
@@ -238,7 +241,7 @@ export const AssetExchangeService = {
       await Promise.allSettled(
         pairs.map(async ([from, to]) => {
           try {
-            const rate = await this._fetchRateFromDex(from, to);
+            const rate = await this._fetchRate(from, to);
             await CacheService.set(rateKey(from, to), rate, RATE_TTL_SECONDS);
             logger.debug('Exchange rate refreshed', { from, to, rate: rate.rate });
           } catch (err) {
@@ -277,6 +280,69 @@ export const AssetExchangeService = {
       }
     }
     return pairs;
+  },
+
+  /**
+   * Resolve a rate preferring the on-chain oracle for XLM/USD-equivalent
+   * pairs. Falls back to the SDEX orderbook if the oracle is unconfigured,
+   * unreachable, or reports its price as stale (circuit breaker).
+   */
+  async _fetchRate(from: string, to: string): Promise<ExchangeRate> {
+    const oracleAsset = this._oracleAssetForPair(from, to);
+
+    if (oracleAsset && OracleService.isConfigured()) {
+      try {
+        const oraclePrice = await OracleService.getPrice(oracleAsset.symbol);
+
+        if (!oraclePrice.isStale) {
+          const rate = oracleAsset.invert
+            ? (1 / parseFloat(oraclePrice.price)).toFixed(7)
+            : oraclePrice.price;
+
+          return {
+            from,
+            to,
+            rate,
+            fetchedAt: oraclePrice.updatedAt,
+            source: 'oracle',
+          };
+        }
+
+        logger.warn('Oracle price is stale, falling back to SDEX', {
+          from,
+          to,
+          asset: oracleAsset.symbol,
+        });
+      } catch (err) {
+        logger.warn('Oracle price lookup failed, falling back to SDEX', {
+          from,
+          to,
+          error: err instanceof Error ? err.message : err,
+        });
+      }
+
+      const dexRate = await this._fetchRateFromDex(from, to);
+      return { ...dexRate, source: 'sdex', warning: 'oracle_stale' };
+    }
+
+    const dexRate = await this._fetchRateFromDex(from, to);
+    return { ...dexRate, source: 'sdex' };
+  },
+
+  /**
+   * Maps a supported asset pair to the oracle's asset symbol, if the oracle
+   * publishes a price for that pair. Currently only XLM/USD-equivalents.
+   */
+  _oracleAssetForPair(
+    from: string,
+    to: string,
+  ): { symbol: string; invert: boolean } | null {
+    const isUsdLike = (code: string) => code === 'USDC' || code === 'PYUSD';
+
+    if (from === 'XLM' && isUsdLike(to)) return { symbol: 'XLM', invert: false };
+    if (isUsdLike(from) && to === 'XLM') return { symbol: 'XLM', invert: true };
+
+    return null;
   },
 
   async _fetchRateFromDex(from: string, to: string): Promise<ExchangeRate> {

@@ -4,119 +4,160 @@
  * Prevents duplicate mutations on payment/booking/escrow endpoints.
  * Clients send `Idempotency-Key: <uuid>` on POST requests.
  *
- * Behaviour:
- *  - First request  → process normally, persist response in DB
- *  - Duplicate key  → return stored response immediately (X-Idempotency-Replayed: true)
- *  - Same key, different endpoint → 409 Conflict
- *  - Keys expire after 24 hours (re-processed as fresh)
+ * Behaviour (issue #662):
+ *  - Missing header on a payment mutation → 400 (booking mutations fall back
+ *    to a SHA-256(userId + requestBody) derived key instead of hard-failing,
+ *    since not all booking clients have adopted the header yet).
+ *  - Response cached in Redis at idempotency:{userId}:{key} with a 24h TTL.
+ *  - Duplicate key → replay the cached response (X-Idempotency-Replayed: true).
+ *  - Same key, different endpoint → 409 Conflict.
+ *  - Concurrent requests with the same key → second request blocks on a
+ *    Redis SETNX lock until the first completes, then returns the cached
+ *    result instead of re-running business logic.
+ *  - Redis failure → fail open (falls through to next()) rather than block
+ *    all traffic; the DB UNIQUE constraint on bookings/transactions remains
+ *    the last line of defense against duplicates.
  */
 
 import { Request, Response, NextFunction } from "express";
-import pool from "../config/database";
+import crypto from "crypto";
+import { redis } from "../config/redis";
 import { logger } from "../utils/logger.utils";
 
-const TTL_HOURS = 24;
+const TTL_SECONDS = 24 * 60 * 60;
+const LOCK_TTL_SECONDS = 30;
+const LOCK_POLL_MS = 200;
+const LOCK_MAX_WAIT_MS = 10_000;
 
-export const idempotency = async (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Promise<void> => {
-  const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
+interface CachedResponse {
+  status: number;
+  endpoint: string;
+  body: unknown;
+}
 
-  if (!idempotencyKey) {
-    res
-      .status(400)
-      .json({ success: false, error: "Idempotency-Key header is required" });
-    return;
-  }
+function deriveFallbackKey(userId: string, req: Request): string {
+  const payload = `${userId}:${JSON.stringify(req.body ?? {})}`;
+  return crypto.createHash("sha256").update(payload).digest("hex");
+}
 
-  if (!/^[0-9a-f-]{36}$/i.test(idempotencyKey)) {
-    res
-      .status(400)
-      .json({ success: false, error: "Idempotency-Key must be a valid UUID" });
-    return;
-  }
+function buildEndpointId(req: Request): string {
+  return `${req.method} ${req.route?.path ?? req.path}`;
+}
 
-  const userId = (req as any).user?.userId;
-  if (!userId) {
-    // Auth middleware should have already rejected unauthenticated requests
-    res.status(401).json({ success: false, error: "Authentication required" });
-    return;
-  }
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  const endpoint = `${req.method} ${req.route?.path ?? req.path}`;
+export function idempotency(
+  options: { requireHeader?: boolean } = {},
+) {
+  const requireHeader = options.requireHeader ?? false;
 
-  try {
-    const { rows } = await pool.query<{
-      endpoint: string;
-      response_body: unknown;
-      created_at: Date;
-    }>(
-      `SELECT endpoint, response_body, created_at
-         FROM idempotency_keys
-        WHERE key = $1 AND user_id = $2`,
-      [idempotencyKey, userId],
-    );
+  return async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const headerKey = req.headers["idempotency-key"] as string | undefined;
 
-    if (rows.length > 0) {
-      const record = rows[0];
-      const ageMs = Date.now() - new Date(record.created_at).getTime();
-
-      // Expired — delete and fall through to process fresh
-      if (ageMs > TTL_HOURS * 3_600_000) {
-        await pool.query(
-          `DELETE FROM idempotency_keys WHERE key = $1 AND user_id = $2`,
-          [idempotencyKey, userId],
-        );
-      } else if (record.endpoint !== endpoint) {
-        // Same key, different endpoint → conflict
-        res.status(409).json({
-          success: false,
-          error: `Idempotency-Key already used for ${record.endpoint}`,
-        });
-        return;
-      } else {
-        // Valid cache hit — replay stored response
-        logger.info("Idempotency cache hit", { idempotencyKey, endpoint });
-        res.setHeader("X-Idempotency-Replayed", "true");
-        res
-          .status((record.response_body as any).__status ?? 200)
-          .json((record.response_body as any).__body);
-        return;
-      }
+    if (headerKey && !/^[0-9a-f-]{36}$/i.test(headerKey)) {
+      res
+        .status(400)
+        .json({ success: false, error: "Idempotency-Key must be a valid UUID" });
+      return;
     }
 
-    // Intercept res.json to persist the response after it is sent
-    const originalJson = res.json.bind(res);
-    res.json = (body: unknown) => {
-      const status = res.statusCode;
-      if (status >= 200 && status < 300) {
-        pool
-          .query(
-            `INSERT INTO idempotency_keys (key, user_id, endpoint, response_body)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (key, user_id) DO NOTHING`,
-            [
-              idempotencyKey,
-              userId,
-              endpoint,
-              JSON.stringify({ __status: status, __body: body }),
-            ],
-          )
-          .catch((err) => {
-            logger.warn("Failed to persist idempotency key", {
-              err,
-              idempotencyKey,
-            });
-          });
-      }
-      return originalJson(body);
-    };
+    if (!headerKey && requireHeader) {
+      res
+        .status(400)
+        .json({ success: false, error: "Idempotency-Key header is required" });
+      return;
+    }
 
-    next();
-  } catch (err) {
-    logger.warn("Idempotency middleware error — failing open", { err });
-    next();
-  }
-};
+    const userId = (req as any).user?.userId ?? (req as any).user?.id;
+    if (!userId) {
+      res.status(401).json({ success: false, error: "Authentication required" });
+      return;
+    }
+
+    const idempotencyKey = headerKey ?? deriveFallbackKey(userId, req);
+    const endpoint = buildEndpointId(req);
+    const cacheKey = `idempotency:${userId}:${idempotencyKey}`;
+    const lockKey = `${cacheKey}:lock`;
+
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        const record: CachedResponse = JSON.parse(cached);
+        if (record.endpoint !== endpoint) {
+          res.status(409).json({
+            success: false,
+            error: `Idempotency-Key already used for ${record.endpoint}`,
+          });
+          return;
+        }
+        logger.info("Idempotency cache hit", { idempotencyKey, endpoint });
+        res.setHeader("X-Idempotency-Replayed", "true");
+        res.status(record.status).json(record.body);
+        return;
+      }
+
+      // Distributed lock so concurrent requests with the same key serialize:
+      // the second request waits for the first to finish and returns its
+      // cached result rather than re-executing business logic.
+      const acquired = await redis.set(lockKey, "1", "EX", LOCK_TTL_SECONDS, "NX");
+
+      if (!acquired) {
+        const deadline = Date.now() + LOCK_MAX_WAIT_MS;
+        while (Date.now() < deadline) {
+          await sleep(LOCK_POLL_MS);
+          const nowCached = await redis.get(cacheKey);
+          if (nowCached) {
+            const record: CachedResponse = JSON.parse(nowCached);
+            res.setHeader("X-Idempotency-Replayed", "true");
+            res.status(record.status).json(record.body);
+            return;
+          }
+          const lockStillHeld = await redis.get(lockKey);
+          if (!lockStillHeld) break;
+        }
+        // Lock released without a cached result (the first request likely
+        // errored) — fall through and let this request process normally.
+      }
+
+      const originalJson = res.json.bind(res);
+      res.json = (body: unknown) => {
+        const status = res.statusCode;
+        if (status >= 200 && status < 300) {
+          const record: CachedResponse = { status, endpoint, body };
+          redis
+            .set(cacheKey, JSON.stringify(record), "EX", TTL_SECONDS)
+            .catch((err) =>
+              logger.warn("Failed to persist idempotency key", {
+                err,
+                idempotencyKey,
+              }),
+            );
+        }
+        redis.del(lockKey).catch(() => undefined);
+        return originalJson(body);
+      };
+
+      res.on("close", () => {
+        if (!res.writableEnded) {
+          redis.del(lockKey).catch(() => undefined);
+        }
+      });
+
+      next();
+    } catch (err) {
+      logger.warn("Idempotency middleware error — failing open", { err });
+      next();
+    }
+  };
+}
+
+/** Default export: header required (payment/booking mutation endpoints). */
+export const requireIdempotency = idempotency({ requireHeader: true });
+/** Header optional, falls back to a content-derived key. */
+export const softIdempotency = idempotency({ requireHeader: false });

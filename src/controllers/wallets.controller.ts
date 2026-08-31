@@ -3,6 +3,7 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../types';
 import { WalletsService } from '../services/wallets.service';
 import { stellarService } from '../services/stellar.service';
+import { defiWalletService } from '../services/defi-wallet.service';
 import { ResponseUtil } from '../utils/response.utils';
 import { logger } from '../utils/logger.utils';
 import type { 
@@ -14,10 +15,100 @@ import type {
 } from '../validators/schemas/wallet.schemas';
 
 export const WalletsController = {
+  /** POST /wallets/defi/sync */
+  async syncDeFiPositions(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user!.userId;
+      const positions = await defiWalletService.syncPositions(userId);
+      const totalValue = await defiWalletService.getPortfolioValue(userId);
+      const portfolioRisk = defiWalletService.calculatePortfolioRisk(positions);
+
+      await WalletsService.logWalletEvent(userId, {
+        eventType: 'balance_check',
+        metadata: {
+          action: 'defi_sync',
+          positionsCount: positions.length,
+          totalValue,
+          portfolioRisk,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('User-Agent'),
+      });
+
+      ResponseUtil.success(
+        res,
+        {
+          positions,
+          totalValue,
+          portfolioRisk,
+          cachedForSeconds: 600,
+          syncedAt: new Date().toISOString(),
+        },
+        'DeFi positions synced successfully',
+      );
+    } catch (error) {
+      logger.error('wallets.syncDeFiPositions failed', {
+        userId: req.user?.userId,
+        error: error instanceof Error ? error.message : error,
+      });
+      ResponseUtil.error(res, 'Failed to sync DeFi positions', 502);
+    }
+  },
+
+  /** GET /wallets/defi/positions */
+  async getDeFiPositions(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user!.userId;
+      const positions =
+        (await defiWalletService.getCachedPositions(userId)) ??
+        (await defiWalletService.syncPositions(userId));
+      const totalValue = positions.reduce(
+        (sum, position) => sum + parseFloat(position.value),
+        0,
+      );
+      const portfolioRisk = defiWalletService.calculatePortfolioRisk(positions);
+
+      await WalletsService.logWalletEvent(userId, {
+        eventType: 'balance_check',
+        metadata: {
+          action: 'defi_positions_view',
+          positionsCount: positions.length,
+          totalValue: totalValue.toFixed(2),
+          portfolioRisk,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('User-Agent'),
+      });
+
+      ResponseUtil.success(
+        res,
+        {
+          positions,
+          totalValue: totalValue.toFixed(2),
+          portfolioRisk,
+          cached: true,
+        },
+        'DeFi positions retrieved successfully',
+      );
+    } catch (error) {
+      logger.error('wallets.getDeFiPositions failed', {
+        userId: req.user?.userId,
+        error: error instanceof Error ? error.message : error,
+      });
+      ResponseUtil.error(res, 'Failed to retrieve DeFi positions', 502);
+    }
+  },
+
   /** GET /wallets/me */
   async getWalletInfo(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const userId = req.user!.id;
+      const userId = req.user!.userId; // Use consistent field name
+      
+      // Validate user ID format
+      if (!userId || typeof userId !== 'string') {
+        ResponseUtil.error(res, 'Invalid user authentication', 401);
+        return;
+      }
       
       const walletInfo = await WalletsService.getWalletInfo(userId);
       
@@ -26,19 +117,35 @@ export const WalletsController = {
         return;
       }
 
-      // Log wallet access event
+      // Sanitize sensitive information
+      const sanitizedWalletInfo = {
+        ...walletInfo,
+        // Never expose private key or seed phrase
+        stellar_private_key: undefined,
+        seed_phrase: undefined,
+        // Only show first 8 and last 8 characters of public key for verification
+        stellar_public_key_display: `${walletInfo.stellar_public_key.substring(0, 8)}...${walletInfo.stellar_public_key.substring(-8)}`,
+        stellar_public_key: walletInfo.stellar_public_key, // Keep full key for API operations
+      };
+
+      // Log wallet access event with rate limiting check
       await WalletsService.logWalletEvent(userId, {
         eventType: 'balance_check',
-        metadata: { action: 'wallet_info_access' },
+        metadata: { 
+          action: 'wallet_info_access',
+          hasPublicKey: !!walletInfo.stellar_public_key,
+          walletStatus: walletInfo.status || 'unknown'
+        },
         ipAddress: req.ip,
         userAgent: req.get('User-Agent'),
       });
 
-      ResponseUtil.success(res, walletInfo, 'Wallet information retrieved successfully');
+      ResponseUtil.success(res, sanitizedWalletInfo, 'Wallet information retrieved successfully');
     } catch (error) {
       logger.error('wallets.getWalletInfo failed', {
-        userId: req.user?.id,
+        userId: req.user?.userId,
         error: error instanceof Error ? error.message : error,
+        ipAddress: req.ip,
       });
       ResponseUtil.error(res, 'Failed to retrieve wallet information', 500);
     }

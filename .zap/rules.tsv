@@ -1,29 +1,28 @@
-# OWASP ZAP Baseline Scan Rules Configuration
-# Format: rule_id	alert_name	risk_level	confidence
+# OWASP ZAP baseline scan rule thresholds (issue #785)
+#
+# Format: <rule id>	<threshold: IGNORE|INFO|WARN|FAIL>	<url regex (optional)>
+# Reference: https://www.zaproxy.org/docs/docker/baseline-scan/
+#
+# Anything not listed here uses ZAP's default threshold (WARN). Entries here
+# either silence a known false positive or explicitly escalate a category we
+# want to always fail the build on. See docs/SECURITY_SCANNING_RUNBOOK.md for
+# the triage process before adding new IGNORE rules.
 
-# Exclude informational alerts
-10000	Informational	Informational	Low
+# Retest cookie flags on /health and /metrics only after confirming they
+# carry no session state — these are unauthenticated, stateless endpoints.
+10096	IGNORE	.*/health/.*
+10096	IGNORE	.*/metrics$
 
-# Exclude low-risk alerts that are typically false positives
-10001	Passive Scan Rules	Low	Low
-10002	Passive Scan Rules	Low	Medium
+# Server header / X-Powered-By disclosure is already stripped by helmet in
+# production; the informational finding on the dev/CI server is expected.
+10036	WARN
 
-# Focus on high and critical vulnerabilities
-10003	SQL Injection	High	High
-10004	Cross Site Scripting (XSS)	High	High
-10005	Cross Site Request Forgery (CSRF)	High	High
-10006	Authentication Bypass	Critical	High
-10007	Insecure Direct Object Reference	High	High
-10008	Broken Access Control	High	High
-10009	Sensitive Data Exposure	High	High
-10010	XML External Entity (XXE)	High	High
-10011	Broken Authentication	Critical	High
-10012	Using Components with Known Vulnerabilities	High	High
-10013	Insufficient Logging & Monitoring	Medium	Medium
-10014	Weak Cryptography	High	High
-10015	Insecure Deserialization	High	High
-10016	Broken Access Control	High	High
-10017	Security Misconfiguration	Medium	Medium
-10018	Insufficient Transport Layer Protection	High	High
-10019	Unvalidated Redirects and Forwards	Medium	Medium
-10020	Improper Input Validation	High	High
+# Always fail the build on reflected/stored XSS and SQL injection findings,
+# regardless of the default threshold.
+40012	FAIL
+40014	FAIL
+40018	FAIL
+40019	FAIL
+40020	FAIL
+40021	FAIL
+40022	FAIL

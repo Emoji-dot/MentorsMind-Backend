@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
-import passport from '../config/passport';
+import passport, { EmailRequiredError } from '../config/passport';
 import { env } from '../config/env';
 import { TokenService } from '../services/token.service';
 import { AuditLogService, extractIpAddress } from '../services/auditLog.service';
+import { OAuthService } from '../services/oauth.service';
+import oauthConfig from '../config/oauth.config';
 import { logger } from '../utils/logger';
 import pool from '../config/database';
 
@@ -26,6 +28,9 @@ export const OAuthController = {
         passport.authenticate('google', { session: false }, async (err: any, user: any) => {
             if (err) {
                 logger.error('Google OAuth callback error', { error: err.message });
+                if (err instanceof EmailRequiredError) {
+                    return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=google&error=email_required`);
+                }
                 return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=google`);
             }
 
@@ -34,7 +39,7 @@ export const OAuthController = {
             }
 
             try {
-                const userQuery = `SELECT email, role FROM users WHERE id = $1`;
+                const userQuery = `SELECT email, role, user_tier FROM users WHERE id = $1`;
                 const userResult = await pool.query(userQuery, [user.userId]);
                 
                 if (userResult.rows.length === 0) {
@@ -42,7 +47,7 @@ export const OAuthController = {
                 }
 
                 const userData = userResult.rows[0];
-                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role);
+                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role, userData.user_tier);
 
                 await AuditLogService.log({
                     userId: user.userId,
@@ -86,6 +91,9 @@ export const OAuthController = {
         passport.authenticate('github', { session: false }, async (err: any, user: any) => {
             if (err) {
                 logger.error('GitHub OAuth callback error', { error: err.message });
+                if (err instanceof EmailRequiredError) {
+                    return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=github&error=email_required`);
+                }
                 return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=github`);
             }
 
@@ -94,7 +102,7 @@ export const OAuthController = {
             }
 
             try {
-                const userQuery = `SELECT email, role FROM users WHERE id = $1`;
+                const userQuery = `SELECT email, role, user_tier FROM users WHERE id = $1`;
                 const userResult = await pool.query(userQuery, [user.userId]);
                 
                 if (userResult.rows.length === 0) {
@@ -102,7 +110,7 @@ export const OAuthController = {
                 }
 
                 const userData = userResult.rows[0];
-                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role);
+                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role, userData.user_tier);
 
                 await AuditLogService.log({
                     userId: user.userId,
@@ -128,19 +136,145 @@ export const OAuthController = {
     },
 
     /**
+     * GET /api/v1/auth/linkedin
+     * Redirect to LinkedIn OAuth consent screen
+     */
+    async linkedinAuth(req: Request, res: Response): Promise<void> {
+        passport.authenticate('linkedin', {
+            scope: oauthConfig.linkedin.scopes,
+            session: false,
+        })(req, res);
+    },
+
+    /**
+     * GET /api/v1/auth/linkedin/callback
+     * Handle LinkedIn OAuth callback and issue JWT
+     */
+    async linkedinCallback(req: Request, res: Response): Promise<void> {
+        passport.authenticate('linkedin', { session: false }, async (err: any, user: any) => {
+            if (err) {
+                logger.error('LinkedIn OAuth callback error', { error: err.message });
+                if (err instanceof EmailRequiredError) {
+                    return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=linkedin&error=email_required`);
+                }
+                return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=linkedin`);
+            }
+
+            if (!user) {
+                return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=linkedin`);
+            }
+
+            try {
+                const userQuery = `SELECT email, role, user_tier FROM users WHERE id = $1`;
+                const userResult = await pool.query(userQuery, [user.userId]);
+
+                if (userResult.rows.length === 0) {
+                    return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=linkedin`);
+                }
+
+                const userData = userResult.rows[0];
+                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role, userData.user_tier);
+
+                await AuditLogService.log({
+                    userId: user.userId,
+                    action: user.isNew ? 'USER_REGISTERED_OAUTH' : 'LOGIN_OAUTH',
+                    resourceType: 'auth',
+                    resourceId: user.userId,
+                    ipAddress: extractIpAddress(req),
+                    userAgent: req.headers['user-agent'] || null,
+                    metadata: { provider: 'linkedin', isNew: user.isNew },
+                });
+
+                const redirectUrl = new URL(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback`);
+                redirectUrl.searchParams.set('access_token', tokens.accessToken);
+                redirectUrl.searchParams.set('refresh_token', tokens.refreshToken);
+                redirectUrl.searchParams.set('provider', 'linkedin');
+
+                return res.redirect(redirectUrl.toString());
+            } catch (error) {
+                logger.error('Error generating tokens after LinkedIn OAuth', { error });
+                return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=linkedin`);
+            }
+        })(req, res);
+    },
+
+    /**
+     * GET /api/v1/auth/microsoft
+     * Redirect to Microsoft OAuth consent screen
+     */
+    async microsoftAuth(req: Request, res: Response): Promise<void> {
+        passport.authenticate('microsoft', {
+            scope: oauthConfig.microsoft.scopes,
+            session: false,
+        })(req, res);
+    },
+
+    /**
+     * GET /api/v1/auth/microsoft/callback
+     * Handle Microsoft OAuth callback and issue JWT
+     */
+    async microsoftCallback(req: Request, res: Response): Promise<void> {
+        passport.authenticate('microsoft', { session: false }, async (err: any, user: any) => {
+            if (err) {
+                logger.error('Microsoft OAuth callback error', { error: err.message });
+                if (err instanceof EmailRequiredError) {
+                    return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=microsoft&error=email_required`);
+                }
+                return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=microsoft`);
+            }
+
+            if (!user) {
+                return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=microsoft`);
+            }
+
+            try {
+                const userQuery = `SELECT email, role, user_tier FROM users WHERE id = $1`;
+                const userResult = await pool.query(userQuery, [user.userId]);
+
+                if (userResult.rows.length === 0) {
+                    return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=microsoft`);
+                }
+
+                const userData = userResult.rows[0];
+                const tokens = await TokenService.issueTokens(user.userId, userData.email, userData.role, userData.user_tier);
+
+                await AuditLogService.log({
+                    userId: user.userId,
+                    action: user.isNew ? 'USER_REGISTERED_OAUTH' : 'LOGIN_OAUTH',
+                    resourceType: 'auth',
+                    resourceId: user.userId,
+                    ipAddress: extractIpAddress(req),
+                    userAgent: req.headers['user-agent'] || null,
+                    metadata: { provider: 'microsoft', isNew: user.isNew },
+                });
+
+                const redirectUrl = new URL(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback`);
+                redirectUrl.searchParams.set('access_token', tokens.accessToken);
+                redirectUrl.searchParams.set('refresh_token', tokens.refreshToken);
+                redirectUrl.searchParams.set('provider', 'microsoft');
+
+                return res.redirect(redirectUrl.toString());
+            } catch (error) {
+                logger.error('Error generating tokens after Microsoft OAuth', { error });
+                return res.redirect(`${env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?provider=microsoft`);
+            }
+        })(req, res);
+    },
+
+    /**
      * DELETE /api/v1/auth/oauth/:provider
      * Unlink OAuth provider from user account
      */
-    async unlinkProvider(req: Request, res: Response): Promise<void> {
+    async unlinkProvider(req: Request, res: Response): Promise<any> {
         try {
             const userId = (req as any).user?.userId;
-            const provider = req.params.provider;
+            const provider = req.params.provider as string;
 
             if (!userId) {
                 return res.status(401).json({ success: false, error: 'Unauthorized' });
             }
 
-            if (!['google', 'github'].includes(provider)) {
+            if (!OAuthService.getAllProviderNames().includes(provider as any)) {
                 return res.status(400).json({ success: false, error: 'Invalid provider' });
             }
 
@@ -200,7 +334,7 @@ export const OAuthController = {
      * GET /api/v1/auth/oauth/providers
      * Get list of linked OAuth providers for current user
      */
-    async getLinkedProviders(req: Request, res: Response): Promise<void> {
+    async getLinkedProviders(req: Request, res: Response): Promise<any> {
         try {
             const userId = (req as any).user?.userId;
 
