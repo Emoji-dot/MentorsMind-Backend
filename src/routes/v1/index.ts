@@ -164,4 +164,7 @@ router.use("/webhooks/email", emailWebhookRoutes);
 // Verifiable Credentials (DID / W3C VC)
 router.use("/credentials", credentialsRoutes);
 
+// Gamification & Achievement System
+router.use("/gamification", gamificationRoutes);
+
 export default router;
