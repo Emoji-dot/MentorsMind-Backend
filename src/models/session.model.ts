@@ -10,13 +10,21 @@ import {
 import { createError } from "../middleware/errorHandler";
 import { ErrorCode } from "../errors/error-codes";
 
+export type SessionStatus =
+  | "pending"
+  | "confirmed"
+  | "scheduled"
+  | "cancelled"
+  | "completed"
+  | "no_show";
+
 export interface Session {
   id: string;
   mentor_id: string;
   learner_id: string;
   start_time: Date;
   end_time: Date;
-  status: "scheduled" | "completed" | "cancelled";
+  status: SessionStatus;
   created_at: Date;
 }
 
@@ -29,7 +37,7 @@ export interface SessionRecord {
   description: string | null;
   scheduled_at: Date;
   duration_minutes: number;
-  status: "pending" | "confirmed" | "cancelled" | "completed";
+  status: SessionStatus;
   meeting_link: string | null;
   meeting_url: string | null;
   meeting_provider: string | null;
@@ -216,7 +224,7 @@ export const SessionModel = {
    */
   async updateStatus(
     id: string,
-    status: string,
+    status: SessionStatus,
   ): Promise<SessionRecord | null> {
     const { query, params } = withCurrentTenantFilter(
       `UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2`,
