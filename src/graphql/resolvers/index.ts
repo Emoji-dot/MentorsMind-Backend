@@ -25,6 +25,9 @@ interface GraphQLContext {
   loaders: GraphQLLoaders;
 }
 
+const toDatabaseBookingStatus = (status?: string) => status?.toLowerCase();
+const toGraphQLBookingStatus = (status?: string) => status?.toUpperCase();
+
 
 const resolvers = {
   Query: {
@@ -101,7 +104,7 @@ const resolvers = {
         throw new AuthenticationError('Authentication required');
       }
       return BookingsService.getUserBookings(context.user.userId, {
-        status: args.status,
+        status: toDatabaseBookingStatus(args.status),
         cursor: args.cursor,
         limit: args.limit,
       });
@@ -149,7 +152,7 @@ const resolvers = {
       // only the unfiltered default view benefits from N+1 batching.
       if (args.status || args.cursor || args.limit) {
         return BookingsService.getUserBookings(parent.id, {
-          status: args.status,
+          status: toDatabaseBookingStatus(args.status),
           cursor: args.cursor,
           limit: args.limit,
         });
@@ -193,7 +196,7 @@ const resolvers = {
       }
       if (args.status || args.cursor || args.limit) {
         return BookingsService.getUserBookings(parent.id, {
-          status: args.status,
+          status: toDatabaseBookingStatus(args.status),
           cursor: args.cursor,
           limit: args.limit,
         });
@@ -212,6 +215,7 @@ const resolvers = {
   },
 
   Booking: {
+    status: (parent: any) => toGraphQLBookingStatus(parent.status),
     menteeId: (parent: any) => parent.mentee_id,
     mentorId: (parent: any) => parent.mentor_id,
     durationMinutes: (parent: any) => parent.duration_minutes,

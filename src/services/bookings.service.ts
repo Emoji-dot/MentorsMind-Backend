@@ -287,22 +287,26 @@ export const BookingsService = {
     filters?: { status?: string; cursor?: string; page?: number; limit?: number },
   ): Promise<{ bookings: BookingRecord[]; total: number }> {
     const cacheKey = CacheKeys.sessionList(userId);
+    const hasFilters = Object.values(filters ?? {}).some(
+      (value) => value !== undefined,
+    );
 
-    // Try to get from cache first
-    const cached = await CacheService.get<{
-      bookings: BookingRecord[];
-      total: number;
-    }>(cacheKey);
-    if (cached !== null) {
-      logger.debug("bookings.getUserBookings cache hit", { userId });
-      return cached;
+    if (!hasFilters) {
+      const cached = await CacheService.get<{
+        bookings: BookingRecord[];
+        total: number;
+      }>(cacheKey);
+      if (cached !== null) {
+        logger.debug("bookings.getUserBookings cache hit", { userId });
+        return cached;
+      }
     }
 
-    // Not in cache, fetch from database
     const result = await BookingModel.findByUserId(userId, filters);
 
-    // Cache the result for 30 seconds
-    await CacheService.set(cacheKey, result, CacheTTL.veryShort);
+    if (!hasFilters) {
+      await CacheService.set(cacheKey, result, CacheTTL.veryShort);
+    }
 
     return result;
   },

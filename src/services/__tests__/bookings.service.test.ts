@@ -165,6 +165,25 @@ describe('BookingsService', () => {
       expect(result.total).toBe(1);
       expect(CacheService.set).toHaveBeenCalled();
     });
+
+    it('bypasses the unfiltered cache for status-filtered bookings', async () => {
+      const result = { bookings: [{ id: 'b-no-show', status: 'no_show' }], total: 1 };
+      (CacheService.get as jest.Mock).mockResolvedValue({
+        bookings: [{ id: 'b-confirmed', status: 'confirmed' }],
+        total: 1,
+      });
+      (BookingModel.findByUserId as jest.Mock).mockResolvedValue(result);
+
+      await expect(
+        BookingsService.getUserBookings('user-1', { status: 'no_show' }),
+      ).resolves.toEqual(result);
+
+      expect(CacheService.get).not.toHaveBeenCalled();
+      expect(BookingModel.findByUserId).toHaveBeenCalledWith('user-1', {
+        status: 'no_show',
+      });
+      expect(CacheService.set).not.toHaveBeenCalled();
+    });
   });
 
   describe('confirmBooking', () => {
