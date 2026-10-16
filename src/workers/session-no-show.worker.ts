@@ -10,6 +10,7 @@ import { PresenceService } from '../services/presence.service';
 import { SorobanEscrowService } from '../services/sorobanEscrow.service';
 import { NotificationService } from '../services/notification.service';
 import { logger } from '../utils/logger.utils';
+import { BookingsService } from '../services/bookings.service';
 import { AuditLoggerService } from '../services/audit-logger.service';
 import { LogLevel, AuditAction } from '../utils/log-formatter.utils';
 import { redisClient } from '../config/redis';
@@ -95,12 +96,13 @@ async function processNoShowCheck(
     status: string;
     mentor_joined_at: Date | null;
     mentee_joined_at: Date | null;
+    session_id: string | null;
     escrow_id: string | null;
     escrow_contract_address: string | null;
     amount: string;
     currency: string;
   }>(
-    `SELECT id, status, mentor_joined_at, mentee_joined_at, 
+    `SELECT id, status, mentor_joined_at, mentee_joined_at, session_id,
             escrow_id, escrow_contract_address, amount, currency
      FROM bookings 
      WHERE id = $1`,
@@ -234,6 +236,16 @@ async function processNoShowCheck(
       bookingId,
     ]
   );
+
+  try {
+    await BookingsService.markLinkedSessionNoShow(booking.session_id);
+  } catch (error) {
+    logger.error('Failed to mark linked session as no_show', {
+      bookingId,
+      sessionId: booking.session_id,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
 
   logger.info('Booking status updated to no_show', {
     bookingId,

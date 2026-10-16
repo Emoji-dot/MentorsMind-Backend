@@ -18,7 +18,7 @@ dotenv.config({
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
-const envSchema = z.object({
+export const envSchema = z.object({
   // Server
 
   // Multi-Region Overrides
@@ -87,7 +87,7 @@ const envSchema = z.object({
   JWT_REFRESH_EXPIRES_IN: z.string().default("7d"), // Reduced from 30d
   /** Previous JWT secret — accepted during rotation window, then removed. */
   JWT_SECRET_PREVIOUS: z.string().optional(),
-  PII_ENCRYPTION_KEYS: z.string().min(1, "PII_ENCRYPTION_KEYS is required for production").optional(),
+  PII_ENCRYPTION_KEYS: z.string().min(1, "PII_ENCRYPTION_KEYS is required in production").optional(),
   PII_ENCRYPTION_CURRENT_KEY_VERSION: z.string().default("1"),
 
   // File Signing — separate secret for file access tokens (prevents conflation with JWT_SECRET)
@@ -386,10 +386,10 @@ const envSchema = z.object({
   // the fallback absolute URL prefix so email clients always get absolute URLs.
   EMAIL_ASSETS_BASE_URL: z.string().url().optional(),
 }).superRefine((data, ctx) => {
-  if (data.NODE_ENV === 'production' && !data.PII_ENCRYPTION_KEYS) {
+  if (['production', 'staging'].includes(data.NODE_ENV) && !data.PII_ENCRYPTION_KEYS) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'PII_ENCRYPTION_KEYS is required when NODE_ENV=production',
+      message: 'PII_ENCRYPTION_KEYS is required in production',
       path: ['PII_ENCRYPTION_KEYS'],
     });
   }

@@ -26,7 +26,6 @@ interface GraphQLContext {
 }
 
 const toDatabaseBookingStatus = (status?: string) => status?.toLowerCase();
-const toGraphQLBookingStatus = (status?: string) => status?.toUpperCase();
 
 
 const resolvers = {
@@ -215,7 +214,6 @@ const resolvers = {
   },
 
   Booking: {
-    status: (parent: any) => toGraphQLBookingStatus(parent.status),
     menteeId: (parent: any) => parent.mentee_id,
     mentorId: (parent: any) => parent.mentor_id,
     durationMinutes: (parent: any) => parent.duration_minutes,

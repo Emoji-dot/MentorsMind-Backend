@@ -1,4 +1,5 @@
 import { BookingModel, BookingRecord } from "../models/booking.model";
+import { SessionModel } from "../models/session.model";
 import { CacheService } from "./cache.service";
 import { CacheKeys, CacheTTL } from "../utils/cache-key.utils";
 import { logger } from "../utils/logger.utils";
@@ -122,6 +123,15 @@ function isCancelledBeforeSession(booking: BookingRecord): boolean {
 let bookingsServiceInitialized = false;
 
 export const BookingsService = {
+  /**
+   * Marks the session linked to a no-show booking as `no_show`.
+   * No-op when the booking has no linked session.
+   */
+  async markLinkedSessionNoShow(sessionId?: string | null): Promise<void> {
+    if (!sessionId) return;
+    await SessionModel.updateStatus(sessionId, "no_show");
+  },
+
   /**
    * Initialize bookings service (starts background monitoring only).
    * Table schema is managed by migrations, not runtime DDL.
