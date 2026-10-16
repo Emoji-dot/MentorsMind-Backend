@@ -7,6 +7,7 @@ const typeDefs = gql`
     COMPLETED
     CANCELLED
     RESCHEDULED
+    NO_SHOW
   }
 
   enum PaymentStatus {
