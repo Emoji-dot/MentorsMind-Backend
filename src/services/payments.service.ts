@@ -124,13 +124,18 @@ export const PaymentsService = {
     const assetIssuer = assetDef.issuer ?? null;
     const assetType = assetDef.code === "XLM" ? "native" : "credit_alphanum4";
 
-    // Validate quote if provided (enforces 2% rate-drift guard)
+    // Validate quote if provided (enforces 2% rate-drift guard AND 30s expiry)
     let quotedRate: string | null = null;
     let isPathPayment = false;
     if (quoteId) {
       const quote = await AssetExchangeService.validateQuote(quoteId);
       quotedRate = quote.rate;
       isPathPayment = quote.pathPaymentRequired;
+
+      // Enforce 30-second quote expiry
+      if (Date.now() - quote.createdAt > 30000) {
+        throw createError(ErrorCode.PAYMENT_QUOTE_EXPIRED, 400);
+      }
     }
 
     const { rows } = await pool.query<PaymentRecord>(
@@ -439,21 +444,14 @@ export const PaymentsService = {
 
     const where = conditions.join(" AND ");
 
-    // Count query uses the same filters (without limit)
-    const countParams = [...params];
-
     // Add limit as a proper parameter
     params.push(limit + 1);
     const limitPlaceholder = `$${idx++}`;
 
-    const [{ rows }, { rows: countRows }] = await Promise.all([
+    const [{ rows }] = await Promise.all([
       pool.query<PaymentRecord>(
-        `SELECT * FROM transactions t WHERE ${where} ORDER BY t.created_at DESC, t.id DESC LIMIT ${limitPlaceholder}`,
+        `SELECT t.*, COUNT(*) OVER() AS total_count FROM transactions t WHERE ${where} ORDER BY t.created_at DESC, t.id DESC LIMIT ${limitPlaceholder}`,
         params,
-      ),
-      pool.query(
-        `SELECT COUNT(*) FROM transactions t WHERE ${where}`,
-        countParams,
       ),
     ]);
 
@@ -472,7 +470,7 @@ export const PaymentsService = {
       payments: data,
       next_cursor,
       has_more,
-      total: parseInt(countRows[0].count, 10),
+      total: parseInt(rows[0]?.total_count ?? '0', 10),
     };
   },
 

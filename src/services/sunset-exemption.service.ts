@@ -15,6 +15,7 @@
 import pool from "../config/database";
 import { logger } from "../utils/logger.utils";
 import { isStaticallySunsetExempt } from "../config/api-versions.config";
+import { CacheService } from "./cache.service";
 
 export interface SunsetExemption {
   id: string;
@@ -26,44 +27,41 @@ export interface SunsetExemption {
   createdAt: Date;
 }
 
-interface CacheEntry {
-  exempt: boolean;
-  cachedAt: number;
-}
-
-const CACHE_TTL_MS = 60_000;
-const exemptionCache = new Map<string, CacheEntry>();
-
-function cacheKey(userId: string, apiVersion: string): string {
-  return `${apiVersion}:${userId}`;
+export function sunsetExemptionCacheKey(userId: string, apiVersion: string): string {
+  return `sunset:exempt:${userId}:${apiVersion}`;
 }
 
 export const SunsetExemptionService = {
   /**
    * Check whether a user is exempt from sunset enforcement for a version.
-   * Consults the static config first, then the database (with caching).
+    * Consults the static config first, then the database. The middleware caches
+    * this result across requests.
    */
   async isExempt(userId: string | null | undefined, apiVersion: string): Promise<boolean> {
     if (!userId) return false;
 
     if (isStaticallySunsetExempt(apiVersion, userId)) return true;
 
-    const key = cacheKey(userId, apiVersion);
-    const cached = exemptionCache.get(key);
-    if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
-      return cached.exempt;
+    let exempt = false;
+    try {
+      const { rows } = await pool.query(
+        `SELECT 1 FROM api_sunset_exemptions
+         WHERE user_id = $1 AND api_version = $2
+           AND (expires_at IS NULL OR expires_at > NOW())
+         LIMIT 1`,
+        [userId, apiVersion],
+      );
+      exempt = rows.length > 0;
+    } catch (error) {
+      // Fail closed: on lookup errors do not grant exemptions.
+      logger.warn("Failed to check sunset exemption", {
+        userId,
+        apiVersion,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      exempt = false;
     }
 
-    const { rows } = await pool.query(
-      `SELECT 1 FROM api_sunset_exemptions
-       WHERE user_id = $1 AND api_version = $2
-         AND (expires_at IS NULL OR expires_at > NOW())
-       LIMIT 1`,
-      [userId, apiVersion],
-    );
-    const exempt = rows.length > 0;
-
-    exemptionCache.set(key, { exempt, cachedAt: Date.now() });
     return exempt;
   },
 
@@ -97,7 +95,9 @@ export const SunsetExemptionService = {
       ],
     );
 
-    exemptionCache.delete(cacheKey(params.userId, params.apiVersion));
+    await CacheService.del(
+      sunsetExemptionCacheKey(params.userId, params.apiVersion),
+    );
     logger.info("Sunset exemption granted", {
       userId: params.userId,
       apiVersion: params.apiVersion,
@@ -113,7 +113,7 @@ export const SunsetExemptionService = {
        WHERE user_id = $1 AND api_version = $2`,
       [userId, apiVersion],
     );
-    exemptionCache.delete(cacheKey(userId, apiVersion));
+    await CacheService.del(sunsetExemptionCacheKey(userId, apiVersion));
     logger.info("Sunset exemption revoked", { userId, apiVersion });
     return (rowCount ?? 0) > 0;
   },

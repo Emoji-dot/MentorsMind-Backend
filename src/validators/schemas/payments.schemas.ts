@@ -67,7 +67,7 @@ export const listPaymentsSchema = z.object({
       .enum(['pending', 'processing', 'completed', 'failed', 'cancelled', 'refunded'])
       .optional(),
     type: z
-      .enum(['deposit', 'withdrawal', 'payment', 'refund', 'platform_fee', 'mentor_payout', 'escrow_hold', 'escrow_release'])
+      .enum(['payment', 'refund', 'platform_fee', 'mentor_payout', 'escrow_hold', 'escrow_release'])
       .optional(),
     from: z.string().optional(),
     to: z.string().optional(),

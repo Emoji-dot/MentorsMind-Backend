@@ -10,6 +10,7 @@
 import { BackupService } from "../services/backup.service";
 import { logInfo, logWarning, logError } from "../utils/error.utils";
 import { emailService } from "../services/email.service";
+import { env } from "../config/env";
 
 /**
  * Fire-and-forget admin alert email for backup/integrity failures.
@@ -17,7 +18,7 @@ import { emailService } from "../services/email.service";
  * only needs to add the email leg of the alert per issue #690.
  */
 function alertAdmins(subject: string, message: string): void {
-  const to = process.env.ADMIN_ALERT_EMAIL;
+  const to = env.ADMIN_ALERT_EMAIL;
   if (!to) return;
   emailService
     .sendEmail({

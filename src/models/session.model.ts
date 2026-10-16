@@ -1,12 +1,13 @@
-import pool, { db } from "../config/database";
+﻿import pool, { db } from "../config/database";
 import { CollaborationState } from "../types/collaboration.types";
 import { PaginationUtil } from "../utils/pagination.utils";
-import { logger } from "../utils/logger";
+import { Logger } from "../utils/logger.utils";
 import {
   TenantContext,
   withTenantFilter,
   withCurrentTenantFilter,
 } from "../utils/tenant-context.utils";
+import { createError } from "../middleware/errorHandler";
 
 export interface Session {
   id: string;
@@ -235,6 +236,19 @@ export const SessionModel = {
     id: string,
     payload: UpdateMeetingUrlPayload,
   ): Promise<SessionRecord | null> {
+    const { meetingUrl } = payload;
+
+    // Validate meeting URL - must be valid URL or null/empty to clear it
+    if (meetingUrl !== null && meetingUrl !== '') {
+      try {
+        new URL(meetingUrl);
+      } catch {
+        throw createError(ErrorCode.VALIDATION_ERROR, 400, {
+          message: 'meetingUrl must be a valid URL',
+        });
+      }
+    }
+
     const { query, params } = withCurrentTenantFilter(
       `UPDATE sessions
        SET
@@ -245,7 +259,7 @@ export const SessionModel = {
          updated_at = NOW()
        WHERE id = $5`,
       [
-        payload.meetingUrl,
+        meetingUrl,
         payload.meetingProvider,
         payload.meetingRoomId,
         payload.meetingExpiresAt,
@@ -379,18 +393,14 @@ export const SessionModel = {
       RETURNING id;
     `;
 
-    try {
-      const { rowCount } = await pool.query(moveQuery, [years]);
-      const moved = rowCount ?? 0;
-      if (moved > 0) {
-        logger.info("SessionModel: archived old sessions", { years, moved });
-      }
-      return moved;
-    } catch (error) {
-      logger.error("Failed to archive old sessions:", error);
-      return 0;
+    const { rowCount } = await pool.query(moveQuery, [years]);
+    const moved = rowCount ?? 0;
+    if (moved > 0) {
+      logger.info("SessionModel: archived old sessions", { years, moved });
     }
+    return moved;
   },
 };
 
 export default SessionModel;
+

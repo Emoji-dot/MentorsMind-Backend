@@ -109,6 +109,16 @@ const envSchema = z.object({
   PLATFORM_SECRET_KEY: z.string().optional(),
   /** Public key of the HSM-provisioned platform Stellar key (issue #982) */
   STELLAR_FUNDING_PUBLIC_KEY: z.string().optional(),
+  /** Timeout in ms for Stellar Horizon HTTP requests (issue #1215) */
+  STELLAR_REQUEST_TIMEOUT_MS: z
+    .string()
+    .regex(/^\d+$/, "STELLAR_REQUEST_TIMEOUT_MS must be a non-negative integer")
+    .default("10000"),
+  /** Timeout in ms for server.loadAccount() calls (issue #1191, default 10000) */
+  STELLAR_LOAD_ACCOUNT_TIMEOUT_MS: z
+    .string()
+    .regex(/^\d+$/, "STELLAR_LOAD_ACCOUNT_TIMEOUT_MS must be a non-negative integer")
+    .default("10000"),
 
   // CORS
   CORS_ORIGIN: z
@@ -124,8 +134,16 @@ const envSchema = z.object({
     .default("86400"),
 
   // Rate Limiting
-  RATE_LIMIT_WINDOW_MS: z.string().regex(/^\d+$/).default("900000"),
-  RATE_LIMIT_MAX_REQUESTS: z.string().regex(/^\d+$/).default("100"),
+  RATE_LIMIT_WINDOW_MS: z
+    .string()
+    .regex(/^\d+$/, "RATE_LIMIT_WINDOW_MS must be a positive integer")
+    .refine(n => parseInt(n, 10) >= 1000, "RATE_LIMIT_WINDOW_MS must be at least 1000ms (1 second)")
+    .default("900000"),
+  RATE_LIMIT_MAX_REQUESTS: z
+    .string()
+    .regex(/^\d+$/, "RATE_LIMIT_MAX_REQUESTS must be a positive integer")
+    .refine(n => parseInt(n, 10) >= 1, "RATE_LIMIT_MAX_REQUESTS must be at least 1")
+    .default("100"),
 
   // Email (SMTP)
   SMTP_HOST: z.string().optional(),
@@ -136,6 +154,7 @@ const envSchema = z.object({
   GMAIL_USER: z.string().optional(),
   GMAIL_PASS: z.string().optional(),
   FROM_EMAIL: z.string().email().default("noreply@mentorminds.com"),
+  ADMIN_ALERT_EMAIL: z.string().email().optional(),
 
   // Email provider selection: sendgrid | mailgun | smtp (default: smtp)
   EMAIL_PROVIDER: z.enum(["sendgrid", "mailgun", "smtp"]).default("smtp"),
@@ -360,6 +379,28 @@ const envSchema = z.object({
   // When CDN_BASE_URL is set, EmailCDNService uses it; otherwise this provides
   // the fallback absolute URL prefix so email clients always get absolute URLs.
   EMAIL_ASSETS_BASE_URL: z.string().url().optional(),
+}).superRefine((data, ctx) => {
+  if (data.NODE_ENV === 'production' && !data.PII_ENCRYPTION_KEYS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'PII_ENCRYPTION_KEYS is required when NODE_ENV=production',
+      path: ['PII_ENCRYPTION_KEYS'],
+    });
+  }
+  if (data.NODE_ENV === 'production' && !data.FILE_SIGNING_SECRET) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'FILE_SIGNING_SECRET is required when NODE_ENV=production',
+      path: ['FILE_SIGNING_SECRET'],
+    });
+  }
+  if (data.NODE_ENV === 'production' && !data.CACHE_KEY_HMAC_SECRET) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'CACHE_KEY_HMAC_SECRET is required when NODE_ENV=production',
+      path: ['CACHE_KEY_HMAC_SECRET'],
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -462,7 +503,19 @@ function performSecurityValidation(env: Record<string, any>) {
 }
 
 function validateEnv() {
-  const result = envSchema.safeParse(process.env);
+  let result = envSchema.safeParse(process.env);
+
+  if (
+    !result.success &&
+    result.error.issues.some((issue) => issue.path[0] === "ADMIN_ALERT_EMAIL")
+  ) {
+    process.stderr.write(
+      "Warning: ADMIN_ALERT_EMAIL is invalid; backup alert emails are disabled.\n",
+    );
+    const envWithoutInvalidAdminEmail = { ...process.env };
+    delete envWithoutInvalidAdminEmail.ADMIN_ALERT_EMAIL;
+    result = envSchema.safeParse(envWithoutInvalidAdminEmail);
+  }
 
   if (!result.success) {
     const formatted = result.error.issues

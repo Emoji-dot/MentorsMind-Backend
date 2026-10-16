@@ -32,7 +32,11 @@ const resolvers = {
       if (!context.user) {
         throw new AuthenticationError('Authentication required');
       }
-      return UsersService.findById(context.user.userId);
+      const user = await UsersService.findById(context.user.userId);
+      return {
+        ...user,
+        mfaEnabled: user.mfa_enabled ?? false,
+      };
     },
 
     user: async (_parent: unknown, args: { id: string }, _context: GraphQLContext) => {

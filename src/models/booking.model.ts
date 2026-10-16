@@ -123,6 +123,9 @@ export const BookingModel = {
       `SELECT *, COUNT(*) OVER() AS total_count FROM bookings WHERE ${whereClause}`,
       baseParams,
     );
+    // finalParamIndex is computed after the tenant filter adds its parameter,
+    // so LIMIT $${finalParamIndex} OFFSET $${finalParamIndex + 1} correctly
+    // references the limit and offset parameters appended at the end.
     const finalParamIndex = filteredParams.length + 1;
 
     const dataResult = await db.query(
@@ -336,15 +339,22 @@ export const BookingModel = {
     durationMinutes: number,
     excludeBookingId?: string,
   ): Promise<boolean> {
-    const endTime = new Date(scheduledAt.getTime() + durationMinutes * 60000);
+    // Defense-in-depth: never interpolate user-influenced values into SQL.
+    // durationMinutes is validated as an integer and only used via Date math
+    // in JS plus fully-parameterized SQL (make_interval, no string concat).
+    const durationMins = Number(durationMinutes);
+    if (!Number.isInteger(durationMins) || durationMins <= 0) {
+      throw new Error("Invalid durationMinutes: must be a positive integer");
+    }
+    const endTime = new Date(scheduledAt.getTime() + durationMins * 60000);
 
     let baseQuery = `
       SELECT COUNT(*) FROM bookings
       WHERE mentor_id = $1
         AND status NOT IN ('cancelled', 'completed')
         AND (
-          (scheduled_at <= $2 AND scheduled_at + (duration_minutes || ' minutes')::INTERVAL > $2)
-          OR (scheduled_at < $3 AND scheduled_at + (duration_minutes || ' minutes')::INTERVAL >= $3)
+          (scheduled_at <= $2 AND scheduled_at + make_interval(mins => duration_minutes) > $2)
+          OR (scheduled_at < $3 AND scheduled_at + make_interval(mins => duration_minutes) >= $3)
           OR (scheduled_at >= $2 AND scheduled_at < $3)
         )
     `;

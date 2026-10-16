@@ -12,6 +12,7 @@ import resolvers from './resolvers';
 import { graphqlConfig } from '../config/graphql';
 import { createLoaders } from './dataloaders';
 import { env } from '../config/env';
+import { TenantContext } from '../utils/tenant-context.utils';
 
 interface TokenPayload {
   sub: string;
@@ -126,12 +127,26 @@ export async function initializeGraphQL(app: Application): Promise<void> {
     expressMiddleware(server as any, {
       context: async ({ req, res }) => {
         const payload = getUserFromAuthorizationHeader(req.headers.authorization);
-        return {
+
+        // Extract tenant ID from the tenant middleware (req.tenant) or the
+        // x-tenant-id header as a fallback. Casting through `any` avoids a
+        // dependency on the tenantMiddleware type augmentation from here.
+        const tenantId: string | null =
+          (req as any).tenant?.id ??
+          (req.headers['x-tenant-id'] as string | undefined) ??
+          null;
+
+        // Build the context object inside a TenantContext.run() scope so that
+        // every resolver executing within this request inherits the correct
+        // AsyncLocalStorage tenant context and TenantContext.getTenantId()
+        // returns the right value without cross-tenant leakage.
+        return TenantContext.run(tenantId, () => ({
           req,
           res,
+          tenantId,
           user: payload ? { userId: payload.sub, role: payload.role } : undefined,
           loaders: createLoaders(),
-        };
+        }));
       },
     }) as any,
   );
