@@ -1,6 +1,5 @@
-// @ts-nocheck
-import { Response } from "express";
-import { AuthenticatedRequest } from "../types/api.types";
+﻿import { Response } from "express";
+import { AuthenticatedRequest } from "../middleware/auth.middleware";
 import { ModerationService } from "../services/moderation.service";
 import {
   AIModerationService,

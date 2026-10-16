@@ -6,7 +6,11 @@ import {
   SUPPORTED_VERSIONS,
   SUNSET_WARNING_DAYS,
 } from "../config/api-versions.config";
-import { SunsetExemptionService } from "../services/sunset-exemption.service";
+import {
+  SunsetExemptionService,
+  sunsetExemptionCacheKey,
+} from "../services/sunset-exemption.service";
+import { CacheService } from "../services/cache.service";
 import { deprecatedApiCallsTotal } from "../config/metrics";
 import { logger } from "../utils/logger.utils";
 
@@ -35,6 +39,7 @@ interface SunsetGoneBody {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const SUNSET_EXEMPTION_CACHE_TTL_SECONDS = 300;
 
 export async function versioningMiddleware(
   req: Request,
@@ -152,10 +157,19 @@ async function handleSunset(
 ): Promise<void> {
   let exempt = false;
   try {
-    exempt = await SunsetExemptionService.isExempt(
-      extractCallerUserId(req),
-      version,
-    );
+    const userId = extractCallerUserId(req);
+    if (!userId) {
+      exempt = await SunsetExemptionService.isExempt(userId, version);
+    } else {
+      const key = sunsetExemptionCacheKey(userId, version);
+      const cached = await CacheService.get<boolean>(key);
+      if (cached !== null) {
+        exempt = cached;
+      } else {
+        exempt = await SunsetExemptionService.isExempt(userId, version);
+        await CacheService.set(key, exempt, SUNSET_EXEMPTION_CACHE_TTL_SECONDS);
+      }
+    }
   } catch (error) {
     logger.warn("Sunset exemption check failed", {
       version,

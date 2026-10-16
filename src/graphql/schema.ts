@@ -7,6 +7,7 @@ const typeDefs = gql`
     COMPLETED
     CANCELLED
     RESCHEDULED
+    NO_SHOW
   }
 
   enum PaymentStatus {
@@ -84,6 +85,7 @@ const typeDefs = gql`
     lastName: String!
     bio: String
     avatarUrl: String
+    mfaEnabled: Boolean
     wallet: Wallet
     bookings(
       status: BookingStatus

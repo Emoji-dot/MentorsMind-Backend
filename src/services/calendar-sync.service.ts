@@ -1,4 +1,4 @@
-import { logger } from "../utils/logger";
+﻿import { logger } from "../utils/logger.utils";
 import { CalendarEvent } from "./smart-calendar.service";
 
 export interface SyncStatus {
@@ -35,6 +35,17 @@ export class CalendarSyncService {
       this.syncIntervals.delete(userId);
       logger.info({ userId }, "Stopped calendar sync");
     }
+  }
+
+  /**
+   * Stops all active sync intervals. Called during graceful shutdown to
+   * ensure no orphaned timers remain after SIGTERM/SIGINT is received.
+   */
+  stopAllSyncs(): void {
+    const count = this.syncIntervals.size;
+    this.syncIntervals.forEach((interval) => clearInterval(interval));
+    this.syncIntervals.clear();
+    logger.info({ count }, 'Calendar sync intervals stopped');
   }
 
   async performSync(userId: string): Promise<SyncStatus> {
@@ -113,13 +124,14 @@ export class CalendarSyncService {
     let eventsUpdated = 0;
     let eventsDeleted = 0;
 
-    // Placeholder sync logic
+    // Check each event for duplicates
     for (const event of events) {
       const exists = await this.eventExists(userId, event.id);
       if (exists) {
         eventsUpdated++;
       } else {
         eventsAdded++;
+        // Code to insert event would go here
       }
     }
 
@@ -127,9 +139,21 @@ export class CalendarSyncService {
   }
 
   private async eventExists(userId: string, eventId: string): Promise<boolean> {
-    // Placeholder implementation
-    return false;
+    // Query the calendar_sync_events table to check if event already exists
+    const { rows } = await db.query(
+      `SELECT id FROM calendar_sync_events WHERE user_id = $1 AND external_id = $2`,
+      [userId, eventId],
+    );
+    return rows.length > 0;
   }
 }
 
 export const calendarSyncService = new CalendarSyncService();
+
+/**
+ * Standalone export for use in server.ts shutdown sequence.
+ * Delegates to the singleton instance's stopAllSyncs() method.
+ */
+export function stopAllSyncs(): void {
+  calendarSyncService.stopAllSyncs();
+}
