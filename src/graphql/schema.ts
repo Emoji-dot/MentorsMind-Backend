@@ -43,6 +43,8 @@ const typeDefs = gql`
     minRate: Float
     maxRate: Float
     isAvailable: Boolean
+    sortBy: MentorSortBy
+    sortOrder: SortOrder
   }
 
   input PaginationInput {
