@@ -21,8 +21,8 @@ export const STELLAR_FUNDING_LOW_BALANCE_THRESHOLD_XLM = 10;
 
 function getLoadAccountTimeoutMs(): number {
   const raw =
-    (env as Record<string, string | undefined>).STELLAR_LOAD_ACCOUNT_TIMEOUT_MS ??
     env.STELLAR_REQUEST_TIMEOUT_MS ??
+    (env as Record<string, string | undefined>).STELLAR_LOAD_ACCOUNT_TIMEOUT_MS ??
     "10000";
   const parsed = parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 10000;
@@ -37,7 +37,7 @@ const timeout = (ms: number): Promise<never> =>
  * Wraps server.loadAccount() with a configurable timeout so a slow or
  * unreachable Horizon node fails fast instead of hanging indefinitely.
  * Throws a typed SERVICE_UNAVAILABLE AppError when the deadline is exceeded.
- * Timeout is configurable via STELLAR_LOAD_ACCOUNT_TIMEOUT_MS (default 10000).
+ * Timeout is configurable via STELLAR_REQUEST_TIMEOUT_MS (default 10000).
  */
 async function loadAccountWithTimeout(accountId: string): Promise<Awaited<ReturnType<typeof server.loadAccount>>> {
   const timeoutMs = getLoadAccountTimeoutMs();
@@ -46,7 +46,10 @@ async function loadAccountWithTimeout(accountId: string): Promise<Awaited<Return
     return await Promise.race([server.loadAccount(accountId), timeout(timeoutMs)]);
   } catch (err) {
     const isTimeout =
-      err instanceof Error && err.message === "Stellar loadAccount timeout";
+      err instanceof Error &&
+      (err.message === "Stellar loadAccount timeout" ||
+        err.name === "AbortError" ||
+        err.message.startsWith("Stellar Horizon request timed out after "));
     if (!isTimeout) throw err;
     logger.error("Stellar loadAccount timed out", {
       accountId,
