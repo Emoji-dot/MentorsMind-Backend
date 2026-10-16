@@ -2,8 +2,8 @@
  * Workers index — import once in server.ts to activate all background workers.
  */
 import { QUEUE_NAMES } from '../config/queue';
-import type { Worker } from 'bullmq';
 import { logger } from '../utils/logger.utils';
+import { registerWorkerLifecycleLogging } from './lifecycle';
 
 import { emailWorker } from './email.worker';
 import { paymentWorker } from './payment.worker';
@@ -34,42 +34,6 @@ import {
     startRetentionEnforcementWorker,
     stopRetentionEnforcementWorker,
 } from './retention-enforcement.worker';
-
-function registerWorkerLifecycleLogging(worker: Worker): Worker {
-    let jobsCompleted = 0;
-
-    worker.on('completed', () => {
-        jobsCompleted += 1;
-    });
-
-    worker.on('ready', () => {
-        logger.info({
-            queueName: worker.name,
-            concurrency: worker.opts.concurrency,
-            workerId: worker.id,
-            timestamp: new Date().toISOString(),
-        }, 'Worker ready');
-    });
-
-    worker.on('closed', () => {
-        logger.info({
-            queueName: worker.name,
-            jobsCompleted,
-            timestamp: new Date().toISOString(),
-        }, 'Worker closed');
-    });
-
-    worker.on('error', (error) => {
-        logger.error({
-            queueName: worker.name,
-            workerId: worker.id,
-            err: error,
-            timestamp: new Date().toISOString(),
-        }, 'Worker error');
-    });
-
-    return worker;
-}
 
 // Startup assertion: verify all queue names used by workers exist in QUEUE_NAMES
 const REQUIRED_QUEUE_NAMES = [

@@ -218,6 +218,14 @@ export const TokenService = {
   },
 
   /**
+   * Drop every cached revocation verdict for a user
+   * (keys are `auth:revoked:{userId}:{tokenIat}`, see auth.middleware).
+   */
+  async invalidateRevocationCache(userId: string): Promise<void> {
+    await CacheService.invalidatePattern(`auth:revoked:${userId}:*`);
+  },
+
+  /**
    * Revoke all sessions for a user
    */
   async revokeAllUserSessions(userId: string): Promise<void> {

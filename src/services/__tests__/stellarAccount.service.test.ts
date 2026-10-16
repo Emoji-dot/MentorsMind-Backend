@@ -79,6 +79,7 @@ jest.mock("../../config/env", () => ({
 
 const getPlatformKeypair = stellar.getPlatformKeypair as jest.Mock;
 const loadAccountMock = stellar.server.loadAccount as jest.Mock;
+const withRetryMock = jest.requireMock("../../utils/stellar.utils").withRetry as jest.Mock;
 
 /** A mock Keypair-like object with a publicKey() method */
 const mockPlatformKeypair = {
@@ -189,4 +190,30 @@ describe("StellarAccountService.fundAccount", () => {
       ),
     ).resolves.toBeDefined();
   });
+
+  it("retries loadAccount after the request times out", async () => {
+    getPlatformKeypair.mockReturnValue(mockPlatformKeypair);
+    const actualWithRetry = jest.requireActual("../../utils/stellar.utils").withRetry;
+    withRetryMock.mockImplementation((fn: () => Promise<unknown>, label: string) =>
+      actualWithRetry(fn, label, 3, 0),
+    );
+
+    loadAccountMock
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockResolvedValueOnce({
+        balances: [{ asset_type: "native", balance: "10000.0000000" }],
+        accountId: () => "GPUBLICKEY",
+      });
+    (stellar.server.submitTransaction as jest.Mock).mockResolvedValue({
+      hash: "retry-hash",
+      ledger: 2,
+    });
+    require("../../config/database").default.query.mockResolvedValue({});
+
+    await expect(
+      StellarAccountService.fundAccount("user-retry", "GDESTINATION"),
+    ).resolves.toBeDefined();
+
+    expect(loadAccountMock).toHaveBeenCalledTimes(2);
+  }, 2000);
 });

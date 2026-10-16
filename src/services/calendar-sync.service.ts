@@ -42,15 +42,10 @@ export class CalendarSyncService {
    * ensure no orphaned timers remain after SIGTERM/SIGINT is received.
    */
   stopAllSyncs(): void {
-    const userIds = Array.from(this.syncIntervals.keys());
-    for (const userId of userIds) {
-      const interval = this.syncIntervals.get(userId);
-      if (interval) {
-        clearInterval(interval);
-        this.syncIntervals.delete(userId);
-      }
-    }
-    logger.info({ count: userIds.length }, "Stopped all calendar syncs");
+    const count = this.syncIntervals.size;
+    this.syncIntervals.forEach((interval) => clearInterval(interval));
+    this.syncIntervals.clear();
+    logger.info({ count }, 'Calendar sync intervals stopped');
   }
 
   async performSync(userId: string): Promise<SyncStatus> {
@@ -114,13 +109,6 @@ export class CalendarSyncService {
 
     // In a real implementation, compare timestamps
     return remoteEvent;
-  }
-
-  stopAllSyncs(): void {
-    for (const [userId, interval] of this.syncIntervals) {
-      clearInterval(interval);
-    }
-    this.syncIntervals.clear();
   }
 
   private async fetchProviderEvents(userId: string): Promise<CalendarEvent[]> {

@@ -3,6 +3,7 @@ import pool from "../config/database";
 import { EmailService } from "./email.service";
 import { enqueueEmail } from "../queues/email.queue";
 import { logger } from "../utils/logger.utils";
+import { CacheService } from "./cache.service";
 import { PoolClient } from "pg";
 import { CacheService } from "./cache.service";
 
@@ -167,6 +168,9 @@ export const accountDeletionService = {
     );
 
     if (!rows[0]) throw new Error("User not found");
+
+    // token_invalid_before just moved; drop cached "valid" verdicts
+    await CacheService.invalidatePattern(`auth:revoked:${userId}:*`);
 
     await Promise.all([
       pool.query(

@@ -11,8 +11,61 @@ import type { AuthenticatedRequest } from "../types/auth.types";
 const JWT_SECRET = env.JWT_SECRET;
 const LAST_ACTIVE_DEBOUNCE_MS = 60 * 1000; // 1 minute
 
+const DEBOUNCE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const DEBOUNCE_EVICTION_AGE_MS = LAST_ACTIVE_DEBOUNCE_MS * 2;
+
 // In-memory debounce map: userId -> last update timestamp
 const lastActiveDebounce = new Map<string, number>();
+
+/**
+ * Remove debounce entries older than LAST_ACTIVE_DEBOUNCE_MS * 2 so the map
+ * stays bounded in long-running processes. Returns the number evicted.
+ */
+export function evictStaleDebounceEntries(now: number = Date.now()): number {
+  let evicted = 0;
+  for (const [userId, ts] of lastActiveDebounce) {
+    if (now - ts > DEBOUNCE_EVICTION_AGE_MS) {
+      lastActiveDebounce.delete(userId);
+      evicted += 1;
+    }
+  }
+  return evicted;
+}
+
+let debounceCleanupInterval: NodeJS.Timeout | null = setInterval(
+  evictStaleDebounceEntries,
+  DEBOUNCE_CLEANUP_INTERVAL_MS,
+);
+// Never keep the process alive just for housekeeping.
+debounceCleanupInterval.unref?.();
+
+/** Stop the debounce cleanup interval (called on server shutdown). */
+export function stopAuthDebounceCleanup(): void {
+  if (debounceCleanupInterval) {
+    clearInterval(debounceCleanupInterval);
+    debounceCleanupInterval = null;
+  }
+}
+
+// ── Token revocation cache ──────────────────────────────────────────────────
+const DURATION_UNIT_SECONDS: Record<string, number> = {
+  s: 1,
+  m: 60,
+  h: 3600,
+  d: 86400,
+};
+
+/** Convert a JWT-style duration ("15m", "1h", "900") to seconds. */
+export function jwtExpiryToSeconds(value: string): number {
+  const match = /^(\d+)\s*([smhd])?$/.exec(value.trim());
+  if (!match) return 15 * 60;
+  return parseInt(match[1], 10) * DURATION_UNIT_SECONDS[match[2] ?? "s"];
+}
+
+const REVOCATION_CACHE_TTL_SECONDS = jwtExpiryToSeconds(env.JWT_EXPIRES_IN);
+
+export const revocationCacheKey = (userId: string, tokenIat: number): string =>
+  `auth:revoked:${userId}:${tokenIat}`;
 
 // Re-exported so existing `AuthenticatedRequest` imports from this module keep working.
 export type { AuthenticatedRequest };
@@ -202,6 +255,28 @@ async function pool_updateLastActive(userId: string): Promise<void> {
        AND last_active_at < NOW() - INTERVAL '1 minute'`,
     [userId],
   );
+}
+
+/**
+ * Redis-backed wrapper around isTokenRevokedForUser. Cached value is the
+ * string "revoked" or "valid"; TTL equals the access token lifetime.
+ */
+export async function isTokenRevokedCached(
+  userId: string,
+  issuedAtMs: number,
+): Promise<boolean> {
+  const key = revocationCacheKey(userId, issuedAtMs);
+  const cached = await CacheService.get<string>(key);
+  if (cached === "revoked") return true;
+  if (cached === "valid") return false;
+
+  const revoked = await isTokenRevokedForUser(userId, issuedAtMs);
+  await CacheService.set(
+    key,
+    revoked ? "revoked" : "valid",
+    REVOCATION_CACHE_TTL_SECONDS,
+  );
+  return revoked;
 }
 
 async function isTokenRevokedForUser(

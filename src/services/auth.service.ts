@@ -197,7 +197,9 @@ export const AuthService = {
 
       const { SessionManagerService } = await import('./sessionManager.service');
       await SessionManagerService.revokeSessionByToken(refreshToken).catch(() => { });
+      await TokenService.invalidateRevocationCache(userId);
     } else {
+      // revokeAllUserSessions also invalidates the revocation cache
       await TokenService.revokeAllUserSessions(userId);
     }
     await CacheService.invalidatePattern(`token:revoked:${userId}:*`);

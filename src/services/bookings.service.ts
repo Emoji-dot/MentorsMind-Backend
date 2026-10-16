@@ -7,6 +7,8 @@ import { ErrorCode } from "../errors/error-codes";
 import {
   calculateEndTime,
   calculateRefundEligibility,
+  waitForAdvisoryLock,
+  withAdvisoryLock,
 } from "../utils/booking-conflicts.utils";
 import { SocketService } from "./socket.service";
 import { db } from "../config/database";
@@ -146,24 +148,8 @@ export const BookingsService = {
         dateHour.setMinutes(0, 0, 0);
         const lockKey = `${data.mentorId}:${dateHour.toISOString()}`;
 
-        // Attempt to acquire advisory lock for up to 5 seconds
-        let acquired = false;
-        const startTime = Date.now();
-        while (Date.now() - startTime < 5000) {
-          const { rows } = await client.query(
-            "SELECT pg_try_advisory_xact_lock(hashtext($1)) as locked",
-            [lockKey],
-          );
-          if (rows[0].locked) {
-            acquired = true;
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-
-        if (!acquired) {
-          throw createError(ErrorCode.BOOKING_CONFLICT, 409);
-        }
+        // Attempt to acquire advisory lock for up to 5 seconds with exponential backoff
+        await withAdvisoryLock(client, lockKey, 5000);
 
         // Batch-validate both users in a single query (avoids N+1)
         const { rows: users } = await client.query( // use the locked client here instead of db
@@ -301,22 +287,26 @@ export const BookingsService = {
     filters?: { status?: string; cursor?: string; page?: number; limit?: number },
   ): Promise<{ bookings: BookingRecord[]; total: number }> {
     const cacheKey = CacheKeys.sessionList(userId);
+    const hasFilters = Object.values(filters ?? {}).some(
+      (value) => value !== undefined,
+    );
 
-    // Try to get from cache first
-    const cached = await CacheService.get<{
-      bookings: BookingRecord[];
-      total: number;
-    }>(cacheKey);
-    if (cached !== null) {
-      logger.debug("bookings.getUserBookings cache hit", { userId });
-      return cached;
+    if (!hasFilters) {
+      const cached = await CacheService.get<{
+        bookings: BookingRecord[];
+        total: number;
+      }>(cacheKey);
+      if (cached !== null) {
+        logger.debug("bookings.getUserBookings cache hit", { userId });
+        return cached;
+      }
     }
 
-    // Not in cache, fetch from database
     const result = await BookingModel.findByUserId(userId, filters);
 
-    // Cache the result for 30 seconds
-    await CacheService.set(cacheKey, result, CacheTTL.veryShort);
+    if (!hasFilters) {
+      await CacheService.set(cacheKey, result, CacheTTL.veryShort);
+    }
 
     return result;
   },
