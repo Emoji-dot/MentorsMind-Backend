@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { SocketService } from './socket.service';
 import { EmailService } from './email.service';
 import { CacheService } from './cache.service';
+import { revocationCacheKey, REVOCATION_CACHE_TTL } from '../middleware/auth.middleware';
 import jwt from 'jsonwebtoken';
 
 const emailService = new EmailService();
@@ -68,7 +69,7 @@ export const TokenService = {
     try {
       decoded = JwtUtils.verifyRefreshToken(oldRefreshToken);
     } catch (error) {
-      throw new Error('Invalid refresh token', { cause: error });
+      throw Object.assign(new Error('Invalid refresh token'), { cause: error });
     }
 
     const oldTokenHash = JwtUtils.hashToken(oldRefreshToken);
@@ -159,7 +160,7 @@ export const TokenService = {
   /**
    * Blacklist an access token (on logout)
    */
-  async blacklistToken(jti: string, expiresAt: number): Promise<void> {
+  async blacklistToken(jti: string, expiresAt: number, token?: string): Promise<void> {
     const expDate = new Date(expiresAt * 1000);
     await pool.query(
       `INSERT INTO token_blacklist (token_jti, expires_at) VALUES ($1, $2)
@@ -167,6 +168,9 @@ export const TokenService = {
       [jti, expDate],
     );
     await CacheService.invalidatePattern(`token:revoked:*:${jti}`);
+    if (token) {
+      await CacheService.set(revocationCacheKey(token), 'revoked', REVOCATION_CACHE_TTL);
+    }
   },
 
   /**
