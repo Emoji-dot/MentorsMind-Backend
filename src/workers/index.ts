@@ -2,6 +2,7 @@
  * Workers index — import once in server.ts to activate all background workers.
  */
 import { QUEUE_NAMES } from '../config/queue';
+import * as Sentry from '@sentry/node';
 import type { Worker } from 'bullmq';
 import { logger } from '../utils/logger.utils';
 
@@ -66,6 +67,21 @@ function registerWorkerLifecycleLogging(worker: Worker): Worker {
             err: error,
             timestamp: new Date().toISOString(),
         }, 'Worker error');
+    });
+
+    worker.on('failed', (job, err) => {
+        const jobContext = {
+            queueName: worker.name,
+            jobId: job?.id,
+            jobName: job?.name,
+            attemptsMade: job?.attemptsMade,
+        };
+
+        logger.error({
+            ...jobContext,
+            error: err.message,
+        }, 'Job failed after all retries', err);
+        Sentry.captureException(err, { extra: jobContext });
     });
 
     return worker;
