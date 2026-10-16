@@ -1,4 +1,5 @@
 import { Response, NextFunction } from "express";
+import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { env } from "../config/env";
 import { logger } from "../utils/logger.utils";
@@ -64,8 +65,11 @@ export function jwtExpiryToSeconds(value: string): number {
 
 const REVOCATION_CACHE_TTL_SECONDS = jwtExpiryToSeconds(env.JWT_EXPIRES_IN);
 
-export const revocationCacheKey = (userId: string, tokenIat: number): string =>
-  `auth:revoked:${userId}:${tokenIat}`;
+/** Cache key for a token's revocation verdict; the raw token is never stored. */
+export const revocationCacheKey = (token: string): string =>
+  `revoked:${crypto.createHash("sha256").update(token).digest("hex")}`;
+
+export const REVOCATION_CACHE_TTL = REVOCATION_CACHE_TTL_SECONDS;
 
 // Re-exported so existing `AuthenticatedRequest` imports from this module keep working.
 export type { AuthenticatedRequest };
@@ -162,7 +166,8 @@ export const authenticate = async (
     const userId = decoded.sub;
     const issuedAtMs =
       typeof decoded.iat === "number" ? decoded.iat * 1000 : Date.now();
-    const isRevoked = await isTokenRevokedForUser(
+    const isRevoked = await isTokenRevokedCached(
+      token,
       userId,
       issuedAtMs,
       decoded.jti,
@@ -262,15 +267,23 @@ async function pool_updateLastActive(userId: string): Promise<void> {
  * string "revoked" or "valid"; TTL equals the access token lifetime.
  */
 export async function isTokenRevokedCached(
+  token: string,
   userId: string,
   issuedAtMs: number,
+  tokenJti?: string,
+  tokenExpiresAt?: number,
 ): Promise<boolean> {
-  const key = revocationCacheKey(userId, issuedAtMs);
+  const key = revocationCacheKey(token);
   const cached = await CacheService.get<string>(key);
   if (cached === "revoked") return true;
   if (cached === "valid") return false;
 
-  const revoked = await isTokenRevokedForUser(userId, issuedAtMs);
+  const revoked = await isTokenRevokedForUser(
+    userId,
+    issuedAtMs,
+    tokenJti,
+    tokenExpiresAt,
+  );
   await CacheService.set(
     key,
     revoked ? "revoked" : "valid",

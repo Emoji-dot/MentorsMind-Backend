@@ -3,7 +3,7 @@ jest.mock('../../utils/logger.utils', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
 }));
 jest.mock('../../services/cache.service', () => ({
-  CacheService: { get: jest.fn().mockResolvedValue(null), set: jest.fn() },
+  CacheService: { get: jest.fn().mockResolvedValue(null), set: jest.fn(), isDistributed: jest.fn(() => false) },
 }));
 jest.mock('../../config/database', () => ({
   __esModule: true,

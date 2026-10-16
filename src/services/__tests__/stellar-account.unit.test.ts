@@ -20,6 +20,7 @@ jest.mock("../../utils/encryption.utils", () => ({
 
 jest.mock("../../utils/stellar.utils", () => ({
   withRetry: jest.fn().mockImplementation((fn: () => unknown) => fn()),
+  withTimeout: jest.fn().mockImplementation((promise: Promise<unknown>) => promise),
 }));
 
 jest.mock("../../utils/logger.utils", () => ({

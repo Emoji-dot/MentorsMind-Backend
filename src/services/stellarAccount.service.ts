@@ -13,9 +13,8 @@ import pool from "../config/database";
 import { SocketService } from "./socket.service";
 import { createError } from "../middleware/errorHandler";
 import { ErrorCode } from "../errors/error-codes";
-import { env } from "../config/env";
 
-const STARTING_BALANCE = env.STELLAR_STARTING_BALANCE;
+const STARTING_BALANCE = env.STELLAR_STARTING_BALANCE ?? "1.5";
 
 /** Warn when the platform funding account drops below this (XLM). Issue #1190. */
 export const STELLAR_FUNDING_LOW_BALANCE_THRESHOLD_XLM = 10;
