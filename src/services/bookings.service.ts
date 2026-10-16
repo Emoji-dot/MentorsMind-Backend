@@ -291,23 +291,45 @@ export const BookingsService = {
 
   async listBookings(
     userId: string,
-    filters?: { status?: string; cursor?: string; page?: number; limit?: number },
-  ): Promise<{ bookings: BookingRecord[]; total: number }> {
+    filters?: { status?: string; cursor?: string | null; page?: number; limit?: number },
+  ): Promise<{
+    bookings: BookingRecord[];
+    total: number;
+    nextCursor: string | null;
+    hasMore: boolean;
+  }> {
     return this.getUserBookings(userId, filters);
   },
 
   async getUserBookings(
     userId: string,
-    filters?: { status?: string; cursor?: string; page?: number; limit?: number },
-  ): Promise<{ bookings: BookingRecord[]; total: number }> {
+    filters?: { status?: string; cursor?: string | null; page?: number; limit?: number },
+  ): Promise<{
+    bookings: BookingRecord[];
+    total: number;
+    nextCursor: string | null;
+    hasMore: boolean;
+  }> {
+    const isPaginated = Boolean(
+      (filters?.cursor !== undefined && filters.cursor !== null) ||
+        filters?.status ||
+        filters?.page ||
+        filters?.limit,
+    );
+    if (isPaginated) {
+      return BookingModel.findByUserId(userId, filters);
+    }
+
     const cacheKey = CacheKeys.sessionList(userId);
 
     // Try to get from cache first
     const cached = await CacheService.get<{
       bookings: BookingRecord[];
       total: number;
+      nextCursor: string | null;
+      hasMore: boolean;
     }>(cacheKey);
-    if (cached !== null) {
+    if (cached !== null && typeof cached.hasMore === "boolean") {
       logger.debug("bookings.getUserBookings cache hit", { userId });
       return cached;
     }

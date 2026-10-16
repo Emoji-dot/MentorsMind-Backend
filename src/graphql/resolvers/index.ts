@@ -17,6 +17,7 @@ import { MentorsService } from '../../services/mentors.service';
 import { PaymentsService } from '../../services/payments.service';
 import { UsersService } from '../../services/users.service';
 import { GraphQLLoaders } from '../dataloaders';
+import { PaginationUtil } from '../../utils/pagination.utils';
 
 interface GraphQLContext {
   req: Request;
@@ -94,11 +95,22 @@ const resolvers = {
 
     bookings: async (
       _parent: unknown,
-      args: { status?: string; cursor?: string; limit?: number },
+      args: { status?: string; cursor?: string | null; limit?: number },
       context: GraphQLContext,
     ) => {
       if (!context.user) {
         throw new AuthenticationError('Authentication required');
+      }
+      if (args.cursor !== undefined && args.cursor !== null) {
+        const cursor = PaginationUtil.decodeCursor(args.cursor);
+        if (
+          !cursor ||
+          typeof cursor.id !== 'string' ||
+          typeof cursor.created_at !== 'string' ||
+          !Number.isFinite(Date.parse(cursor.created_at))
+        ) {
+          throw new ApolloError('Invalid booking cursor', 'BAD_USER_INPUT');
+        }
       }
       return BookingsService.getUserBookings(context.user.userId, {
         status: args.status,
