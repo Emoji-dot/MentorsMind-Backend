@@ -4,6 +4,7 @@ import { EmailService } from "./email.service";
 import { enqueueEmail } from "../queues/email.queue";
 import { logger } from "../utils/logger.utils";
 import { PoolClient } from "pg";
+import { CacheService } from "./cache.service";
 
 const GRACE_PERIOD_DAYS = 30;
 
@@ -176,6 +177,7 @@ export const accountDeletionService = {
         userId,
       ]),
     ]);
+    await CacheService.invalidatePattern(`token:revoked:${userId}:*`);
 
     await sendDeletionRequestedEmail(rows[0]);
     return rows[0];

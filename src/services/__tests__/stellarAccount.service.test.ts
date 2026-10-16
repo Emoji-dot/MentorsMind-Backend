@@ -2,6 +2,7 @@ import { StellarAccountService } from "../stellarAccount.service";
 import * as stellar from "../../config/stellar";
 import { ErrorCode } from "../../errors/error-codes";
 import type { AppError } from "../../middleware/errorHandler";
+import { Keypair } from "@stellar/stellar-sdk";
 
 // ── module mocks ──────────────────────────────────────────────────────────────
 
@@ -29,11 +30,39 @@ jest.mock("../../utils/logger.utils", () => ({
 }));
 
 jest.mock("../../config/database", () => ({
+  __esModule: true,
   default: { query: jest.fn() },
 }));
 
 jest.mock("../../services/socket.service", () => ({
   SocketService: { emitToUser: jest.fn() },
+}));
+
+jest.mock("@stellar/stellar-sdk", () => {
+  const actual = jest.requireActual("@stellar/stellar-sdk");
+  return {
+    ...actual,
+    TransactionBuilder: jest.fn().mockImplementation(() => ({
+      addOperation: jest.fn().mockReturnThis(),
+      setTimeout: jest.fn().mockReturnThis(),
+      build: jest.fn().mockReturnValue({ sign: jest.fn() }),
+    })),
+    Operation: { createAccount: jest.fn() },
+  };
+});
+
+jest.mock("../../middleware/tracing.middleware", () => ({
+  traceStore: { getStore: jest.fn() },
+}));
+
+jest.mock("../../middleware/errorHandler", () => ({
+  createError: (code: string, statusCode: number, details?: object) =>
+    Object.assign(new Error(code), {
+      code,
+      statusCode,
+      isOperational: true,
+      details,
+    }),
 }));
 
 // Expose a controllable timeout value so we can exercise the fast-path
@@ -42,6 +71,7 @@ jest.mock("../../config/env", () => ({
   env: {
     STELLAR_REQUEST_TIMEOUT_MS: "50", // 50 ms for tests
     STELLAR_LOAD_ACCOUNT_TIMEOUT_MS: "50",
+    STELLAR_STARTING_BALANCE: "1.5",
   },
 }));
 
@@ -90,7 +120,7 @@ describe("StellarAccountService.fundAccount", () => {
     assertAppError(caught, ErrorCode.SERVICE_UNAVAILABLE, 503);
     expect((caught as AppError).details).toMatchObject({
       service: "stellar-funding",
-      reason: "Stellar funding account not configured",
+      reason: "Stellar wallet funding is currently unavailable",
     });
   });
 
@@ -153,7 +183,10 @@ describe("StellarAccountService.fundAccount", () => {
 
     // Should not throw — we just verify it doesn't reject with a timeout error
     await expect(
-      StellarAccountService.fundAccount("user-ok", "GDESTINATION"),
+      StellarAccountService.fundAccount(
+        "user-ok",
+        Keypair.random().publicKey(),
+      ),
     ).resolves.toBeDefined();
   });
 });

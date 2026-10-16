@@ -4,6 +4,8 @@ import { env } from "../config/env";
 import { logger } from "../utils/logger.utils";
 import { createError } from "./errorHandler";
 import { ErrorCode } from "../errors/error-codes";
+import { CacheService } from "../services/cache.service";
+import type { AuthenticatedRequest } from "../types/auth.types";
 
 
 const JWT_SECRET = env.JWT_SECRET;
@@ -38,7 +40,17 @@ export const authenticate = async (
       alg?: string;
     } | null;
 
-    let decoded: { sub: string; role: string; iat?: number; mfaVerified?: boolean; isImpersonation?: boolean; impersonatedBy?: string; impersonationSessionId?: string };
+    let decoded: {
+      sub: string;
+      role: string;
+      iat?: number;
+      exp?: number;
+      jti?: string;
+      mfaVerified?: boolean;
+      isImpersonation?: boolean;
+      impersonatedBy?: string;
+      impersonationSessionId?: string;
+    };
 
     if (header?.kid && header?.alg === "RS256") {
       // ── RSA-256 path: look up the public key by kid ──
@@ -97,7 +109,12 @@ export const authenticate = async (
     const userId = decoded.sub;
     const issuedAtMs =
       typeof decoded.iat === "number" ? decoded.iat * 1000 : Date.now();
-    const isRevoked = await isTokenRevokedForUser(userId, issuedAtMs);
+    const isRevoked = await isTokenRevokedForUser(
+      userId,
+      issuedAtMs,
+      decoded.jti,
+      decoded.exp,
+    );
     if (isRevoked) {
       res.status(401).json({
         success: false,
@@ -190,13 +207,28 @@ async function pool_updateLastActive(userId: string): Promise<void> {
 async function isTokenRevokedForUser(
   userId: string,
   issuedAtMs: number,
+  tokenJti?: string,
+  tokenExpiresAt?: number,
 ): Promise<boolean> {
+  const cacheKey = tokenJti
+    ? `token:revoked:${userId}:${tokenJti}`
+    : undefined;
+  const cacheCandidate = cacheKey
+    ? await CacheService.get<boolean>(cacheKey)
+    : null;
+  const cacheAvailable = CacheService.isDistributed();
+  if (cacheAvailable && cacheCandidate !== null) return cacheCandidate;
+
   const pool = (await import("../config/database")).default;
   const { rows } = await pool.query(
-    `SELECT token_invalid_before, deletion_completed_at
+    `SELECT token_invalid_before, deletion_completed_at,
+            EXISTS (
+              SELECT 1 FROM token_blacklist
+               WHERE token_jti = $2 AND expires_at > NOW()
+            ) AS token_blacklisted
        FROM users
       WHERE id = $1`,
-    [userId],
+    [userId, tokenJti ?? null],
   );
 
   const user = rows[0];
@@ -204,14 +236,21 @@ async function isTokenRevokedForUser(
     return true;
   }
 
-  if (user.deletion_completed_at) {
-    return true;
+  const isRevoked =
+    !!user.deletion_completed_at ||
+    !!user.token_blacklisted ||
+    (user.token_invalid_before instanceof Date &&
+      issuedAtMs <= user.token_invalid_before.getTime());
+
+  const ttlSeconds =
+    typeof tokenExpiresAt === "number"
+      ? Math.max(0, tokenExpiresAt - Math.floor(Date.now() / 1000))
+      : 0;
+  if (cacheAvailable && cacheKey && ttlSeconds > 0) {
+    await CacheService.set(cacheKey, isRevoked, ttlSeconds);
   }
 
-  return (
-    user.token_invalid_before instanceof Date &&
-    issuedAtMs <= user.token_invalid_before.getTime()
-  );
+  return isRevoked;
 }
 
 export const requireRole = (roles: string[]) => {

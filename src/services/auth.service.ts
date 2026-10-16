@@ -12,6 +12,7 @@ import { UserRecord } from "./users.service";
 import { TokenService } from "./token.service";
 import { createError } from "../middleware/errorHandler";
 import { ErrorCode } from "../errors/error-codes";
+import { CacheService } from "./cache.service";
 
 const JWT_SECRET = env.JWT_SECRET;
 
@@ -199,6 +200,7 @@ export const AuthService = {
     } else {
       await TokenService.revokeAllUserSessions(userId);
     }
+    await CacheService.invalidatePattern(`token:revoked:${userId}:*`);
   },
 
   async forgotPassword(email: string): Promise<string> {
