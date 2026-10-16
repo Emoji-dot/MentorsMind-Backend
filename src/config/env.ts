@@ -143,13 +143,15 @@ export const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z
     .string()
     .regex(/^\d+$/, "RATE_LIMIT_WINDOW_MS must be a positive integer")
-    .refine(n => parseInt(n, 10) >= 1000, "RATE_LIMIT_WINDOW_MS must be at least 1000ms (1 second)")
-    .default("900000"),
+    .transform(Number)
+    .refine(v => v >= 1000, "Must be at least 1000ms")
+    .default(900000),
   RATE_LIMIT_MAX_REQUESTS: z
     .string()
     .regex(/^\d+$/, "RATE_LIMIT_MAX_REQUESTS must be a positive integer")
-    .refine(n => parseInt(n, 10) >= 1, "RATE_LIMIT_MAX_REQUESTS must be at least 1")
-    .default("100"),
+    .transform(Number)
+    .refine(v => v >= 1 && v <= 10000, "Must be between 1 and 10000")
+    .default(100),
 
   // Email (SMTP)
   SMTP_HOST: z.string().optional(),
