@@ -4,9 +4,10 @@ import {
   networkPassphrase,
   getPlatformKeypair,
 } from "../config/stellar";
+import { env } from "../config/env";
 import { WalletModel } from "../models/wallet.model";
 import { EncryptionUtil } from "../utils/encryption.utils";
-import { withRetry } from "../utils/stellar.utils";
+import { withRetry, withTimeout } from "../utils/stellar.utils";
 import { logger } from "../utils/logger.utils";
 import pool from "../config/database";
 import { SocketService } from "./socket.service";
@@ -44,7 +45,10 @@ export const StellarAccountService = {
     if (!platform) throw new Error("Funding account not configured");
 
     return withRetry(async () => {
-      const account = await server.loadAccount(platform.publicKey());
+      const account = await withTimeout(
+        server.loadAccount(platform.publicKey()),
+        Number(env.STELLAR_API_TIMEOUT_MS),
+      );
 
       const balance = account.balances.find((b) => b.asset_type === "native");
 
@@ -74,7 +78,10 @@ export const StellarAccountService = {
 
       tx.sign(platform);
 
-      const result = await server.submitTransaction(tx);
+      const result = await withTimeout(
+        server.submitTransaction(tx),
+        Number(env.STELLAR_API_TIMEOUT_MS),
+      );
 
       await pool.query(
         `INSERT INTO transactions (

@@ -73,6 +73,10 @@ const envSchema = z.object({
 
   // Stellar
   STELLAR_NETWORK: z.enum(["testnet", "mainnet"]).default("testnet"),
+  STELLAR_API_TIMEOUT_MS: z
+    .string()
+    .regex(/^\d+$/, "STELLAR_API_TIMEOUT_MS must be a non-negative integer")
+    .default("10000"),
   STELLAR_HORIZON_URL: z
     .string()
     .url("STELLAR_HORIZON_URL must be a valid URL"),
