@@ -14,9 +14,38 @@ export class AuthenticationError extends GraphQLError {
 }
 import { BookingsService } from '../../services/bookings.service';
 import { MentorsService } from '../../services/mentors.service';
+import type { MentorRecord } from '../../services/mentors.service';
 import { PaymentsService } from '../../services/payments.service';
 import { UsersService } from '../../services/users.service';
 import { GraphQLLoaders } from '../dataloaders';
+import { PaginationUtil } from '../../utils/pagination.utils';
+
+type MentorSortBy = 'CREATED_AT' | 'HOURLY_RATE' | 'AVERAGE_RATING' | 'TOTAL_SESSIONS';
+type SortOrder = 'ASC' | 'DESC';
+
+const mentorSortByMap = {
+  CREATED_AT: 'createdAt',
+  HOURLY_RATE: 'hourlyRate',
+  AVERAGE_RATING: 'averageRating',
+  TOTAL_SESSIONS: 'totalSessions',
+} as const;
+const mentorSortOrderMap = { ASC: 'asc', DESC: 'desc' } as const;
+
+const getMentorSortValue = (
+  mentor: MentorRecord,
+  sortBy: (typeof mentorSortByMap)[keyof typeof mentorSortByMap],
+): number | null | undefined => {
+  switch (sortBy) {
+    case 'hourlyRate':
+      return mentor.hourly_rate;
+    case 'averageRating':
+      return mentor.average_rating;
+    case 'totalSessions':
+      return mentor.total_sessions_completed;
+    default:
+      return undefined;
+  }
+};
 
 interface GraphQLContext {
   req: Request;
@@ -66,25 +95,52 @@ const resolvers = {
           minRate?: number;
           maxRate?: number;
           isAvailable?: boolean;
+          sortBy?: MentorSortBy;
+          sortOrder?: SortOrder;
         };
         cursor?: string;
         limit?: number;
-        sortBy?: string;
-        sortOrder?: string;
+        sortBy?: MentorSortBy;
+        sortOrder?: SortOrder;
       },
     ) => {
-      const { filter = {}, cursor, limit = 10, sortBy = 'createdAt', sortOrder = 'desc' } = args;
-      return MentorsService.list({
+      const { filter = {}, cursor, limit = 10 } = args;
+      const sortBy = filter.sortBy ?? args.sortBy ?? 'CREATED_AT';
+      const sortOrder = filter.sortOrder ?? args.sortOrder ?? 'DESC';
+      const serviceSortBy = mentorSortByMap[sortBy];
+      const serviceSortOrder = mentorSortOrderMap[sortOrder];
+      const result = await MentorsService.list({
         cursor,
         limit,
         search: filter.search,
-        expertise: filter.expertise,
+        expertise: filter.expertise ? [filter.expertise] : undefined,
         minRate: filter.minRate,
         maxRate: filter.maxRate,
         isAvailable: filter.isAvailable,
-        sortBy: sortBy as any,
-        sortOrder: sortOrder as any,
+        sortBy: serviceSortBy,
+        sortOrder: serviceSortOrder,
       });
+
+      return {
+        edges: result.mentors.map((mentor) => {
+          const sortValue = getMentorSortValue(mentor, serviceSortBy);
+          return {
+            node: mentor,
+            cursor: PaginationUtil.encodeCursor({
+              id: mentor.id,
+              created_at: mentor.created_at.toISOString(),
+              sort_by: serviceSortBy,
+              sort_order: serviceSortOrder,
+              ...(sortValue !== undefined ? { sort_value: sortValue } : {}),
+            }),
+          };
+        }),
+        pageInfo: {
+          hasNextPage: result.has_more,
+          endCursor: result.next_cursor,
+        },
+        total: result.total,
+      };
     },
 
     booking: async (_parent: unknown, args: { id: string }, context: GraphQLContext) => {
