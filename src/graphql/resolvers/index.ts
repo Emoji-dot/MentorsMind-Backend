@@ -215,6 +215,24 @@ const resolvers = {
     menteeId: (parent: any) => parent.mentee_id,
     mentorId: (parent: any) => parent.mentor_id,
     durationMinutes: (parent: any) => parent.duration_minutes,
+    /**
+     * Maps the lowercase DB status values (e.g. "no_show", "rescheduled")
+     * to the uppercase GraphQL BookingStatus enum values. Falls back to
+     * the raw value uppercased so any future DB statuses surface visibly
+     * rather than returning null.
+     */
+    status: (parent: any) => {
+      const STATUS_MAP: Record<string, string> = {
+        pending: 'PENDING',
+        confirmed: 'CONFIRMED',
+        completed: 'COMPLETED',
+        cancelled: 'CANCELLED',
+        rescheduled: 'RESCHEDULED',
+        no_show: 'NO_SHOW',
+      };
+      const raw: string = parent.status ?? '';
+      return STATUS_MAP[raw.toLowerCase()] ?? raw.toUpperCase();
+    },
     paymentStatus: (parent: any) => parent.payment_status,
     stellarTxHash: (parent: any) => parent.stellar_tx_hash,
     cancellationReason: (parent: any) => parent.cancellation_reason,
