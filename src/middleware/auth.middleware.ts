@@ -8,9 +8,26 @@ import { ErrorCode } from "../errors/error-codes";
 
 const JWT_SECRET = env.JWT_SECRET;
 const LAST_ACTIVE_DEBOUNCE_MS = 60 * 1000; // 1 minute
+const LAST_ACTIVE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
-// In-memory debounce map: userId -> last update timestamp
-const lastActiveDebounce = new Map<string, number>();
+export const lastActiveDebounce = new Map<
+  string,
+  { timestamp: number; expiresAt: number }
+>();
+
+const lastActiveCleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [userId, entry] of lastActiveDebounce) {
+    if (entry.expiresAt <= now) {
+      lastActiveDebounce.delete(userId);
+    }
+  }
+}, LAST_ACTIVE_CLEANUP_INTERVAL_MS);
+lastActiveCleanupInterval.unref();
+
+export const stopAuthDebounceCleanup = (): void => {
+  clearInterval(lastActiveCleanupInterval);
+};
 
 // Re-exported so existing `AuthenticatedRequest` imports from this module keep working.
 export type { AuthenticatedRequest };
@@ -133,10 +150,13 @@ export const authenticate = async (
 
     // Debounced last_active_at update — max once per minute per user
     const now = Date.now();
-    const lastUpdate = lastActiveDebounce.get(userId) ?? 0;
+    const lastUpdate = lastActiveDebounce.get(userId)?.timestamp ?? 0;
 
     if (now - lastUpdate >= LAST_ACTIVE_DEBOUNCE_MS) {
-      lastActiveDebounce.set(userId, now);
+      lastActiveDebounce.set(userId, {
+        timestamp: now,
+        expiresAt: now + LAST_ACTIVE_DEBOUNCE_MS * 2,
+      });
       pool_updateLastActive(userId).catch((err: any) =>
         logger.error("Failed to update session last_active_at", {
           userId,
