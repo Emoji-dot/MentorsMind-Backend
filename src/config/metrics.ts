@@ -26,6 +26,7 @@
  *   Queue / BullMQ
  *     queue_job_duration_seconds       histogram queue_name, job_name, status
  *     queue_jobs_total                 counter   queue_name, job_name, status
+ *     worker_jobs_failed_total         counter   queue
  *
  *   Stellar
  *     stellar_api_call_duration_seconds histogram  operation, network
@@ -182,6 +183,13 @@ export const queueJobsTotal = new Counter<string>({
   name: "queue_jobs_total",
   help: "Total BullMQ jobs processed, partitioned by queue, job name, and final status",
   labelNames: ["queue_name", "job_name", "status"],
+  registers: [metricsRegistry],
+});
+
+export const workerJobsFailedTotal = new Counter<string>({
+  name: "worker_jobs_failed_total",
+  help: "Total BullMQ jobs that failed (including exhausted retries), partitioned by queue",
+  labelNames: ["queue"],
   registers: [metricsRegistry],
 });
 

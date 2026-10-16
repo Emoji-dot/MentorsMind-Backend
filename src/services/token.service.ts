@@ -3,6 +3,7 @@ import { JwtUtils, TokenPayload, DecodedToken } from '../utils/jwt.utils';
 import crypto from 'crypto';
 import { SocketService } from './socket.service';
 import { EmailService } from './email.service';
+import { CacheService } from './cache.service';
 
 const emailService = new EmailService();
 
@@ -199,6 +200,14 @@ export const TokenService = {
   },
 
   /**
+   * Drop every cached revocation verdict for a user
+   * (keys are `auth:revoked:{userId}:{tokenIat}`, see auth.middleware).
+   */
+  async invalidateRevocationCache(userId: string): Promise<void> {
+    await CacheService.invalidatePattern(`auth:revoked:${userId}:*`);
+  },
+
+  /**
    * Revoke all sessions for a user
    */
   async revokeAllUserSessions(userId: string): Promise<void> {
@@ -206,6 +215,7 @@ export const TokenService = {
       `UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1`,
       [userId],
     );
+    await this.invalidateRevocationCache(userId);
   },
 
   /**
