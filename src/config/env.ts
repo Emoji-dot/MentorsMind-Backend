@@ -117,12 +117,14 @@ const envSchema = z.object({
   STELLAR_REQUEST_TIMEOUT_MS: z
     .string()
     .regex(/^\d+$/, "STELLAR_REQUEST_TIMEOUT_MS must be a non-negative integer")
+    .refine((value) => Number(value) > 0, "STELLAR_REQUEST_TIMEOUT_MS must be positive")
     .default("10000"),
-  /** Timeout in ms for server.loadAccount() calls (issue #1191, default 10000) */
-  STELLAR_LOAD_ACCOUNT_TIMEOUT_MS: z
+  /** Initial XLM balance for newly created Stellar wallets; >= 1 XLM base reserve. */
+  STELLAR_STARTING_BALANCE: z
     .string()
-    .regex(/^\d+$/, "STELLAR_LOAD_ACCOUNT_TIMEOUT_MS must be a non-negative integer")
-    .default("10000"),
+    .regex(/^\d+(\.\d{1,7})?$/, "STELLAR_STARTING_BALANCE must be a positive decimal string")
+    .refine((value) => Number(value) >= 1, "STELLAR_STARTING_BALANCE must be at least 1 XLM")
+    .default("1.5"),
 
   // CORS
   CORS_ORIGIN: z

@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { SocketService } from './socket.service';
 import { EmailService } from './email.service';
 import { CacheService } from './cache.service';
+import jwt from 'jsonwebtoken';
 
 const emailService = new EmailService();
 
@@ -165,6 +166,7 @@ export const TokenService = {
        ON CONFLICT (token_jti) DO NOTHING`,
       [jti, expDate],
     );
+    await CacheService.invalidatePattern(`token:revoked:*:${jti}`);
   },
 
   /**
@@ -187,16 +189,32 @@ export const TokenService = {
       `UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = $1`,
       [hash],
     );
+
+    const decoded = jwt.decode(token);
+    if (decoded && typeof decoded !== 'string') {
+      const payload = decoded as jwt.JwtPayload & { userId?: string };
+      if (payload.userId) {
+        await CacheService.invalidatePattern(
+          `token:revoked:${payload.userId}:*`,
+        );
+      } else if (payload.jti) {
+        await CacheService.invalidatePattern(`token:revoked:*:${payload.jti}`);
+      }
+    }
   },
 
   /**
    * Revoke all tokens in a family
    */
   async revokeTokenFamily(familyId: string): Promise<void> {
-    await pool.query(
-      `UPDATE refresh_tokens SET revoked_at = NOW() WHERE family_id = $1`,
+    const { rows } = await pool.query(
+      `UPDATE refresh_tokens SET revoked_at = NOW() WHERE family_id = $1
+       RETURNING user_id`,
       [familyId],
     );
+    for (const { user_id: userId } of rows) {
+      await CacheService.invalidatePattern(`token:revoked:${userId}:*`);
+    }
   },
 
   /**
@@ -215,7 +233,7 @@ export const TokenService = {
       `UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1`,
       [userId],
     );
-    await this.invalidateRevocationCache(userId);
+    await CacheService.invalidatePattern(`token:revoked:${userId}:*`);
   },
 
   /**
@@ -246,6 +264,7 @@ export const TokenService = {
          WHERE id = ANY($1)`,
         [ids],
       );
+      await CacheService.invalidatePattern(`token:revoked:${userId}:*`);
 
       // Notify the user about the forced sign-out via WebSocket
       const deviceName = newLoginContext?.deviceName ?? 'a new device';
