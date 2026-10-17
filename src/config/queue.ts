@@ -61,6 +61,8 @@ export const QUEUE_NAMES = {
   INCIDENT_RESPONSE: "incident-response-queue",
   ONBOARDING_NUDGE: "onboarding-nudge-queue",
   REPUTATION_SYNC: "reputation-sync-queue",
+  // Cron-driven (no BullMQ jobs) — registered so startup queue-name validation can catch renames
+  RETENTION_ENFORCEMENT: "retention-enforcement-queue",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
