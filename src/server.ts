@@ -67,6 +67,7 @@ import { stopAllSyncs as stopAllCalendarSyncs } from "./services/calendar-sync.s
 import { JwksService } from "./services/jwks.service";
 import { registerBookingProjectionHandlers } from "./events/booking.projections";
 import { ProjectionService } from "./services/projection.service";
+import { stopAuthDebounceCleanup } from "./middleware/auth.middleware";
 
 // Import queues for side effects
 import "./queues/bulk.queue";
@@ -211,6 +212,7 @@ async function shutdown(signal: string) {
   goalReminderJob.stop();
   keyRotationJob.stop();
   baselineRefreshJob.stop();
+  stopAuthDebounceCleanup();
   await Promise.all([
     emailWorker.close(),
     paymentWorker.close(),

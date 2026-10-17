@@ -2,6 +2,8 @@
  * Workers index — import once in server.ts to activate all background workers.
  */
 import { QUEUE_NAMES } from '../config/queue';
+import * as Sentry from '@sentry/node';
+import type { Worker } from 'bullmq';
 import { logger } from '../utils/logger.utils';
 import { registerWorkerLifecycleLogging } from './lifecycle';
 
@@ -34,6 +36,57 @@ import {
     startRetentionEnforcementWorker,
     stopRetentionEnforcementWorker,
 } from './retention-enforcement.worker';
+
+function registerWorkerLifecycleLogging(worker: Worker): Worker {
+    let jobsCompleted = 0;
+
+    worker.on('completed', () => {
+        jobsCompleted += 1;
+    });
+
+    worker.on('ready', () => {
+        logger.info({
+            queueName: worker.name,
+            concurrency: worker.opts.concurrency,
+            workerId: worker.id,
+            timestamp: new Date().toISOString(),
+        }, 'Worker ready');
+    });
+
+    worker.on('closed', () => {
+        logger.info({
+            queueName: worker.name,
+            jobsCompleted,
+            timestamp: new Date().toISOString(),
+        }, 'Worker closed');
+    });
+
+    worker.on('error', (error) => {
+        logger.error({
+            queueName: worker.name,
+            workerId: worker.id,
+            err: error,
+            timestamp: new Date().toISOString(),
+        }, 'Worker error');
+    });
+
+    worker.on('failed', (job, err) => {
+        const jobContext = {
+            queueName: worker.name,
+            jobId: job?.id,
+            jobName: job?.name,
+            attemptsMade: job?.attemptsMade,
+        };
+
+        logger.error({
+            ...jobContext,
+            error: err.message,
+        }, 'Job failed after all retries', err);
+        Sentry.captureException(err, { extra: jobContext });
+    });
+
+    return worker;
+}
 
 // Startup assertion: verify all queue names used by workers exist in QUEUE_NAMES
 const REQUIRED_QUEUE_NAMES = [

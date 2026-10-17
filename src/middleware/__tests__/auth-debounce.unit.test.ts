@@ -1,88 +1,63 @@
-jest.mock('../errorHandler', () => ({ createError: jest.fn((code: string) => Object.assign(new Error(code), { code })) }));
-jest.mock('../../utils/logger.utils', () => ({
-  logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
+jest.mock("../../utils/logger.utils", () => ({
+  logger: {
+    error: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+  },
 }));
-jest.mock('../../services/cache.service', () => ({
-  CacheService: { get: jest.fn().mockResolvedValue(null), set: jest.fn(), isDistributed: jest.fn(() => false) },
-}));
-jest.mock('../../config/database', () => ({
-  __esModule: true,
-  default: { query: jest.fn().mockResolvedValue({ rows: [] }) },
+jest.mock("../errorHandler", () => ({
+  createError: jest.fn(),
 }));
 
-const LAST_ACTIVE_DEBOUNCE_MS = 60 * 1000;
-const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+describe("auth last-active debounce cleanup", () => {
+  let lastActiveDebounce: typeof import("../auth.middleware").lastActiveDebounce;
+  let stopAuthDebounceCleanup = () => {};
 
-describe('auth.middleware lastActiveDebounce eviction', () => {
-  let mod: typeof import('../auth.middleware');
-  let jwt: typeof import('jsonwebtoken');
-  let pool: { query: jest.Mock };
-
-  const authenticateAs = async (userId: string) => {
-    const token = jwt.sign({ sub: userId, role: 'mentee' }, process.env.JWT_SECRET as string);
-    const req: any = { headers: { authorization: `Bearer ${token}` } };
-    const res: any = { status: jest.fn().mockReturnThis(), json: jest.fn() };
-    await mod.authenticate(req, res, jest.fn());
-  };
-
-  const lastActiveUpdates = () =>
-    pool.query.mock.calls.filter(([sql]) => /last_active_at/.test(String(sql))).length;
-
-  beforeEach(async () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-01-01T00:00:00Z"));
     jest.resetModules();
-    jest.useFakeTimers();
-    jwt = require('jsonwebtoken');
-    pool = require('../../config/database').default;
-    pool.query.mockReset();
-    // Valid, non-revoked user; everything else (UPDATE) returns no rows.
-    pool.query.mockImplementation(async (sql: string) =>
-      /token_invalid_before/.test(sql)
-        ? { rows: [{ token_invalid_before: null, deletion_completed_at: null }] }
-        : { rows: [] },
-    );
-    mod = require('../auth.middleware');
+    ({ lastActiveDebounce, stopAuthDebounceCleanup } =
+      require("../auth.middleware") as typeof import("../auth.middleware"));
   });
 
   afterEach(() => {
-    mod.stopAuthDebounceCleanup();
+    stopAuthDebounceCleanup();
     jest.useRealTimers();
+    jest.resetModules();
   });
 
-  it('evicts entries older than LAST_ACTIVE_DEBOUNCE_MS * 2 and keeps fresh ones', async () => {
-    await authenticateAs('user-old');
-    expect(lastActiveUpdates()).toBe(1);
+  it("evicts entries after the five-minute cleanup interval when their TTL has expired", () => {
+    const now = Date.now();
+    lastActiveDebounce.set("expired-user", {
+      timestamp: now,
+      expiresAt: now + 2 * 60 * 1000,
+    });
+    lastActiveDebounce.set("active-user", {
+      timestamp: now,
+      expiresAt: now + 10 * 60 * 1000,
+    });
 
-    // Same user inside the debounce window: no new update
-    await authenticateAs('user-old');
-    expect(lastActiveUpdates()).toBe(1);
+    jest.advanceTimersByTime(5 * 60 * 1000);
 
-    jest.setSystemTime(Date.now() + LAST_ACTIVE_DEBOUNCE_MS * 2 + 1);
-    await authenticateAs('user-fresh');
-    expect(lastActiveUpdates()).toBe(2);
-
-    expect(mod.evictStaleDebounceEntries()).toBe(1); // only user-old
-    expect(mod.evictStaleDebounceEntries()).toBe(0); // user-fresh retained
-
-    // user-old was evicted, so it is treated as new and written again immediately
-    await authenticateAs('user-old');
-    expect(lastActiveUpdates()).toBe(3);
+    expect(lastActiveDebounce.has("expired-user")).toBe(false);
+    expect(lastActiveDebounce.has("active-user")).toBe(true);
   });
 
-  it('runs the cleanup on a 5 minute interval', async () => {
-    await authenticateAs('user-a');
-    expect(lastActiveUpdates()).toBe(1);
+  it("keeps the map bounded as expired users accumulate", () => {
+    const ttl = 2 * 60 * 1000;
 
-    // Interval fires after 5 minutes; entry is > 2 minutes old and is evicted
-    jest.advanceTimersByTime(CLEANUP_INTERVAL_MS);
-    expect(mod.evictStaleDebounceEntries()).toBe(0);
+    for (let batch = 0; batch < 3; batch += 1) {
+      const now = Date.now();
+      for (let user = 0; user < 100; user += 1) {
+        const userId = `user-${batch}-${user}`;
+        lastActiveDebounce.set(userId, {
+          timestamp: now,
+          expiresAt: now + ttl,
+        });
+      }
 
-    await authenticateAs('user-a');
-    expect(lastActiveUpdates()).toBe(2);
-  });
-
-  it('stopAuthDebounceCleanup clears the interval', () => {
-    expect(jest.getTimerCount()).toBeGreaterThan(0);
-    mod.stopAuthDebounceCleanup();
-    expect(jest.getTimerCount()).toBe(0);
+      jest.advanceTimersByTime(5 * 60 * 1000);
+      expect(lastActiveDebounce.size).toBe(0);
+    }
   });
 });

@@ -67,9 +67,10 @@ const typeDefs = gql`
     booking(id: ID!): Booking
     bookings(
       status: BookingStatus
+      """Opaque cursor returned by the previous bookings page."""
       cursor: String
       limit: Int = 10
-    ): BookingListResult
+    ): BookingConnection!
 
     payment(id: ID!): Payment
     payments(
@@ -158,6 +159,13 @@ const typeDefs = gql`
     total: Int!
     nextCursor: String
     hasMore: Boolean!
+  }
+
+  type BookingConnection {
+    bookings: [Booking!]!
+    nextCursor: String
+    hasMore: Boolean!
+    total: Int!
   }
 
   type Payment {
