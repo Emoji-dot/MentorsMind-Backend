@@ -7,6 +7,7 @@ const typeDefs = gql`
     COMPLETED
     CANCELLED
     RESCHEDULED
+    NO_SHOW
   }
 
   enum PaymentStatus {
@@ -42,6 +43,8 @@ const typeDefs = gql`
     minRate: Float
     maxRate: Float
     isAvailable: Boolean
+    sortBy: MentorSortBy
+    sortOrder: SortOrder
   }
 
   input PaginationInput {

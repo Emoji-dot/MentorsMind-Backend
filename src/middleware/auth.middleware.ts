@@ -1,9 +1,12 @@
 import { Response, NextFunction } from "express";
+import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { env } from "../config/env";
 import { logger } from "../utils/logger.utils";
 import { createError } from "./errorHandler";
 import { ErrorCode } from "../errors/error-codes";
+import { CacheService } from "../services/cache.service";
+import type { AuthenticatedRequest } from "../types/auth.types";
 
 
 const JWT_SECRET = env.JWT_SECRET;
@@ -28,6 +31,59 @@ lastActiveCleanupInterval.unref();
 export const stopAuthDebounceCleanup = (): void => {
   clearInterval(lastActiveCleanupInterval);
 };
+
+/**
+ * Remove debounce entries older than LAST_ACTIVE_DEBOUNCE_MS * 2 so the map
+ * stays bounded in long-running processes. Returns the number evicted.
+ */
+export function evictStaleDebounceEntries(now: number = Date.now()): number {
+  let evicted = 0;
+  for (const [userId, ts] of lastActiveDebounce) {
+    if (now - ts > DEBOUNCE_EVICTION_AGE_MS) {
+      lastActiveDebounce.delete(userId);
+      evicted += 1;
+    }
+  }
+  return evicted;
+}
+
+let debounceCleanupInterval: NodeJS.Timeout | null = setInterval(
+  evictStaleDebounceEntries,
+  DEBOUNCE_CLEANUP_INTERVAL_MS,
+);
+// Never keep the process alive just for housekeeping.
+debounceCleanupInterval.unref?.();
+
+/** Stop the debounce cleanup interval (called on server shutdown). */
+export function stopAuthDebounceCleanup(): void {
+  if (debounceCleanupInterval) {
+    clearInterval(debounceCleanupInterval);
+    debounceCleanupInterval = null;
+  }
+}
+
+// ── Token revocation cache ──────────────────────────────────────────────────
+const DURATION_UNIT_SECONDS: Record<string, number> = {
+  s: 1,
+  m: 60,
+  h: 3600,
+  d: 86400,
+};
+
+/** Convert a JWT-style duration ("15m", "1h", "900") to seconds. */
+export function jwtExpiryToSeconds(value: string): number {
+  const match = /^(\d+)\s*([smhd])?$/.exec(value.trim());
+  if (!match) return 15 * 60;
+  return parseInt(match[1], 10) * DURATION_UNIT_SECONDS[match[2] ?? "s"];
+}
+
+const REVOCATION_CACHE_TTL_SECONDS = jwtExpiryToSeconds(env.JWT_EXPIRES_IN);
+
+/** Cache key for a token's revocation verdict; the raw token is never stored. */
+export const revocationCacheKey = (token: string): string =>
+  `revoked:${crypto.createHash("sha256").update(token).digest("hex")}`;
+
+export const REVOCATION_CACHE_TTL = REVOCATION_CACHE_TTL_SECONDS;
 
 // Re-exported so existing `AuthenticatedRequest` imports from this module keep working.
 export type { AuthenticatedRequest };
@@ -55,7 +111,17 @@ export const authenticate = async (
       alg?: string;
     } | null;
 
-    let decoded: { sub: string; role: string; iat?: number; mfaVerified?: boolean; isImpersonation?: boolean; impersonatedBy?: string; impersonationSessionId?: string };
+    let decoded: {
+      sub: string;
+      role: string;
+      iat?: number;
+      exp?: number;
+      jti?: string;
+      mfaVerified?: boolean;
+      isImpersonation?: boolean;
+      impersonatedBy?: string;
+      impersonationSessionId?: string;
+    };
 
     if (header?.kid && header?.alg === "RS256") {
       // ── RSA-256 path: look up the public key by kid ──
@@ -114,7 +180,13 @@ export const authenticate = async (
     const userId = decoded.sub;
     const issuedAtMs =
       typeof decoded.iat === "number" ? decoded.iat * 1000 : Date.now();
-    const isRevoked = await isTokenRevokedForUser(userId, issuedAtMs);
+    const isRevoked = await isTokenRevokedCached(
+      token,
+      userId,
+      issuedAtMs,
+      decoded.jti,
+      decoded.exp,
+    );
     if (isRevoked) {
       res.status(401).json({
         success: false,
@@ -207,16 +279,61 @@ async function pool_updateLastActive(userId: string): Promise<void> {
   );
 }
 
+/**
+ * Redis-backed wrapper around isTokenRevokedForUser. Cached value is the
+ * string "revoked" or "valid"; TTL equals the access token lifetime.
+ */
+export async function isTokenRevokedCached(
+  token: string,
+  userId: string,
+  issuedAtMs: number,
+  tokenJti?: string,
+  tokenExpiresAt?: number,
+): Promise<boolean> {
+  const key = revocationCacheKey(token);
+  const cached = await CacheService.get<string>(key);
+  if (cached === "revoked") return true;
+  if (cached === "valid") return false;
+
+  const revoked = await isTokenRevokedForUser(
+    userId,
+    issuedAtMs,
+    tokenJti,
+    tokenExpiresAt,
+  );
+  await CacheService.set(
+    key,
+    revoked ? "revoked" : "valid",
+    REVOCATION_CACHE_TTL_SECONDS,
+  );
+  return revoked;
+}
+
 async function isTokenRevokedForUser(
   userId: string,
   issuedAtMs: number,
+  tokenJti?: string,
+  tokenExpiresAt?: number,
 ): Promise<boolean> {
+  const cacheKey = tokenJti
+    ? `token:revoked:${userId}:${tokenJti}`
+    : undefined;
+  const cacheCandidate = cacheKey
+    ? await CacheService.get<boolean>(cacheKey)
+    : null;
+  const cacheAvailable = CacheService.isDistributed();
+  if (cacheAvailable && cacheCandidate !== null) return cacheCandidate;
+
   const pool = (await import("../config/database")).default;
   const { rows } = await pool.query(
-    `SELECT token_invalid_before, deletion_completed_at
+    `SELECT token_invalid_before, deletion_completed_at,
+            EXISTS (
+              SELECT 1 FROM token_blacklist
+               WHERE token_jti = $2 AND expires_at > NOW()
+            ) AS token_blacklisted
        FROM users
       WHERE id = $1`,
-    [userId],
+    [userId, tokenJti ?? null],
   );
 
   const user = rows[0];
@@ -224,14 +341,21 @@ async function isTokenRevokedForUser(
     return true;
   }
 
-  if (user.deletion_completed_at) {
-    return true;
+  const isRevoked =
+    !!user.deletion_completed_at ||
+    !!user.token_blacklisted ||
+    (user.token_invalid_before instanceof Date &&
+      issuedAtMs <= user.token_invalid_before.getTime());
+
+  const ttlSeconds =
+    typeof tokenExpiresAt === "number"
+      ? Math.max(0, tokenExpiresAt - Math.floor(Date.now() / 1000))
+      : 0;
+  if (cacheAvailable && cacheKey && ttlSeconds > 0) {
+    await CacheService.set(cacheKey, isRevoked, ttlSeconds);
   }
 
-  return (
-    user.token_invalid_before instanceof Date &&
-    issuedAtMs <= user.token_invalid_before.getTime()
-  );
+  return isRevoked;
 }
 
 export const requireRole = (roles: string[]) => {
