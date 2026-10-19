@@ -1,4 +1,4 @@
-﻿import pool, { db } from "../config/database";
+import pool, { db } from "../config/database";
 import { CollaborationState } from "../types/collaboration.types";
 import { PaginationUtil } from "../utils/pagination.utils";
 import { Logger } from "../utils/logger.utils";
