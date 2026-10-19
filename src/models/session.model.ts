@@ -23,6 +23,11 @@ export const SESSION_STATUSES = [
   'no_show',
 ] as const;
 
+/**
+ * Type derived from SESSION_STATUSES for compile-time status validation.
+ */
+export type SessionStatus = (typeof SESSION_STATUSES)[number];
+
 export interface Session {
   id: string;
   mentor_id: string;
@@ -231,11 +236,12 @@ export const SessionModel = {
     id: string,
     status: string,
   ): Promise<SessionRecord | null> {
-    // Validate status against allowed enum values
-    const validStatuses = SESSION_STATUSES as readonly string[];
-    if (!validStatuses.includes(status)) {
+    const valid = SESSION_STATUSES as readonly string[];
+    if (!valid.includes(status)) {
       throw createError(ErrorCode.VALIDATION_ERROR, 400, {
-        message: `Invalid session status: '${status}'. Must be one of: ${validStatuses.join(', ')}`,
+        message: 'Invalid session status: ' + status + '. Allowed: ' + valid.join(', '),
+        field: 'status',
+        value: status,
       });
     }
 

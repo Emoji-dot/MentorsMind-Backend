@@ -1,4 +1,4 @@
-import { SessionModel, SESSION_STATUSES } from '../session.model';
+import { SessionModel, SESSION_STATUSES, SessionStatus } from '../session.model';
 import { createError } from '../../middleware/errorHandler';
 import { ErrorCode } from '../../errors/error-codes';
 
@@ -26,6 +26,14 @@ describe('SessionModel updateStatus', () => {
     });
   });
 
+  describe('SessionStatus type export', () => {
+    it('allows SessionStatus type to be imported', () => {
+      // This is a compile-time test; if it compiles, the type is exported correctly
+      const status: SessionStatus = 'scheduled';
+      expect(status).toBe('scheduled');
+    });
+  });
+
   describe('valid status acceptance', () => {
     it.each(SESSION_STATUSES)('accepts valid status: %s', async (status) => {
       ;(pool.query as jest.Mock).mockResolvedValueOnce({
@@ -49,9 +57,15 @@ describe('SessionModel updateStatus', () => {
 
       await expect(
         SessionModel.updateStatus('session-1', invalidStatus)
-      ).rejects.toThrow(
-        `Invalid session status: '${invalidStatus}'. Must be one of: ${SESSION_STATUSES.join(', ')}`
-      );
+      ).rejects.toMatchObject({
+        code: ErrorCode.VALIDATION_ERROR,
+        statusCode: 400,
+        details: {
+          message: 'Invalid session status: hacked. Allowed: scheduled, active, paused, completed, cancelled, no_show',
+          field: 'status',
+          value: 'hacked',
+        },
+      });
 
       // Ensure DB is NOT called
       expect(pool.query).not.toHaveBeenCalled();
@@ -60,9 +74,14 @@ describe('SessionModel updateStatus', () => {
     it('throws VALIDATION_ERROR for empty string', async () => {
       await expect(
         SessionModel.updateStatus('session-1', '')
-      ).rejects.toThrow(
-        `Invalid session status: ''. Must be one of: ${SESSION_STATUSES.join(', ')}`
-      );
+      ).rejects.toMatchObject({
+        code: ErrorCode.VALIDATION_ERROR,
+        statusCode: 400,
+        details: {
+          field: 'status',
+          value: '',
+        },
+      });
       expect(pool.query).not.toHaveBeenCalled();
     });
 
@@ -71,9 +90,14 @@ describe('SessionModel updateStatus', () => {
 
       await expect(
         SessionModel.updateStatus('session-1', invalidStatus)
-      ).rejects.toThrow(
-        `Invalid session status: '${invalidStatus}'. Must be one of: ${SESSION_STATUSES.join(', ')}`
-      );
+      ).rejects.toMatchObject({
+        code: ErrorCode.VALIDATION_ERROR,
+        statusCode: 400,
+        details: {
+          field: 'status',
+          value: 'SCHEDULED',
+        },
+      });
       expect(pool.query).not.toHaveBeenCalled();
     });
 
@@ -82,13 +106,18 @@ describe('SessionModel updateStatus', () => {
 
       await expect(
         SessionModel.updateStatus('session-1', invalidStatus)
-      ).rejects.toThrow(
-        `Invalid session status: '${invalidStatus}'. Must be one of: ${SESSION_STATUSES.join(', ')}`
-      );
+      ).rejects.toMatchObject({
+        code: ErrorCode.VALIDATION_ERROR,
+        statusCode: 400,
+        details: {
+          field: 'status',
+          value: 'pending',
+        },
+      });
       expect(pool.query).not.toHaveBeenCalled();
     });
 
-    it('throws with correct ErrorCode and statusCode', async () => {
+    it('throws with correct ErrorCode, statusCode, and details', async () => {
       try {
         await SessionModel.updateStatus('session-1', 'invalid');
         fail('Expected to throw');
@@ -96,7 +125,9 @@ describe('SessionModel updateStatus', () => {
         expect(err.code).toBe(ErrorCode.VALIDATION_ERROR);
         expect(err.statusCode).toBe(400);
         expect(err.details).toEqual({
-          message: `Invalid session status: 'invalid'. Must be one of: ${SESSION_STATUSES.join(', ')}`,
+          message: 'Invalid session status: invalid. Allowed: scheduled, active, paused, completed, cancelled, no_show',
+          field: 'status',
+          value: 'invalid',
         });
       }
     });
