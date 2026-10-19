@@ -8,6 +8,20 @@ import {
   withCurrentTenantFilter,
 } from "../utils/tenant-context.utils";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
+
+/**
+ * Valid session status values.
+ * Exported so TypeScript can derive the status type via `typeof SESSION_STATUSES[number]`.
+ */
+export const SESSION_STATUSES = [
+  'scheduled',
+  'active',
+  'paused',
+  'completed',
+  'cancelled',
+  'no_show',
+] as const;
 
 export interface Session {
   id: string;
@@ -217,6 +231,14 @@ export const SessionModel = {
     id: string,
     status: string,
   ): Promise<SessionRecord | null> {
+    // Validate status against allowed enum values
+    const validStatuses = SESSION_STATUSES as readonly string[];
+    if (!validStatuses.includes(status)) {
+      throw createError(ErrorCode.VALIDATION_ERROR, 400, {
+        message: `Invalid session status: '${status}'. Must be one of: ${validStatuses.join(', ')}`,
+      });
+    }
+
     const { query, params } = withCurrentTenantFilter(
       `UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2`,
       [status, id],
