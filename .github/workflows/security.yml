@@ -100,6 +100,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Start isolated DAST target
+        env:
+          # src/config/env.ts loads .env.${NODE_ENV}. .env.test ships schema-valid
+          # 64-char secrets; the .env.development placeholders are shorter and fail
+          # the JWT_SECRET/ENCRYPTION_KEY minimum-length validation at import time.
+          NODE_ENV: test
         run: |
           pnpm exec ts-node --transpile-only security-tests/dast-target.ts > dast-target.log 2>&1 &
           for attempt in {1..30}; do curl --fail --silent http://127.0.0.1:5050/health && exit 0; sleep 1; done

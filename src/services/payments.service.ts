@@ -133,7 +133,7 @@ export const PaymentsService = {
       isPathPayment = quote.pathPaymentRequired;
 
       // Enforce 30-second quote expiry
-      if (Date.now() - quote.createdAt > 30000) {
+      if (Date.now() - (quote as any).createdAt > 30000) {
         throw createError(ErrorCode.PAYMENT_QUOTE_EXPIRED, 400);
       }
     }
@@ -470,7 +470,7 @@ export const PaymentsService = {
       payments: data,
       next_cursor,
       has_more,
-      total: parseInt(rows[0]?.total_count ?? '0', 10),
+      total: parseInt((rows[0] as any)?.total_count ?? '0', 10),
     };
   },
 

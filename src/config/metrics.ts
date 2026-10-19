@@ -330,3 +330,12 @@ export const auditLogQueueRejectionsTotal = new Counter<string>({
   labelNames: ["reason"],
   registers: [metricsRegistry],
 });
+
+// ─── API Versioning ────────────────────────────────────────────────────────
+
+export const deprecatedApiCallsTotal = new Counter<string>({
+  name: "deprecated_api_calls_total",
+  help: "Total calls to deprecated API versions, partitioned by version",
+  labelNames: ["version"],
+  registers: [metricsRegistry],
+});
