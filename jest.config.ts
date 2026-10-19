@@ -19,8 +19,22 @@ const config: Config = {
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
       tsconfig: 'tsconfig.json'
-    }]
+    }],
+    // ESM-only packages (e.g. uuid@13) must be transpiled to CJS for Jest.
+    '^.+\\.m?js$': ['ts-jest', {
+      tsconfig: {
+        allowJs: true,
+        module: 'commonjs',
+        target: 'ES2022',
+        esModuleInterop: true,
+        skipLibCheck: true,
+      },
+      diagnostics: false,
+    }],
   },
+  transformIgnorePatterns: [
+    '/node_modules/(?!(?:\\.pnpm/)?uuid)',
+  ],
 };
 
 export default config;
