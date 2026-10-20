@@ -4,7 +4,14 @@ import type { Config } from 'jest';
 // read from the project root and these options are merged on top of it.
 // `allowJs` is required so that ESM-only dependencies (e.g. uuid@13) are
 // transpiled to CommonJS instead of being handed to Jest as raw ESM.
+// `isolatedModules` makes ts-jest transpile every file on its own instead of
+// emitting through a TypeScript program built from the tsconfig `include`.
+// Files outside that program (i.e. everything under node_modules) otherwise
+// come back from the language service with a skipped emit, and ts-jest falls
+// back to returning the original ESM source unchanged. Type checking remains
+// `tsc`'s job (see `build:check`), same as jest.integration.config.ts.
 const tsJestOptions = {
+  isolatedModules: true,
   tsconfig: {
     allowJs: true,
   },
