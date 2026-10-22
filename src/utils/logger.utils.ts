@@ -3,3 +3,4 @@
 import { logger, Logger } from "./logger";
 export { logger, Logger };
 export default logger;
+export { logger, Logger, logger as default } from "./logger";

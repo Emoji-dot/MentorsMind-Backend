@@ -687,11 +687,11 @@ export const PaymentsService = {
        WHERE status IN ('pending', 'processing')
        ORDER BY
          CASE
-           WHEN to_address = $2 THEN 0
+           WHEN to_address = $1 THEN 0
            ELSE 1
          END
        LIMIT 1`,
-      [payload.transaction_hash, payload.to ?? null],
+      [payload.to ?? null],
     );
 
     if (!rows[0]) {
@@ -744,18 +744,42 @@ export const PaymentsService = {
     }
 
     // 5. Update payment and booking
-    const { rows: updatedRows } = await pool.query<PaymentRecord>(
-      `UPDATE transactions
-       SET status = 'completed',
-           payment_rail = 'stellar',
-           external_reference = $2,
-           stellar_tx_hash = $2,
-           completed_at = NOW(),
-           updated_at = NOW()
-       WHERE id = $1
-       RETURNING *`,
-      [payment.id, payload.transaction_hash],
-    );
+    // The status guard makes the transition atomic: of two concurrent deliveries
+    // for the same payment only one matches the row. A UNIQUE violation on
+    // stellar_tx_hash (another payment already owns this hash) is the last line
+    // of defence and is treated as an already-processed duplicate.
+    let updatedRows: PaymentRecord[];
+    try {
+      ({ rows: updatedRows } = await pool.query<PaymentRecord>(
+        `UPDATE transactions
+         SET status = 'completed',
+             payment_rail = 'stellar',
+             external_reference = $2,
+             stellar_tx_hash = $2,
+             completed_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $1
+           AND status IN ('pending', 'processing')
+         RETURNING *`,
+        [payment.id, payload.transaction_hash],
+      ));
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        logger.info("Webhook: duplicate transaction hash rejected by UNIQUE constraint", {
+          txHash: payload.transaction_hash,
+        });
+        return { processed: false, message: "Transaction hash already processed" };
+      }
+      throw err;
+    }
+
+    if (updatedRows.length === 0) {
+      logger.info("Webhook: payment already completed by a concurrent delivery", {
+        paymentId: payment.id,
+        txHash: payload.transaction_hash,
+      });
+      return { processed: false, message: "Transaction hash already processed" };
+    }
 
     if (payment.booking_id) {
       await pool.query(

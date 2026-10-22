@@ -1,13 +1,22 @@
 ﻿import pool, { db } from "../config/database";
 import { CollaborationState } from "../types/collaboration.types";
 import { PaginationUtil } from "../utils/pagination.utils";
-import { Logger } from "../utils/logger.utils";
+import { logger } from "../utils/logger.utils";
 import {
   TenantContext,
   withTenantFilter,
   withCurrentTenantFilter,
 } from "../utils/tenant-context.utils";
 import { createError } from "../middleware/errorHandler";
+import { ErrorCode } from "../errors/error-codes";
+
+export type SessionStatus =
+  | "pending"
+  | "confirmed"
+  | "scheduled"
+  | "cancelled"
+  | "completed"
+  | "no_show";
 
 export interface Session {
   id: string;
@@ -15,7 +24,7 @@ export interface Session {
   learner_id: string;
   start_time: Date;
   end_time: Date;
-  status: "scheduled" | "completed" | "cancelled";
+  status: SessionStatus;
   created_at: Date;
 }
 
@@ -28,7 +37,7 @@ export interface SessionRecord {
   description: string | null;
   scheduled_at: Date;
   duration_minutes: number;
-  status: "pending" | "confirmed" | "cancelled" | "completed";
+  status: SessionStatus;
   meeting_link: string | null;
   meeting_url: string | null;
   meeting_provider: string | null;
@@ -215,7 +224,7 @@ export const SessionModel = {
    */
   async updateStatus(
     id: string,
-    status: string,
+    status: SessionStatus,
   ): Promise<SessionRecord | null> {
     const { query, params } = withCurrentTenantFilter(
       `UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2`,
@@ -381,6 +390,19 @@ export const SessionModel = {
    * Note: archive runs across all tenants (system-level operation).
    */
   async archiveOlderThanYears(years: number): Promise<number> {
+    const { rows } = await pool.query(
+      `SELECT EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE table_name = 'sessions_archive'
+      ) AS exists`,
+    );
+
+    if (rows[0]?.exists !== true) {
+      const message = "sessions_archive table missing — run migrations";
+      logger.error({ message }, "SessionModel: archive table missing");
+      throw createError(ErrorCode.INTERNAL_SERVER_ERROR, 500, { message });
+    }
+
     const moveQuery = `
       WITH moved AS (
         DELETE FROM sessions
@@ -403,4 +425,3 @@ export const SessionModel = {
 };
 
 export default SessionModel;
-
