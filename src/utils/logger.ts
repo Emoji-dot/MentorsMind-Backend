@@ -1,4 +1,5 @@
 ﻿import { env } from "../config/env";
+import pino from "pino";
 import { maskPIIDeep } from "./pii-mask";
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 ﻿import Stripe from 'stripe';
 import config from '../config';
-import { Logger } from "../utils/logger.utils";
+import { logger } from "../utils/logger.utils";
 import pool from '../config/database';
 import { BookingModel } from '../models/booking.model';
 import { EscrowModel } from '../models/escrow.model';
@@ -81,6 +81,8 @@ export class StripeServiceClass {
           const desc = `stripe_charge:${charge.id}`;
           const { rows } = await client.query(insertTx, [userId, bookingId, amount, currency, charge.id, desc]);
           const transactionId = rows[0].id;
+
+          await client.query(`UPDATE transactions SET payment_rail = 'stripe' WHERE id = $1`, [transactionId]);
 
           // Mark booking as paid and link transaction
           await client.query(`UPDATE bookings SET payment_status = 'paid', transaction_id = $2, updated_at = NOW() WHERE id = $1`, [bookingId, transactionId]);

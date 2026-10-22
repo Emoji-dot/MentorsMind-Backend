@@ -1,7 +1,7 @@
 import pool, { db } from "../config/database";
 import { CollaborationState } from "../types/collaboration.types";
 import { PaginationUtil } from "../utils/pagination.utils";
-import { Logger } from "../utils/logger.utils";
+import { logger } from "../utils/logger.utils";
 import {
   TenantContext,
   withTenantFilter,
@@ -13,8 +13,11 @@ import { ErrorCode } from "../errors/error-codes";
 /**
  * Valid session status values.
  * Exported so TypeScript can derive the status type via `typeof SESSION_STATUSES[number]`.
+ * Combines statuses from SessionRecord (pending, confirmed) and SessionModel (scheduled, active, paused, completed, cancelled, no_show).
  */
 export const SESSION_STATUSES = [
+  'pending',
+  'confirmed',
   'scheduled',
   'active',
   'paused',
@@ -47,7 +50,7 @@ export interface SessionRecord {
   description: string | null;
   scheduled_at: Date;
   duration_minutes: number;
-  status: "pending" | "confirmed" | "cancelled" | "completed";
+  status: SessionStatus;
   meeting_link: string | null;
   meeting_url: string | null;
   meeting_provider: string | null;
@@ -234,7 +237,7 @@ export const SessionModel = {
    */
   async updateStatus(
     id: string,
-    status: string,
+    status: SessionStatus,
   ): Promise<SessionRecord | null> {
     const valid = SESSION_STATUSES as readonly string[];
     if (!valid.includes(status)) {
