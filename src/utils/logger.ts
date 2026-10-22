@@ -46,7 +46,7 @@ const LOG_LEVEL: string =
   (IS_TEST ? "silent" : IS_PRODUCTION ? "info" : "debug");
 
 function createPinoLogger(): PinoLogger {
-  return (pino as any)({
+  return (pino as unknown as (opts: unknown) => PinoLogger)({
     level: LOG_LEVEL,
     redact: { paths: REDACT_PATHS, censor: "[REDACTED]" },
     ...(IS_PRODUCTION
