@@ -11,6 +11,31 @@ import { BackupService } from "../services/backup.service";
 import { logInfo, logWarning, logError } from "../utils/error.utils";
 import { emailService } from "../services/email.service";
 import { env } from "../config/env";
+import {
+  backupDurationSeconds,
+  backupOperationsTotal,
+  backupSizeBytes,
+} from "../config/metrics";
+
+export type BackupMetricType = "full" | "wal" | "retention";
+
+/**
+ * Records Prometheus metrics for a backup operation (issue #1303).
+ * Exported for unit testing. `GET /metrics` exposes these automatically via
+ * `metricsRegistry` — no route changes needed.
+ */
+export function recordBackupOperation(
+  type: BackupMetricType,
+  durationSeconds: number,
+  status: "success" | "failure",
+  sizeBytes?: number,
+): void {
+  backupDurationSeconds.observe({ type }, durationSeconds);
+  backupOperationsTotal.inc({ type, status });
+  if (typeof sizeBytes === "number" && status === "success") {
+    backupSizeBytes.set({ type }, sizeBytes);
+  }
+}
 
 /**
  * Fire-and-forget admin alert email for backup/integrity failures.
@@ -61,6 +86,23 @@ class BackupJob {
     try {
       const { CronJob } = require("cron");
       const job = new CronJob("0 2 * * *", async () => {
+        logInfo("Running scheduled daily full backup");
+        const start = Date.now();
+        const result = await BackupService.runFullBackup();
+        recordBackupOperation(
+          "full",
+          (Date.now() - start) / 1000,
+          result.status === "completed" ? "success" : "failure",
+          result.size,
+        );
+        if (result.status === "completed") {
+          logInfo("Daily full backup completed", {
+            jobId: result.id,
+            size: result.size,
+            duration: result.duration,
+          });
+          const verification = await BackupService.verifyBackup(result.id);
+          if (!verification.valid) {
         this.jobRunning.set("daily-full-backup", true);
         try {
           logInfo("Running scheduled daily full backup");
@@ -112,6 +154,24 @@ class BackupJob {
     try {
       const { CronJob } = require("cron");
       const job = new CronJob("0 * * * *", async () => {
+        logInfo("Running scheduled WAL backup");
+        const start = Date.now();
+        const result = await BackupService.runWALBackup();
+        recordBackupOperation(
+          "wal",
+          (Date.now() - start) / 1000,
+          result.status === "completed" ? "success" : "failure",
+          result.size,
+        );
+        if (result.status === "failed") {
+          const err = new Error(
+            `WAL backup failed: ${result.error ?? "unknown"}`,
+          );
+          logError(err, "high", { jobId: result.id });
+          alertAdmins(
+            "WAL backup failed",
+            `WAL backup job ${result.id} failed: ${result.error ?? "unknown"}`,
+          );
         this.jobRunning.set("hourly-wal-backup", true);
         try {
           logInfo("Running scheduled WAL backup");
@@ -146,6 +206,23 @@ class BackupJob {
     try {
       const { CronJob } = require("cron");
       const job = new CronJob("0 3 * * *", async () => {
+        logInfo("Running backup retention cleanup");
+        const start = Date.now();
+        try {
+          const { removed } = await BackupService.applyRetentionPolicy();
+          recordBackupOperation(
+            "retention",
+            (Date.now() - start) / 1000,
+            "success",
+          );
+          logInfo("Backup retention cleanup completed", { removed });
+        } catch (error) {
+          recordBackupOperation(
+            "retention",
+            (Date.now() - start) / 1000,
+            "failure",
+          );
+          throw error;
         this.jobRunning.set("daily-retention-cleanup", true);
         try {
           logInfo("Running backup retention cleanup");
